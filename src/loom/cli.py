@@ -184,10 +184,11 @@ def cmd_send(args: argparse.Namespace) -> int:
     try:
         conversation_id = _target_conversation(api, args)
         try:
+            after = _latest_event_id(api, conversation_id)  # show only what this message causes
             api.post(f"/conversations/{conversation_id}/messages", json={"content": args.text})
         except NotFound as exc:
             raise CliError(f"backend does not expose /conversations yet ({exc})", 4) from exc
-        return _follow(api, conversation_id, quiet=args.quiet)
+        return _follow(api, conversation_id, quiet=args.quiet, after=after)
     finally:
         api.close()
 
@@ -208,8 +209,15 @@ def _target_conversation(api: Api, args: argparse.Namespace) -> str:
     return str(rows[0]["id"])
 
 
-def _follow(api: Api, conversation_id: str, quiet: bool = False) -> int:
-    after = 0
+def _latest_event_id(api: Api, conversation_id: str) -> int:
+    """Newest event id, so `send` prints only events caused by this message. The events
+    endpoint returns the newest rows when `before` is set, so ask for one."""
+    payload = api.get(f"/conversations/{conversation_id}/events", params={"before": 2**31 - 1, "limit": 1})
+    events = payload if isinstance(payload, list) else payload.get("events", [])
+    return max((int(e.get("id") or 0) for e in events), default=0)
+
+
+def _follow(api: Api, conversation_id: str, quiet: bool = False, after: int = 0) -> int:
     status = "running"
     printed_any = False
     seen_running = False
