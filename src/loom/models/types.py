@@ -1,0 +1,158 @@
+"""Model client contract: request/response shapes shared by the real client, the fake
+client, the runner, the classifier, maintenance and embeddings.
+
+A model call is `client.stream(request, priority)`: an async iterator that yields zero
+or more `Delta`s and then exactly one terminal `Result`. `client.chat(...)` collects the
+same into one `Result` (its `content`/`reasoning` filled from the deltas).
+
+Outcomes (03 §5.5): `ok`, `transient` (network, 5xx, malformed stream, empty
+completion), `overflow` (context too long), `fatal` (auth, model missing, unknown
+provider). Retry policy lives in the runner, not here: the client reports, the runner
+decides.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, AsyncIterator, Literal, Protocol, runtime_checkable
+
+Priority = int  # 0 interactive, 1 background, 2 maintenance
+PRIORITY_INTERACTIVE: Priority = 0
+PRIORITY_BACKGROUND: Priority = 1
+PRIORITY_MAINTENANCE: Priority = 2
+
+Outcome = Literal["ok", "transient", "overflow", "fatal"]
+Channel = Literal["content", "reasoning"]
+
+
+@dataclass
+class ChatRequest:
+    """One resolved model request. `messages` and `tools` are in OpenAI chat shape
+    (role/content/tool_calls/tool_call_id; tools as {"type":"function","function":{...}}).
+    `params` is the merged generation config: provider defaults < preset < overrides."""
+
+    messages: list[dict[str, Any]]
+    tools: list[dict[str, Any]] | None = None
+    params: dict[str, Any] = field(default_factory=dict)
+    preset: str = ""
+    provider: str = ""
+    model: str = ""
+    # Who is asking; for logging and queue display only.
+    conversation_id: str | None = None
+    purpose: str = "turn"  # turn | classify | summarize | maintenance | status | test
+
+    @property
+    def max_tokens(self) -> int | None:
+        v = self.params.get("max_tokens")
+        return int(v) if v is not None else None
+
+    @property
+    def effective_ctx(self) -> int:
+        return int(self.params.get("effective_ctx") or 32768)
+
+    def chars(self) -> int:
+        """Character count of the prompt as sent, for token calibration (03 §6.6)."""
+        import json
+
+        n = 0
+        for m in self.messages:
+            c = m.get("content")
+            if isinstance(c, str):
+                n += len(c)
+            elif c is not None:
+                n += len(json.dumps(c))
+            for tc in m.get("tool_calls") or []:
+                n += len(json.dumps(tc))
+        if self.tools:
+            n += len(json.dumps(self.tools))
+        return n
+
+
+@dataclass
+class Delta:
+    channel: Channel
+    text: str
+
+
+@dataclass
+class ToolCall:
+    id: str
+    name: str
+    arguments: dict[str, Any]  # parsed; `raw` keeps the original string if parsing failed
+    raw: str = ""
+    parse_error: str | None = None
+
+
+@dataclass
+class Usage:
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+
+
+@dataclass
+class Result:
+    outcome: Outcome = "ok"
+    content: str = ""
+    reasoning: str = ""
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    usage: Usage = field(default_factory=Usage)
+    finish_reason: str = ""  # stop | length | tool_calls | error | cancelled
+    error: str = ""  # human-readable, for system events and logs
+    latency_ms: int = 0
+    model: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.outcome == "ok"
+
+
+StreamEvent = Delta | Result
+
+
+@runtime_checkable
+class ModelClient(Protocol):
+    """The one interface every model consumer uses. Implemented by `models.client.Client`
+    (real HTTP, priority queue) and `models.fake.FakeModelClient` (tests)."""
+
+    async def stream(self, request: ChatRequest, priority: Priority = PRIORITY_INTERACTIVE) -> AsyncIterator[StreamEvent]: ...
+
+    async def chat(self, request: ChatRequest, priority: Priority = PRIORITY_INTERACTIVE) -> Result: ...
+
+    async def embed(self, texts: list[str], priority: Priority = PRIORITY_MAINTENANCE) -> list[list[float]]:
+        """Embeddings through the embedding role; raises `ModelError(fatal)` if no
+        embedding preset is configured. Vectors are L2-normalised."""
+        ...
+
+    async def list_models(self, provider: str) -> list[str]:
+        """Probe a provider for its live model list (GET /models?provider=)."""
+        ...
+
+    def queue_state(self) -> dict[str, Any]:
+        """{"depth": int, "running": [{"provider","purpose","conversation_id","priority"}...]}."""
+        ...
+
+
+class ModelError(Exception):
+    def __init__(self, outcome: Outcome, message: str):
+        super().__init__(message)
+        self.outcome: Outcome = outcome
+        self.message = message
+
+
+async def collect(stream: AsyncIterator[StreamEvent]) -> Result:
+    """Drain a stream into a Result (used by `chat` implementations)."""
+    content: list[str] = []
+    reasoning: list[str] = []
+    result: Result | None = None
+    async for ev in stream:
+        if isinstance(ev, Delta):
+            (content if ev.channel == "content" else reasoning).append(ev.text)
+        else:
+            result = ev
+    if result is None:
+        result = Result(outcome="transient", error="stream ended without a result")
+    if not result.content:
+        result.content = "".join(content)
+    if not result.reasoning:
+        result.reasoning = "".join(reasoning)
+    return result
