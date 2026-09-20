@@ -12,11 +12,14 @@ import type {
   Health,
   Item,
   LogLine,
+  MaintenanceStatus,
   McpServer,
   ModelRole,
   Occupancy,
   Preset,
   Procedure,
+  PromoteLogEntry,
+  PromotePlan,
   ProtectedPath,
   Provider,
   QueueState,
@@ -26,6 +29,7 @@ import type {
   SettingsPayload,
   SetupState,
   Snapshot,
+  SupervisorStatus,
   ToolPolicy,
   VaultChange,
   VaultNote,
@@ -275,7 +279,15 @@ export const api = {
   updateMcpServer: (id: string, body: Partial<McpServer>) => patch<McpServer>(`/mcp-servers/${id}`, body),
   deleteMcpServer: (id: string) => del<unknown>(`/mcp-servers/${id}`),
   refreshMcpServer: (id: string) => post<McpServer>(`/mcp-servers/${id}/refresh`),
-  testMcpServer: (id: string) => post<{ ok: boolean; error?: string; tools?: unknown[] }>(`/mcp-servers/${id}/test`),
+  /** `tools` is the tool *count* the throwaway client saw (connectors/mcp/manager.py). */
+  testMcpServer: (id: string) =>
+    post<{
+      ok: boolean;
+      latency_ms: number | null;
+      tools: number;
+      server?: Record<string, unknown>;
+      error?: string | null;
+    }>(`/mcp-servers/${id}/test`),
   connectors: () => get<Connector[]>("/connectors"),
   updateConnector: (name: string, body: Partial<Connector>) =>
     patch<Connector>(`/connectors/${encodeURIComponent(name)}`, body),
@@ -299,10 +311,22 @@ export const api = {
     const raw = await get<any>("/system/logs", params);
     return Array.isArray(raw) ? raw : (raw?.records ?? raw?.lines ?? []);
   },
-  promote: (ref: string) => post<unknown>("/system/promote", { ref }),
+  /** What promoting `ref` would change; 400/409 for a bad ref or a dirty tree. */
+  promotePlan: (ref: string) => get<PromotePlan>("/system/promote/plan", { ref }),
+  /** 202 on start; 409 with the protected-file list unless `acknowledge_protected`. */
+  promote: (ref: string, acknowledge_protected = false) =>
+    post<unknown>("/system/promote", { ref, acknowledge_protected }),
+  promoteLog: (limit = 200) => get<PromoteLogEntry[]>("/system/promote/log", { limit }),
   rollback: () => post<unknown>("/system/rollback"),
+  restart: () => post<unknown>("/system/restart"),
+  supervisor: () => get<SupervisorStatus>("/system/supervisor"),
   reindex: () => post<unknown>("/system/reindex"),
   snapshots: () => get<Snapshot[]>("/system/snapshots"),
+
+  // -- maintenance (03 §8.6) -------------------------------------------------
+  maintenance: () => get<MaintenanceStatus>("/maintenance"),
+  /** 202 with the fresh status; 409 when a pass is already in flight. */
+  runMaintenance: () => post<{ started: boolean } & MaintenanceStatus>("/maintenance/run"),
   setupState: async (): Promise<SetupState> => {
     const raw = await get<any>("/system/setup");
     return { ...raw, providers: raw?.providers ?? raw?.providers_detected ?? [] };

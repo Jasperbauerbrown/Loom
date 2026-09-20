@@ -179,16 +179,26 @@ export interface McpServer {
   updated_at?: string;
 }
 
+/** A connector row as `connectors.describe()` builds it: the db row plus everything the
+ * Settings form needs to render without a second request. */
 export interface Connector {
   name: string;
   enabled: number | boolean;
   config: Record<string, unknown>;
-  status: string;
+  /** one class per status (connectors/loader.py) */
+  status: "disabled" | "needs_config" | "loaded" | "error" | string;
   last_error: string | null;
   updated_at?: string;
   /** JSON-schema-ish description of `config`, supplied by the connector manifest */
   config_schema?: JsonSchema | null;
   description?: string;
+  facets?: string[];
+  /** the tool names this connector registers */
+  tools?: string[];
+  /** false when the package would not import */
+  available?: boolean;
+  /** required config keys with no value — the reason for `needs_config` */
+  missing_config?: string[];
 }
 
 export interface JsonSchema {
@@ -282,11 +292,13 @@ export interface LogLine {
   [k: string]: unknown;
 }
 
+/** `GET /system/snapshots`: a pre-promotion snapshot folder (03 §4.1). */
 export interface Snapshot {
   id: string;
   path?: string;
-  created_at?: string;
   bytes?: number;
+  has_state?: boolean;
+  created_at?: string;
   [k: string]: unknown;
 }
 
@@ -385,4 +397,92 @@ export interface BusEvent {
   ts: string;
   conversation_id: string | null;
   data: any;
+}
+
+// -- maintenance (03 §8.6) ----------------------------------------------------
+// Shapes mirror `knowledge/maintenance.py`: `new_report()` and `Maintenance.status()`.
+
+export interface MaintenanceConsolidated {
+  conversation_id: string;
+  events: number;
+  writes: number;
+}
+
+export interface MaintenanceReport {
+  started_at: string;
+  finished_at: string | null;
+  reason: string;
+  consolidated: MaintenanceConsolidated[];
+  curated: { candidates: number; applied: number };
+  archived: number;
+  pruned_artifacts: number;
+  committed: string | null;
+  external_commit: string | null;
+  errors: string[];
+  /** set on the in-flight marker returned by a second `run()` */
+  in_progress?: boolean;
+}
+
+export interface MaintenanceStatus {
+  enabled: boolean;
+  running: boolean;
+  /** the reason of the pass in flight, if any */
+  reason: string | null;
+  idle_seconds: number;
+  idle_seconds_remaining: number | null;
+  next_nightly_at: string;
+  last_report: MaintenanceReport | null;
+}
+
+export interface MaintenanceStage {
+  stage: string;
+  message: string;
+  ts: string;
+}
+
+// -- promotion (03 §15) -------------------------------------------------------
+// `promote.Plan.to_json()`.
+
+export interface PromotePlan {
+  ref: string;
+  ok: boolean;
+  error: string;
+  code: string;
+  commit: string;
+  short: string;
+  current_commit: string;
+  changed_files: string[];
+  protected_files: string[];
+  dirty_files: string[];
+  clean: boolean;
+  worktree: string;
+  tests_required: boolean;
+  repo: string;
+}
+
+/** One JSON line of `promote.log`; also the payload of `promote.progress`. */
+export interface PromoteLogEntry {
+  ts: string;
+  stage: string;
+  ok: boolean;
+  message: string;
+  ref?: string;
+  conversation_id?: string;
+}
+
+/** `GET /system/supervisor`: the supervisor's own status, or why there is none. */
+export interface SupervisorStatus {
+  ok?: boolean;
+  running: boolean;
+  error?: string | null;
+  pid?: number | null;
+  release?: string | null;
+  previous?: string | null;
+  uptime_s?: number;
+  crashes?: number;
+  crashes_in_window?: number;
+  backoff_s?: number;
+  healthy?: boolean;
+  last_error?: string;
+  port?: number;
 }

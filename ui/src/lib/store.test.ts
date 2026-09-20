@@ -165,6 +165,73 @@ describe("system events", () => {
     expect(state.promote[1].ok).toBe(false);
   });
 
+  it("maintenance.progress collects the pass, and `start` clears the previous one", () => {
+    const first = feed([
+      ev("maintenance.progress", { stage: "start", message: "maintenance pass (nightly)" }, null),
+      ev("maintenance.progress", { stage: "consolidate", message: "thread: batch 1/2" }, null),
+      ev("maintenance.progress", { stage: "done", message: "3 note writes" }, null),
+    ]);
+    expect(first.maintenanceProgress.map((p) => p.stage)).toEqual(["start", "consolidate", "done"]);
+    expect(first.maintenanceStale).toBe(true);
+
+    const second = reduce(first, ev("maintenance.progress", { stage: "start", message: "manual" }, null));
+    expect(second.maintenanceProgress).toHaveLength(1);
+    expect(second.maintenanceStale).toBe(false);
+  });
+
+  it("maintenance.progress flips `running` on a loaded status", () => {
+    const loaded: State = {
+      ...initialState,
+      maintenance: {
+        enabled: true,
+        running: false,
+        reason: null,
+        idle_seconds: 900,
+        idle_seconds_remaining: 120,
+        next_nightly_at: "2026-09-21T03:00:00+00:00",
+        last_report: null,
+      },
+    };
+    const running = reduce(loaded, ev("maintenance.progress", { stage: "start", message: "manual" }, null));
+    expect(running.maintenance?.running).toBe(true);
+    const done = reduce(running, ev("maintenance.progress", { stage: "done", message: "nothing to do" }, null));
+    expect(done.maintenance?.running).toBe(false);
+  });
+
+  it("schedule.created / updated / deleted keep the table live", () => {
+    const row = {
+      id: "s1",
+      spec: "0 9 * * *",
+      target: "desk",
+      payload: "standup",
+      policy: null,
+      created_by: "user",
+      enabled: 1,
+      next_run_at: "2026-09-21T09:00:00Z",
+      last_run_at: null,
+      runs: 0,
+    };
+    const created = reduce(initialState, ev("schedule.created", row, null));
+    expect(created.schedules).toHaveLength(1);
+
+    const updated = reduce(created, ev("schedule.updated", { ...row, runs: 1, enabled: 0 }, null));
+    expect(updated.schedules).toHaveLength(1);
+    expect(updated.schedules[0]).toMatchObject({ runs: 1, enabled: 0 });
+
+    const deleted = reduce(updated, ev("schedule.deleted", row, null));
+    expect(deleted.schedules).toEqual([]);
+    // a delete for a row we never had changes nothing
+    expect(reduce(deleted, ev("schedule.deleted", row, null))).toBe(deleted);
+  });
+
+  it("promote.progress prefers the log line's own timestamp", () => {
+    const state = reduce(
+      initialState,
+      ev("promote.progress", { stage: "probe", ok: true, message: "healthy", ts: "2026-09-20T11:00:00Z" }, null),
+    );
+    expect(state.promote[0].ts).toBe("2026-09-20T11:00:00Z");
+  });
+
   it("notification raises a toast", () => {
     const state = reduce(initialState, ev("notification", { title: "Thread finished", body: "ok", item_id: "i9" }));
     expect(state.toasts).toHaveLength(1);

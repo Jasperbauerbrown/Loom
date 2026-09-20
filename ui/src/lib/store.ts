@@ -16,10 +16,13 @@ import type {
   ConvEvent,
   Health,
   Item,
+  MaintenanceStage,
+  MaintenanceStatus,
   McpServer,
   ModelRole,
   Occupancy,
   Preset,
+  PromoteLogEntry,
   Provider,
   QueueState,
   Root,
@@ -27,6 +30,7 @@ import type {
   SecretsInfo,
   SettingsPayload,
   Snapshot,
+  SupervisorStatus,
   ToolCall,
   ToolCallSpec,
   ToolPolicy,
@@ -89,7 +93,16 @@ export interface State {
   health: Health | null;
   version: VersionInfo | null;
   snapshots: Snapshot[];
+  /** live `promote.progress` events, oldest first */
   promote: PromoteStage[];
+  /** the persisted promote.log, newest last */
+  promoteLog: PromoteLogEntry[];
+  supervisor: SupervisorStatus | null;
+  maintenance: MaintenanceStatus | null;
+  /** set when a pass finished: the System screen refetches the report */
+  maintenanceStale: boolean;
+  /** live `maintenance.progress` events for the pass in flight */
+  maintenanceProgress: MaintenanceStage[];
 
   vaultTree: VaultTreeNode[] | null;
   knowledgeStale: number;
@@ -126,6 +139,11 @@ export const initialState: State = {
   version: null,
   snapshots: [],
   promote: [],
+  promoteLog: [],
+  supervisor: null,
+  maintenance: null,
+  maintenanceStale: false,
+  maintenanceProgress: [],
   vaultTree: null,
   knowledgeStale: 0,
   toasts: [],
@@ -459,9 +477,41 @@ export function reduce(state: State, event: BusEvent): State {
         ...state,
         promote: [
           ...state.promote,
-          { stage: data.stage ?? "", ok: data.ok !== false, message: data.message ?? "", ts: event.ts },
+          { stage: data.stage ?? "", ok: data.ok !== false, message: data.message ?? "", ts: data.ts ?? event.ts },
         ],
       };
+
+    case "maintenance.progress": {
+      // `start` opens a pass: drop the previous pass's lines so the panel shows this one.
+      const stage: MaintenanceStage = {
+        stage: data.stage ?? "",
+        message: data.message ?? "",
+        ts: event.ts,
+      };
+      const lines = stage.stage === "start" ? [stage] : [...state.maintenanceProgress, stage];
+      const maintenance = state.maintenance
+        ? { ...state.maintenance, running: stage.stage !== "done" }
+        : state.maintenance;
+      return { ...state, maintenanceProgress: lines, maintenance, maintenanceStale: stage.stage === "done" };
+    }
+
+    case "schedule.created":
+    case "schedule.updated": {
+      const row = data as Schedule;
+      if (!row || !row.id) return state;
+      const idx = state.schedules.findIndex((s) => s.id === row.id);
+      const schedules = state.schedules.slice();
+      if (idx >= 0) schedules[idx] = { ...schedules[idx], ...row };
+      else schedules.push(row);
+      return { ...state, schedules };
+    }
+
+    case "schedule.deleted": {
+      const row = data as Schedule;
+      if (!row || !row.id) return state;
+      const schedules = state.schedules.filter((s) => s.id !== row.id);
+      return schedules.length === state.schedules.length ? state : { ...state, schedules };
+    }
 
     default:
       return state; // unknown types are ignored, never an error
@@ -666,6 +716,25 @@ export class Store {
       health: health ?? s.health,
       version: version ?? s.version,
       queue: queue ?? s.queue,
+    }));
+  }
+
+  async loadMaintenance() {
+    const status = await this.guardOptional(() => api.maintenance());
+    if (!status) return;
+    this.set((s) => ({ ...s, maintenance: status, maintenanceStale: false }));
+  }
+
+  /** Supervisor status + the persisted promotion log (03 §15.2 step 10). */
+  async loadPromote() {
+    const [supervisor, promoteLog] = await Promise.all([
+      this.guardOptional(() => api.supervisor()),
+      this.guardOptional(() => api.promoteLog()),
+    ]);
+    this.set((s) => ({
+      ...s,
+      supervisor: supervisor ?? s.supervisor,
+      promoteLog: promoteLog ?? s.promoteLog,
     }));
   }
 

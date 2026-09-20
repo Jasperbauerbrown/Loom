@@ -5,10 +5,11 @@ import { useStore } from "../../lib/store";
 import { Badge, Empty, Table, Td, Tr } from "../ui";
 
 function statusTone(status: string): "green" | "amber" | "red" | "neutral" {
-  const s = status.toLowerCase();
+  const s = (status || "").toLowerCase();
   if (s.includes("error") || s.includes("down") || s.includes("fail")) return "red";
-  if (s.includes("connect") || s.includes("pending")) return "amber";
-  if (s.includes("ok") || s.includes("running") || s.includes("enabled") || s.includes("ready")) return "green";
+  if (s === "needs_config" || s.includes("connect") || s.includes("pending")) return "amber";
+  if (s === "loaded" || s.includes("ok") || s.includes("running") || s.includes("enabled") || s.includes("ready"))
+    return "green";
   return "neutral";
 }
 
@@ -48,7 +49,11 @@ export function IntegrationsStatus() {
                 <Td>
                   <Badge tone={statusTone(c.status)}>{c.status}</Badge>
                 </Td>
-                <Td className="truncate text-[11.5px] text-neutral-500">{c.last_error ?? ""}</Td>
+                <Td className="truncate text-[11.5px] text-neutral-500">
+                  {c.status === "needs_config" && c.missing_config?.length
+                    ? `missing: ${c.missing_config.join(", ")}`
+                    : (c.last_error ?? "")}
+                </Td>
               </Tr>
             ))}
           </Table>

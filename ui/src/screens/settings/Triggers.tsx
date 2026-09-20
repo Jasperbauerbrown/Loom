@@ -1,4 +1,6 @@
-// Triggers tab: scalars plus the schedules table.
+// Triggers tab: the `triggers` scalar settings plus the schedules table
+// (03 §13.2). Rows are kept live by the store's `schedule.created|updated|deleted`
+// cases, so a schedule the model creates appears here without a refetch.
 
 import { useState } from "react";
 import { api } from "../../lib/api";
@@ -160,12 +162,21 @@ function ScheduleDialog({
       target,
       payload,
       policy: (policy || null) as Schedule["policy"],
-      enabled,
     };
     setSaving(true);
-    const res = schedule
-      ? await store.guard(() => api.updateSchedule(schedule.id, body))
-      : await store.guard(() => api.createSchedule(body));
+    // POST /schedules takes only spec/target/payload/policy/created_by (routers/
+    // schedules.py) and starts the row enabled, so a row created disabled is patched
+    // straight after; an edit sends `enabled` with the rest.
+    let res: Schedule | undefined;
+    if (schedule) {
+      res = await store.guard(() => api.updateSchedule(schedule.id, { ...body, enabled }));
+    } else {
+      const created = await store.guard(() => api.createSchedule(body));
+      res = created;
+      if (created && !enabled) {
+        res = await store.guard(() => api.updateSchedule(created.id, { enabled: false }));
+      }
+    }
     setSaving(false);
     if (res) {
       await store.loadSchedules();

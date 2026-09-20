@@ -25,6 +25,9 @@ src/lib/       api.ts     typed REST client for every endpoint in 03 §12.1
                types.ts, format.ts
 src/components/ ui.tsx (primitives), Conversation, ConversationHeader, NowBoard,
                ArtifactDrawer, Markdown, Toasts, Icons
+               system/  PromotePanel (supervisor, plan → promote → rollback),
+                        MaintenancePanel (03 §8.6), LogsPanel, IntegrationsStatus
+               vault/   tree, search, editor, graph, meters, procedures
 src/screens/   Setup, Desk, Threads, ThreadView, Vault, Approvals, Settings(+settings/),
                System
 ```
@@ -44,7 +47,11 @@ replaces it with the persisted row). `event.appended` upserts every persisted ev
 id, so messages sent from the CLI or another surface appear here immediately;
 `tool.call` / `tool.result` pair by `call_id` in `state.toolCalls`. `settings.changed`
 and `models.changed` set refetch flags that `App` turns into a reload, which is why the
-UI and the backend never disagree.
+UI and the backend never disagree. `schedule.created|updated|deleted`, `mcp.status` and
+`connector.status` upsert their row in place; `promote.progress` and
+`maintenance.progress` append to `state.promote` / `state.maintenanceProgress` (a
+`maintenance.progress` of stage `start` opens a new pass, `done` marks the report stale
+so the System screen refetches it).
 
 Components read with `useStore(selector)` (`useSyncExternalStore` plus a shallow-equal
 cache) and mutate only through `api.*`, wrapped in `store.guard(...)` so every failure

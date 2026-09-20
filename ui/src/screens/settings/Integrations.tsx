@@ -52,11 +52,12 @@ export function IntegrationsTab() {
 
 // -- MCP servers --------------------------------------------------------------
 
+// One tone per status class (connectors/loader.py, connectors/mcp/manager.py).
 function statusTone(status: string): "green" | "amber" | "red" | "neutral" {
-  if (status === "ok" || status === "connected") return "green";
+  if (status === "ok" || status === "connected" || status === "loaded") return "green";
   if (status === "error" || status === "failed") return "red";
-  if (status === "unknown" || !status) return "neutral";
-  return "amber";
+  if (status === "unknown" || status === "disabled" || !status) return "neutral";
+  return "amber"; // needs_config, connecting, …
 }
 
 function McpPanel({ servers, secretNames }: { servers: McpServer[]; secretNames: string[] }) {
@@ -75,7 +76,20 @@ function McpPanel({ servers, secretNames }: { servers: McpServer[]; secretNames:
     setBusy(id);
     const res = await store.guard(() => api.testMcpServer(id));
     setBusy(null);
-    if (res) store.toast(res.ok ? "info" : "error", res.ok ? "MCP test ok" : "MCP test failed", res.error);
+    if (!res) return;
+    const server = (res.server ?? {}) as { name?: string; version?: string };
+    const detail = [
+      server.name ? `${server.name}${server.version ? ` ${server.version}` : ""}` : "",
+      res.latency_ms !== null && res.latency_ms !== undefined ? `${res.latency_ms} ms` : "",
+      `${res.tools ?? 0} tool(s)`,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    store.toast(
+      res.ok ? "info" : "error",
+      res.ok ? "MCP test ok" : "MCP test failed",
+      res.ok ? detail : (res.error ?? undefined),
+    );
   }
 
   return (
@@ -315,8 +329,18 @@ function ConnectorsPanel({ connectors }: { connectors: Connector[] }) {
             <div>
               <span className="text-[13px] font-medium">{c.name}</span>{" "}
               <Badge tone={statusTone(c.status)}>{c.status || "unknown"}</Badge>
+              {c.available === false && (
+                <Badge tone="red" className="ml-1">
+                  not importable
+                </Badge>
+              )}
               {c.description && <p className="text-[12px] text-neutral-500">{c.description}</p>}
-              {c.last_error && <p className="text-[12px] text-red-600 dark:text-red-400">{c.last_error}</p>}
+              {c.tools && c.tools.length > 0 && (
+                <p className="mt-0.5 font-mono text-[11.5px] text-neutral-500">{c.tools.join(", ")}</p>
+              )}
+              {c.last_error && c.status !== "needs_config" && (
+                <p className="text-[12px] text-red-600 dark:text-red-400">{c.last_error}</p>
+              )}
             </div>
             <div className="flex items-center gap-2">
               <Button size="sm" onClick={() => reload(c.name)} disabled={busy === c.name}>
@@ -325,6 +349,18 @@ function ConnectorsPanel({ connectors }: { connectors: Connector[] }) {
               <Toggle checked={Boolean(c.enabled)} onChange={(v) => void toggle(c.name, v)} disabled={busy === c.name} />
             </div>
           </div>
+          {c.status === "needs_config" && (
+            <div className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-2 text-[12.5px] text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
+              Needs configuration before it can load
+              {c.missing_config && c.missing_config.length > 0 ? (
+                <>
+                  : <span className="font-mono">{c.missing_config.join(", ")}</span>
+                </>
+              ) : c.last_error ? (
+                <>: {c.last_error}</>
+              ) : null}
+            </div>
+          )}
           {c.config_schema && <ConnectorConfigForm connector={c} schema={c.config_schema} />}
         </Card>
       ))}
