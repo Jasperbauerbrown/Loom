@@ -253,7 +253,9 @@ user may edit it in the UI or Obsidian, and the thread re-reads it every turn (�
 body loaded on demand via `procedure_load`; scripts run through `shell`, never read into
 context unless asked. Third-party skills are installed by copying a folder; the watcher
 detects it and posts a *setup* item asking the user to approve because skills may carry
-code; unapproved skills are indexed but not loadable.
+code; unapproved skills are indexed but not loadable. A procedure the agent writes
+itself (`knowledge_write` with the harness as actor) is stamped `approved: <iso>` at
+write time — the approval gate exists for code that arrived from outside.
 
 ### 4.4 Artifacts
 Tool output longer than `tool_output_cap` (default 8,000 chars) is written to
@@ -515,10 +517,12 @@ Built from `vault/` into the `notes/aliases/links/notes_fts` tables + embeddings
 - Full rebuild: `loom reindex` and at startup when any `mtime/size` differs from
   the table or the table is empty.
 - Incremental: the watcher (§8.8) re-parses changed files; embeddings recomputed only
-  when `hash` changes.
+  when `hash` changes, and drained by a background task so a vault write never waits on
+  the embedding model (the index is correct without vectors).
 - Parsing: frontmatter via PyYAML; wikilinks via regex `\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]`;
-  link resolution order filename stem → title → alias; unresolved links kept as
-  dangling rows (visible in the vault UI as "wanted notes").
+  link resolution order filename stem → title → alias, where a procedure's stem is its
+  folder name (`[[pla-print]]` → `procedures/pla-print/SKILL.md`); unresolved links kept
+  as dangling rows (visible in the vault UI as "wanted notes").
 - `notes_fts` content = title + body (frontmatter stripped).
 - `core_order` from `core/` filenames sorted (users may prefix `10-`, `20-`).
 
@@ -533,7 +537,8 @@ Input: the claimed user text (not tool results, not model output).
 3. Threads additionally always have their `scope_note` (slot [5]), so resolution
    there fills only the remainder.
 The model has `knowledge_search` for everything else; resolution is a cheap head start,
-not a gate (charter §2.4).
+not a gate (charter §2.4). `Index.resolve` and `Index.search` are async because step 2
+embeds the query; `preload`, `core_blocks` and the graph helpers are synchronous.
 
 ### 8.3 Pre-load rule (decided)
 For each resolved note: inject the note body, then first-hop links in order
@@ -765,8 +770,11 @@ POST /conversations/{id}/archive        GET  /conversations/{id}/occupancy
 GET  /approvals?status                  POST /approvals/{id} {decision: allow|deny|allow_always, add_root?: bool}
 GET  /items?unseen                      POST /items/{id}/seen   POST /items/{id}/dismiss
 GET  /vault/tree                        GET  /vault/note?path   PUT /vault/note {path, content}   DELETE /vault/note?path
-GET  /vault/search?q&type               GET  /vault/history?path   GET /vault/recent-changes   POST /vault/revert {commit, path?}
-GET  /vault/graph?center&depth          (nodes/edges for the optional graph view)
+GET  /vault/search?q&type&k             GET  /vault/history?path   GET /vault/recent-changes?n   POST /vault/revert {commit, path?}
+GET  /vault/diff?sha&path               GET  /vault/core (block fill)   GET /vault/wanted (dangling links)
+GET  /vault/procedures                  POST /vault/procedures/{name}/approve
+GET  /vault/status?path                 PUT  /vault/status {path, fields, owner?}
+GET  /vault/graph?center&depth&limit    (nodes/edges for the optional graph view)
 GET  /settings  PATCH /settings         (values + schema)
 CRUD /providers  /presets  /model-roles  /tool-policies  /roots  /protected-paths  /mcp-servers  /connectors  /schedules
 POST /providers/{name}/probe            POST /presets/{name}/test   (one short completion; reports latency + usage)
@@ -988,8 +996,10 @@ Nothing in these files references mutable state (model names, paths, rosters).
   (desk message round-trip against a fake-model backend) is optional.
 
 ## 19. Dependencies (explicit; anything else needs a reason in this doc)
-Backend runtime: `fastapi`, `uvicorn`, `httpx`, `pyyaml`, `keyring`. Dev: `pytest`,
-`pytest-asyncio`. Stdlib for everything else: `sqlite3` (+FTS5, present in CPython
+Backend runtime: `fastapi`, `uvicorn`, `httpx`, `pyyaml`, `keyring`, `tzdata`. Dev: `pytest`,
+`pytest-asyncio`. `tzdata` is data, not code: Windows ships no IANA database, so
+`zoneinfo.ZoneInfo("Europe/Amsterdam")` raises there and every local time in §11 and
+§8.6 would silently become UTC (decided 2026-09-20). Stdlib for everything else: `sqlite3` (+FTS5, present in CPython
 builds), `asyncio`, `json`, `re`, `array`/`math.sumprod`, `subprocess`, `shlex`.
 Not used, deliberately: SQLAlchemy/alembic (hand SQL), LiteLLM/openai SDK (one HTTP
 shape), LanceDB/numpy (brute-force cosine), APScheduler/croniter (80-line parser),

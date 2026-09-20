@@ -49,11 +49,14 @@ decisions in the charter's decision log with a date.
 
 ```bash
 python -m uv run pytest                    # full suite, fast, no live model
-python -m uv run loom serve                # migrate, then serve http://127.0.0.1:8500
-python -m uv run loom serve --port N
+python -m uv run loom serve --no-supervisor            # migrate, then serve http://127.0.0.1:8500
+python -m uv run loom serve --no-supervisor --port N
+python -m uv run loom serve --no-supervisor --fake     # fake model client, for UI work
+python -m uv run loom serve                            # end-user path: runs under the supervisor
 python -m uv run loom reindex              # rebuild vault indexes from markdown
 python -m uv run loom send "text"          # CLI client; blocks until the turn ends
 python -m uv run loom send --thread ID "text"
+python -m uv run loom status               # health + model queue
 
 npm --prefix ui install
 npm --prefix ui run build                  # tsc -b && vite build → ui-dist/ (committed)

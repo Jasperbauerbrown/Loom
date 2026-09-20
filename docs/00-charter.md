@@ -539,3 +539,10 @@ sessions do not re-litigate.
   `overflow` outcome is the authoritative failure).
 - **2026-09-20** — All REST endpoints are `async def` (sync handlers run in a threadpool:
   no event loop to schedule turns, SQLite off the loop thread).
+- **2026-09-20** — Knowledge package built. Vault writes are synchronous (index + git on
+  the event-loop thread); embeddings are queued and drained in the background, so no
+  write waits on a model. `Index.resolve`/`search` are async (they embed the query);
+  pre-load, core blocks and the graph stay synchronous.
+- **2026-09-20** — Procedures written by Loom itself are approved at write time; the
+  approval item exists for skills copied in from outside. Wikilinks resolve a procedure
+  by its folder name, not the literal `SKILL` stem.
