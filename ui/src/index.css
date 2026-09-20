@@ -1,0 +1,102 @@
+@import "tailwindcss";
+
+/* Theme follows the system unless `general.theme` overrides it: App sets/removes the
+   `dark` class on <html>, so the variant keys on the class rather than the media query. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: ui-sans-serif, system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+}
+
+:root {
+  color-scheme: light dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  @apply bg-white text-neutral-900 antialiased dark:bg-neutral-950 dark:text-neutral-100;
+  font-family: var(--font-sans);
+  font-size: 14px;
+}
+
+/* Rendered Markdown. Dense but readable; no prose plugin (dependency-light). */
+.md {
+  @apply text-[14px] leading-6;
+}
+.md > *:first-child {
+  margin-top: 0;
+}
+.md > *:last-child {
+  margin-bottom: 0;
+}
+.md p,
+.md ul,
+.md ol,
+.md pre,
+.md blockquote,
+.md table {
+  @apply my-2;
+}
+.md h1,
+.md h2,
+.md h3,
+.md h4 {
+  @apply mt-4 mb-2 font-semibold;
+}
+.md h1 {
+  @apply text-lg;
+}
+.md h2 {
+  @apply text-base;
+}
+.md h3,
+.md h4 {
+  @apply text-sm;
+}
+.md ul {
+  @apply list-disc pl-5;
+}
+.md ol {
+  @apply list-decimal pl-5;
+}
+.md li {
+  @apply my-0.5;
+}
+.md a {
+  @apply text-sky-700 underline underline-offset-2 hover:text-sky-600 dark:text-sky-400;
+}
+.md code {
+  @apply rounded bg-neutral-100 px-1 py-0.5 font-mono text-[12.5px] dark:bg-neutral-800;
+}
+.md pre {
+  @apply overflow-x-auto rounded-md border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-900;
+}
+.md pre code {
+  @apply bg-transparent p-0 text-[12.5px];
+}
+.md blockquote {
+  @apply border-l-2 border-neutral-300 pl-3 text-neutral-600 dark:border-neutral-700 dark:text-neutral-400;
+}
+.md table {
+  @apply w-full border-collapse text-[13px];
+}
+.md th,
+.md td {
+  @apply border border-neutral-200 px-2 py-1 text-left dark:border-neutral-800;
+}
+.md hr {
+  @apply my-4 border-neutral-200 dark:border-neutral-800;
+}
+
+/* Scrollbars: thin, unobtrusive, same on both themes. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, currentColor 25%, transparent) transparent;
+}
