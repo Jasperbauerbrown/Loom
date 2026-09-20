@@ -281,10 +281,10 @@ config file to edit.
 ### 5.1 Providers
 One client speaking OpenAI-compatible `/v1/chat/completions` (streaming SSE) with
 `tools`. Two provider kinds differ only in URL, auth header, and extras:
-- **ollama**: base `http://host:11434`, uses `/v1/chat/completions`; extras `num_ctx`
-  (from role `effective_ctx`) and `keep_alive` sent via `options` on the native
-  `/api/chat` endpoint *only if* the OpenAI path is found not to honour them (probe at
-  startup; store result). Embeddings via `/api/embed`.
+- **ollama**: base `http://host:11434`, native `/api/chat` (streaming NDJSON, `tools`,
+  `think`, `options.num_ctx` from `effective_ctx`, `keep_alive`). Decided 2026-09-20:
+  no probe; the OpenAI-compatible path does not accept `options`. Embeddings via
+  `/api/embed`; model list via `/api/tags`.
 - **openai_compatible**: base URL + `Authorization: Bearer {{secret:…}}`. Covers
   OpenRouter and any hosted endpoint.
 
@@ -937,12 +937,20 @@ UI: `react`, `react-dom`, `vite`, `typescript`, `tailwindcss`, one Markdown rend
 8. **Self-modification** — releases layout, `promote` end to end, protected paths,
    snapshots, rollback, System UI progress, auto-rollback in supervisor.
 
-## 21. Implementation questions left open (decide in-session, record here)
-- Ollama OpenAI-compat path: does it honour `num_ctx`/`keep_alive` via `options`?
-  Probe at startup and store; fall back to `/api/chat` if not.
-- Windows shell flavour default: cmd.exe (Hydra) vs Git Bash when present. Lean: detect
-  Git Bash, default to it, expose the setting.
-- Whether the desk's now board should list *all* running threads or only those updated
-  since last seen. Lean: all running, one line each, capped at 10.
-- Markdown renderer choice for the UI (`marked` is smaller; `react-markdown` composes
-  better with wikilink rendering).
+## 21. Implementation questions (decided 2026-09-20; see charter decision log)
+- Ollama: native `/api/chat` for the `ollama` provider kind; no probe.
+- Windows shell flavour: `auto` → Git Bash if present, else cmd.exe; setting exposed.
+- Now board: all running threads, one line each, capped by `now_board_max_threads` (10).
+- UI Markdown: `marked` + scratch wikilink extension + allowlist sanitiser.
+
+### 21.1 API conventions (decided 2026-09-20)
+- JSON in and out. Errors: FastAPI `{"detail": "message"}` with 4xx/5xx.
+- Rows are returned as their table row with JSON columns decoded and `*_at` as ISO-8601
+  UTC strings. Lists are plain arrays.
+- Auth: when `general.lan_token` is set, every `/api` request carries
+  `Authorization: Bearer <token>` and `/ws` carries `?token=`; loopback without a token
+  needs nothing.
+- Settings: `GET /api/settings` → `{"values": {...}, "schema": [Field...], "groups": {...}}`;
+  `PATCH /api/settings` takes a partial `{key: value}` map, validates all-or-nothing,
+  returns the new values, emits `settings.changed {keys}`.
+- Every mutation emits its matching WS event before the HTTP response returns.

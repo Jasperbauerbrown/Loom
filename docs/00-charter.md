@@ -479,3 +479,22 @@ sessions do not re-litigate.
   (`03` §3.3). Folder `docs/assistant/` becomes `/docs` in the Loom repo.
 - **2026-09-20** — Model configuration is providers → presets → roles (Hydra's
   layering); all UI-managed; threads may override with a preset.
+- **2026-09-20** — Implementation started. Repo skeleton: schema `0001_init.sql`, migrator,
+  settings schema in `config.py`, model-client contract + fake client, tool registry,
+  event bus, `App` composition root with per-package `install/start/stop`.
+- **2026-09-20** — SQLite access is synchronous on the event-loop thread (sub-ms local
+  calls; an async wrapper is a dependency and a codepath for nothing).
+- **2026-09-20** — Ollama provider kind uses the native `/api/chat` and `/api/embed`
+  endpoints (they honour `num_ctx`, `keep_alive`, `think`); `openai_compatible` uses
+  `/v1/chat/completions`. No startup probe: Ollama's OpenAI path is known not to accept
+  `options`. Resolves `03` §21 q1.
+- **2026-09-20** — Windows shell flavour: `auto` = Git Bash if present, else cmd.exe;
+  setting exposed. Resolves `03` §21 q2.
+- **2026-09-20** — Now board lists all running threads, one line each, capped by a
+  setting (default 10). Resolves `03` §21 q3.
+- **2026-09-20** — UI Markdown renderer is `marked` plus a small scratch-built wikilink
+  extension and an allowlist sanitiser (no DOMPurify). Resolves `03` §21 q4.
+- **2026-09-20** — REST errors use FastAPI's `{"detail": ...}`; rows are returned with
+  JSON columns decoded; LAN auth is a bearer token, `?token=` on the WebSocket.
+- **2026-09-20** — Path-class policies are `tool_policies` rows keyed `<tool>:<prefix>`
+  (e.g. `knowledge_write:core/` = ask); no second table.
