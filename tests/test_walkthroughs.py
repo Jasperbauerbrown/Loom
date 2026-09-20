@@ -28,6 +28,13 @@ def _kinds(app, cid):
     return [e["kind"] for e in events.list_events(app, cid, limit=10_000)]
 
 
+def _context(req):
+    """The harness context block (now board / scope note + now line) of a model request."""
+    blocks = [m["content"] for m in req.messages if m["role"] == "user" and m["content"].startswith("<context")]
+    assert blocks, "no harness context block in the request"
+    return blocks[-1]
+
+
 # ---------------------------------------------------------------------------------
 # 1. "Heat up the Ender 3."  resolution + classify allow + secret substitution
 # ---------------------------------------------------------------------------------
@@ -168,8 +175,8 @@ async def test_walkthrough_music_bot(client, fake, tmp_path):
     assert any(i["kind"] == "thread_event" and "finished" in i["title"] for i in items_rows)
     # thread context: scope note with status block in slot [5] and the budget line
     thread_call = [c for c in fake.calls if c.conversation_id == t["id"] and c.purpose == "turn"][0]
-    assert "projects/music-bot.md" in thread_call.messages[1]["content"]
-    assert "[steps remaining:" in thread_call.messages[1]["content"]
+    assert "projects/music-bot.md" in _context(thread_call)
+    assert "[steps remaining:" in _context(thread_call)
     # thread steps ran at background priority, desk turns at interactive priority
     prios = {c.conversation_id: p for c, p in zip(fake.calls, fake.priorities) if c.purpose == "turn"}
     assert prios[desk] == 0 and prios[t["id"]] == 1
@@ -218,7 +225,7 @@ async def test_walkthrough_3d_map(client, fake):
     assert knowledge_msg, "the project note was resolved by alias and pre-loaded"
     assert "scaffolding the project" in knowledge_msg[0]["content"]
     assert "status:begin" in knowledge_msg[0]["content"]
-    assert "3D map" in last.messages[1]["content"]  # now board lists the waiting thread
+    assert "3D map" in _context(last)  # now board lists the waiting thread
     assert not any(c.conversation_id == t["id"] for c in fake.calls[-1:])  # no thread turn was run
 
     # The person answers on the desk; the desk forwards into the thread's inbox; the thread resumes.

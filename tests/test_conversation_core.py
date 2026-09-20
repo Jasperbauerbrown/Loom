@@ -23,6 +23,13 @@ def _collect(app):
     return seen
 
 
+def _ctx_block(req):
+    """The harness context block (now board / scope note, now line, steps) of a request."""
+    blocks = [m["content"] for m in req.messages if m["role"] == "user" and m["content"].startswith("<context")]
+    assert blocks, "no harness context block in the request"
+    return blocks[-1]
+
+
 async def _run(app, cid):
     """Run a turn to completion, whichever task holds the lock (post() wakes one too)."""
     await runner.run_turn(app, cid)
@@ -50,7 +57,10 @@ async def test_desk_turn_persists_and_streams(app, fake):
     # context shape: stable system prefix first, volatile system second, user last
     req = fake.calls[0]
     assert req.messages[0]["role"] == "system" and "You are Loom" in req.messages[0]["content"]
-    assert req.messages[1]["role"] == "system" and "now:" in req.messages[1]["content"]
+    assert sum(1 for m in req.messages if m["role"] == "system") == 1  # chat templates want exactly one, first
+    ctx_msg = _ctx_block(req)
+    assert "now:" in ctx_msg and "# Now board" in ctx_msg
+    assert req.messages[-2]["content"] == ctx_msg  # volatile context sits nearest the query
     assert req.messages[-1] == {"role": "user", "content": "hi"}
     assert req.tools and any(t["function"]["name"] == "fs_read" for t in req.tools)
     # calibration wrote a factor
@@ -165,7 +175,7 @@ async def test_thread_spawn_status_finish_notifies_parent(app, fake):
     assert desk_kinds[-2:] == ["user", "assistant"] and "[finished]" in _events(app, desk, ["user"])[-1]["content"]
     # scope note is slot [5] of the thread's context and the budget line is present
     thread_req = [c for c in fake.calls if c.conversation_id == t["id"] and c.purpose == "turn"][0]
-    assert "Scope note" in thread_req.messages[1]["content"] and "[steps remaining:" in thread_req.messages[1]["content"]
+    assert "Scope note" in _ctx_block(thread_req) and "[steps remaining:" in _ctx_block(thread_req)
 
 
 async def test_thread_without_status_write_gets_safety_net(app, fake):

@@ -10,7 +10,7 @@ from pathlib import Path
 from loom.conversation import events
 from loom.models.fake import Scripted
 
-from tests.test_walkthroughs import _kinds, _settle
+from tests.test_walkthroughs import _context, _kinds, _settle
 
 SERVER = str(Path(__file__).parent / "fake_mcp_server.py")
 
@@ -63,7 +63,7 @@ async def test_walkthrough_homework(client, fake):
     first = [c for c in fake.calls if c.purpose == "turn"][0]
     kb = [m for m in first.messages if m["role"] == "user" and "<knowledge" in m["content"]][0]["content"]
     assert "### topics/school.md" in kb and "### courses/cs101.md" in kb and "### courses/math201.md" in kb
-    assert "now:" in first.messages[1]["content"]  # today's date is always in context
+    assert "now:" in _context(first)  # today's date is always in context
     # MCP read-only tool ran without a classifier; the result came back from the server
     assert not any(c.purpose == "classify" for c in fake.calls)
     results = events.list_events(app, desk, kinds=["tool_result"])

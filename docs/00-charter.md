@@ -582,3 +582,7 @@ sessions do not re-litigate.
   `<!-- tools:begin/end -->` and is the only part a refresh rewrites, so the agent's
   "when to use" prose survives. Setup items are de-duplicated per source while one is
   undismissed, so a 5s→5min reconnect loop cannot bury the now board.
+- **2026-09-20** — Context layout: exactly one system message (Qwen 3.6's template
+  rejects a second one); summary and the volatile now-board/scope block are user-role
+  `<context from="harness">` blocks, the volatile one nearest the query. Found by the
+  first live turn against the bar model.

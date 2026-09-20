@@ -40,7 +40,19 @@ class Context:
     turn_start_event_id: int | None = None
 
     def messages(self, app, steps_remaining: int | None = None) -> list[dict[str, Any]]:  # type: ignore[no-untyped-def]
-        return [*self.prefix, volatile_system(app, self.conv, steps_remaining), *self.history, *self.turn]
+        """One system message (stable prefix), then the summary as a user-role context
+        block, the live history, the volatile context block (now board / scope note, now
+        line, steps) nearest the query, then this turn's messages. Exactly one system
+        message: chat templates (Qwen 3.x among them) reject a system message that is
+        not first, and everything volatile sitting after the history keeps the cached
+        prefix as long as possible (decided 2026-09-20)."""
+        out = [*self.prefix]
+        if self.conv.get("summary"):
+            out.append(summary_message(self.conv))
+        out.extend(self.history)
+        out.append(volatile_message(app, self.conv, steps_remaining))
+        out.extend(self.turn)
+        return out
 
     def tools(self, app, enabled: bool = True) -> list[Tool]:  # type: ignore[no-untyped-def]
         if not enabled:
@@ -138,15 +150,24 @@ def scope_block(app, conv: dict[str, Any]) -> str:  # type: ignore[no-untyped-de
     return f"# Scope note {path}\n{body.strip()}"
 
 
-def volatile_system(app, conv: dict[str, Any], steps_remaining: int | None = None) -> dict[str, Any]:  # type: ignore[no-untyped-def]
+CONTEXT_OPEN = '<context from="harness">'
+CONTEXT_CLOSE = "</context>"
+
+
+def volatile_message(app, conv: dict[str, Any], steps_remaining: int | None = None) -> dict[str, Any]:  # type: ignore[no-untyped-def]
+    """Slots [5]–[6] as one user-role block, fenced so the model can tell harness
+    context from the person's words."""
     parts = [now_board(app) if conv["kind"] == "desk" else scope_block(app, conv)]
     line = now_line(app)
     if conv["kind"] == "thread" and steps_remaining is not None:
         line += f"\n[steps remaining: {steps_remaining}]"
     parts.append(line)
-    if conv.get("summary"):
-        parts.append("# Summary of earlier conversation\n" + conv["summary"])
-    return {"role": "system", "content": "\n\n".join(parts)}
+    return {"role": "user", "content": f"{CONTEXT_OPEN}\n" + "\n\n".join(parts) + f"\n{CONTEXT_CLOSE}"}
+
+
+def summary_message(conv: dict[str, Any]) -> dict[str, Any]:
+    """Slot [7]: the compaction summary, placed right after the stable prefix."""
+    return {"role": "user", "content": f"{CONTEXT_OPEN}\n# Summary of earlier conversation\n{conv['summary']}\n{CONTEXT_CLOSE}"}
 
 
 # -- slot [8] -------------------------------------------------------------------

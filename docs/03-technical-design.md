@@ -83,11 +83,15 @@ loom/
   with `taskkill /T /F /PID` (decided 2026-09-20: a Job Object needs ctypes plumbing in
   the one file whose point is to be small and obviously correct). POSIX: `start_new_session`
   plus process-group signals.
-- `promote`/`rollback` in the supervisor are the *process* half only: stop, switch
-  `current`/`previous`, start, watch `/api/system/health` for
-  `promotion_watchdog_seconds`, revert if it does not hold. The worktree, snapshot and
-  probe steps of §15.2 are the self-modification package's and have named seams
-  (`snapshot`, `create_release`, `probe`) that raise until it lands.
+- `promote`/`rollback` in the supervisor are §15.2 steps 5–10 whole: snapshot, build the
+  release worktree, probe it, switch `current`/`previous`, restart, watch
+  `/api/system/health` for `promotion_watchdog_seconds`, and restore pointers (and the
+  database, when the release migrated it) if it does not hold. The three seams
+  `snapshot`, `create_release` and `probe` are implemented as of the self-modification
+  package; they stay module-level functions so tests drive them without a process.
+- Every stage appends one JSON line `{ts, stage, ok, message, ref, conversation_id}` to
+  `APP_HOME/promote.log`. The supervisor cannot tell the backend directly — it is
+  restarting it — so the file is the channel and the backend republishes it (§15.2).
 - `hydra.bat`-style launchers are replaced by `loom` (supervisor entry) for end users
   and `python -m loom serve` for development (no supervisor).
 
@@ -493,22 +497,23 @@ writes back (the factor is a property of model + content, so the preset is its h
 
 ## 7. Context assembly (`assemble`, the only builder)
 
-| Slot | Content | Stability |
-|---|---|---|
-| [1] | `prompts/system.md` (soul + operating rules) + `prompts/kind-desk.md` or `kind-thread.md` | stable |
-| [2] | One line: "Tools are provided via the API; use `tool_search` for more." (schemas travel in the `tools` parameter) | stable |
-| [3] | Core blocks: `vault/core/*.md` in `core_order`, each hard-capped (`core_block_chars`, default 1,500) — overflow is truncated with a visible marker, never silently | stable within a session; changes only when the user/agent edits core |
-| [4] | Procedures index: one line per `SKILL.md` (`name — description`) | stable |
-| — | *end of cache-friendly prefix* | |
-| [5] | Desk: the **now board** (unseen items, running threads with one-line status). Thread: the **project note** including status block | volatile |
-| [6] | `now: 2026-09-20 14:02 (America/…)` + threads: `[steps remaining: N]` | volatile |
-| [7] | `summary` (if any) | volatile |
-| [8] | Live events since `summary_cutoff`, replayed in order; `thinking`/`system`/`status` kinds skipped; evictions applied | volatile |
-| [9] | Resolved entities for this input (§8.2–8.3), wrapped `<knowledge may_be_irrelevant="true">…</knowledge>`; ephemeral, never persisted | volatile |
-| [10] | Claimed inbox messages as user-role messages | volatile |
+| Slot | Content | Role / position | Stability |
+|---|---|---|---|
+| [1] | `prompts/system.md` (soul + operating rules) + `prompts/kind-desk.md` or `kind-thread.md` | the one system message | stable |
+| [2] | One line: "Tools are provided via the API; use `tool_search` for more." (schemas travel in the `tools` parameter) | system | stable |
+| [3] | Core blocks: `vault/core/*.md` in `core_order`, each hard-capped (`core_block_chars`, default 1,500) — overflow is truncated with a visible marker, never silently | system | stable within a session; changes only when the user/agent edits core |
+| [4] | Procedures index: one line per `SKILL.md` (`name — description`) | system | stable |
+| — | *end of cache-friendly prefix* | | |
+| [7] | `summary` (if any), fenced `<context from="harness">` | user, right after the prefix | changes only on fold |
+| [8] | Live events since `summary_cutoff`, replayed in order; `thinking`/`system`/`status` kinds skipped; evictions applied | assistant / user / tool | stable within a turn |
+| [5]+[6] | Desk: the **now board** (pending approvals, unseen items, running threads with one-line status). Thread: the **project note** including status block. Then `now: 2026-09-20 14:02 (America/…)` + threads: `[steps remaining: N]`. One fenced `<context from="harness">` block | user, immediately before this turn's messages | volatile |
+| [9] | Resolved entities for this input (§8.2–8.3), wrapped `<knowledge may_be_irrelevant="true">…</knowledge>`; ephemeral, never persisted | user | volatile |
+| [10] | Claimed inbox messages as user-role messages, then the turn's own assistant / tool messages | user / assistant / tool | volatile |
 
-Slots [1]–[4] are one system message and byte-stable across turns (no dates, sorted
-keys) for Ollama's prompt cache. Everything volatile is after it, nearest the query.
+Exactly one system message, first (decided 2026-09-20: Qwen 3.x chat templates reject a
+system message anywhere else). Slots [1]–[4] are byte-stable across turns (no dates,
+sorted keys) for Ollama's prompt cache; the summary and history extend the cached
+prefix within a turn; everything volatile sits after them, nearest the query.
 
 ## 8. Knowledge
 
@@ -1050,25 +1055,64 @@ gets its own worktree under `releases/dev-<thread>/` as a root, plus a scratch
 `LOOM_HOME` pointing at `APP_HOME/scratch/<thread>/` so tests and a staging run
 never touch live state.
 
+That workflow is a **procedure note, not code** (charter §5.9): `promote.install`
+ensures `procedures/self-modification/SKILL.md` exists in the vault from
+`prompts/templates/procedure-self-modification.md` (written by Loom, so approved at
+write time, §8.4). Changing how self-modification is done is a vault edit; only
+isolation, promotion-with-rollback and protected paths are Python.
+
 ### 15.2 `promote(ref)` flow (tool → backend → supervisor)
 ```
-backend:  1 ref must be a commit reachable in src.git; worktree clean
+backend:  1 ref must resolve to a commit in the repo the backend runs from
+              (bootstrap.repo_root); the worktree that holds it must be clean
           2 protected-path check: git diff --name-only <current>..<ref> ∩ protected_paths
-              non-empty → approval required (reason lists the files); denied → stop
-          3 run test suite in the ref worktree (python -m uv run pytest); failure → stop, report
-          4 POST supervisor /promote {ref}
+              (compared repo-relative and absolute) → non-empty and not acknowledged →
+              error result naming the files; the person confirms on the System page or
+              the model calls promote(ref, acknowledge_protected=true)
+          3 run the suite in the ref's worktree (python -m uv run pytest -q -x, 600s; a ref
+              checked out nowhere gets a throwaway worktree releases/test-<sha7>);
+              failure → error result with the output (spilled to an artifact when long)
+          4 POST supervisor /promote {ref, conversation_id}
 supervisor:
-          5 snapshot: sqlite backup API → snapshots/<ts>/state.db; vault `git tag pre-<ts>`
-          6 create releases/<id> worktree at ref; install deps (uv sync); build UI if ui/ changed
-          7 probe: run `serve --probe --port P` against a COPY of state.db (migrations dry run),
-              wait for /system/health ok within 60s; else abort
-          8 write `current`, stop live backend, start new; watchdog 120s: health must stay ok
-          9 failure → restore `current`, restart previous, restore snapshot if migrations ran
-          10 emit promote.progress at every stage (via a file the new backend tails on start
-              and republishes)
+          5 snapshot: sqlite backup API → snapshots/<ts>/state.db; vault `git tag pre-<ts>`;
+              prune to system.snapshot_retention
+          6 create_release: fetch into releases/src.git, `git worktree add --detach`
+              releases/<YYYYMMDD-HHMMSS>-<sha7>, `uv sync --frozen` (plain sync as fallback),
+              `npm --prefix ui ci && run build` only when ui/ moved and ui-dist/ is missing
+              or older; python_for(release) is the release's own .venv
+          7 probe: start the release with LOOM_HOME pointing at a scratch dir holding a COPY
+              of state.db (so migrations run on the copy) on port+2, wait for
+              /api/system/health ok within 60s, stop it; else abort
+          8 write `previous`, then `current`; stop live backend, start new; watchdog
+              system.promotion_watchdog_seconds: health must be reached and stay ok
+          9 failure → pointers back, restart the previous release, restore the snapshot when
+              PRAGMA user_version advanced
+          10 every stage appends {ts, stage, ok, message, ref, conversation_id} to
+              APP_HOME/promote.log; stages are snapshot|release|probe|swap|watchdog|rollback
+              and the terminal done|failed
 ```
+**Two tools, decided 2026-09-20.** `promote` is `ask` by policy, so the dispatcher asks
+before the handler runs — which means the handler cannot put the protected-file list
+into the approval's reason. So the list comes from a read-only companion:
+`promote_plan(ref)` (`GET /system/promote/plan?ref=` for the UI) returns the commit, the
+diff, the protected files and whether the tree is clean. The tool description tells the
+model to call it first and report it; the person therefore sees the files before the
+approval card, and `acknowledge_protected` is an assertion that they did — the call
+itself still goes through the ordinary `ask`. `promote.request_promotion` is the single
+codepath for steps 1–4, called by both the tool and `POST /system/promote`, so a click
+and a model call cannot disagree; failure classes come back as a `code`
+(`no_repo|bad_ref|dirty|protected|tests_failed|no_supervisor|supervisor_error`) which
+the REST layer maps to one status each (409 for protected/dirty, 422 for a failing
+suite, 503 for no supervisor).
+
 The turn that called `promote` ends at step 4 with a `system` event; after restart the
-thread resumes (§6.3 step 1) and reads the outcome from the promote log.
+thread resumes (§6.3 step 1) and reads the outcome from the promote log. The backend
+tails `promote.log` (`promote.read_progress`, a durable byte offset in
+`promote.log.offset`), republishes each line as `promote.progress`, and on a terminal
+line posts a now-board item (`notify` on failure, §17) and appends the outcome as a
+`system` event to the conversation recorded in the log. The first read happens in
+`promote.start`, because the stages that matter most are written while the backend is
+not running.
 
 ### 15.3 Protected paths (default rows)
 `supervisor/`, `src/loom/tools/permissions.py`, `src/loom/tools/fs_guard.py`,
