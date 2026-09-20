@@ -735,20 +735,43 @@ Tier-1 integrations (charter §5.8) are just notes the agent writes.
 ## 11. Triggers and scheduler
 
 ### 11.1 Schedules
-`spec` grammar (parsed by ~80 lines, no croniter): `every 15m|2h|1d`, `daily at HH:MM`,
-`weekly on mon,thu at HH:MM`, `at 2026-09-26T18:00` (one-shot), or a 5-field cron.
-Timezone from settings. The scheduler task wakes every 30s, fires rows with
-`next_run_at ≤ now`, computes the next time, and writes an inbox row on the target
-(`desk` or a conversation) with the payload as content and source `schedule:<id>`.
-Missed firings while the backend was down fire once on startup if within
-`schedule_catchup_hours` (6). Caps: `max_active_schedules` (25), `min_interval_minutes`
-(5); `schedule_create` returns an error result past them.
+`spec` grammar (`triggers/spec.py`, no croniter), case-insensitive and
+whitespace-tolerant: `every 15m|2h|1d|30s` (units s/m/h/d; also `every 90 minutes`,
+`every day`), `daily at HH:MM`, `weekly on mon,thu at HH:MM` (full day names too),
+`monthly on 15 at HH:MM`, `at 2026-09-26T18:00` or `at 2026-09-26 18:00` (one-shot), or
+a 5-field cron `m h dom mon dow` with `*`, lists, ranges and steps (names for month and
+weekday; dom+dow both set is cron's OR). Anything else raises `SpecError`, whose message
+always lists the accepted forms. `Spec.next_after(dt)` computes in the wall clock of
+`general.timezone` (so `daily at 09:00` stays 09:00 across a DST change) and returns an
+aware UTC datetime; `next_run_at` is stored as an ISO UTC string. `Spec.min_interval()`
+is what the interval cap is checked against (for a cron spec: the smallest gap in its
+first few firings).
+
+`Scheduler` (attached as `app.scheduler`) owns the table: `create`, `update`, `delete`,
+`get`, `list`, `enable`, `run_now` (fires immediately and does **not** shift
+`next_run_at`), `fire`, `tick`, `start`/`stop`. The task wakes every
+`scheduler_tick_seconds` (30), fires enabled rows with `next_run_at ≤ now` through the
+event router (§11.2), then writes `last_run_at`, `runs += 1` and the next time;
+a one-shot sets `enabled=0` and `next_run_at=NULL`. An error inside a tick is logged per
+row and never kills the loop; a row whose target conversation is gone is disabled rather
+than retried. Missed firings while the backend was down fire once on startup if within
+`schedule_catchup_hours` (6) — their item says "(missed while offline)" — and older
+misses are rescheduled forward without firing. Caps: `max_active_schedules` (25, counted
+over enabled rows), `min_interval_minutes` (5); past them `create` raises
+`SchedulerError`, which `schedule_create` turns into an error result naming the cap and
+the API turns into 409. Mutations emit `schedule.created|updated|deleted` (§12.2).
 
 ### 11.2 Event router
-`route(event)`: thread events → parent conversation; connector events → the
-conversation named in the connector config (default desk); schedule → its target.
-Every routed event = one inbox row + policy handling (§11.3). Items and inbox rows are
-written **before** any turn is scheduled.
+`route(app, TriggerEvent(kind, source, target, title, content, meta, policy))` is the one
+write path from "something happened" to a turn. Target: thread events → parent
+conversation (`meta.parent_id`); connector events → `meta.conversation_id` or the
+conversation named in the connector config (default desk); schedule → its target;
+`desk` and None resolve to the desk id. Every routed event = one board item + one inbox
+row, in that order, so both exist before `conversation.post` wakes the turn — there is no
+automation path, a trigger produces an ordinary turn. `route_connector_event(app, name,
+title, content, meta=None, conversation_id=None)` is the convenience the connector loader
+calls. Thread events are also written directly by `conversation.runner._notify_parent`
+(the same two writes with the same policy setting).
 
 ### 11.3 Policy: interrupt vs queue
 Per source: `trigger_policy.<class>` settings with defaults thread_event=interrupt,
@@ -760,33 +783,42 @@ the UI's board panel. Turns produced by triggers run at priority 1.
 
 ## 12. Surface API
 
-### 12.1 REST (prefix `/api`)
+### 12.1 REST (prefix `/api`; as built 2026-09-20)
 ```
-GET  /conversations?kind&status         POST /conversations {kind:'thread', goal, scope_note?, roots?, role?}
-GET  /conversations/{id}                GET  /conversations/{id}/events?after&before&limit&kinds
-PATCH /conversations/{id} {title?, preset?, step_budget?}   GET /conversations/{id}/artifacts   GET /artifacts/{id}?offset&limit
-POST /conversations/{id}/messages {content}     POST /conversations/{id}/cancel
-POST /conversations/{id}/archive        GET  /conversations/{id}/occupancy
-GET  /approvals?status                  POST /approvals/{id} {decision: allow|deny|allow_always, add_root?: bool}
-GET  /items?unseen                      POST /items/{id}/seen   POST /items/{id}/dismiss
+GET  /conversations?kind&status&include_archived   POST /conversations {goal, scope_note?|project_name?, aliases?, roots?, preset?, title?, parent_id?, excerpt?}
+GET  /conversations/{id}                PATCH /conversations/{id} {title?, preset?, step_budget?, clear_preset?}
+GET  /conversations/{id}/events?after&before&limit&kinds
+POST /conversations/{id}/messages {content}  → 202 {inbox_id}; 409 when no model is configured
+POST /conversations/{id}/cancel         POST /conversations/{id}/archive
+GET  /conversations/{id}/occupancy      GET  /conversations/{id}/artifacts     GET /artifacts/{id}?offset&limit
+GET  /approvals?status                  GET  /approvals/{id}   POST /approvals/{id} {decision: allow|deny|allow_always, add_root?}
+GET  /items?unseen&include_dismissed    GET  /items/{id}   POST /items/{id}/seen   POST /items/{id}/dismiss
 GET  /vault/tree                        GET  /vault/note?path   PUT /vault/note {path, content}   DELETE /vault/note?path
-GET  /vault/search?q&type&k             GET  /vault/history?path   GET /vault/recent-changes?n   POST /vault/revert {commit, path?}
-GET  /vault/diff?sha&path               GET  /vault/core (block fill)   GET /vault/wanted (dangling links)
+GET  /vault/search?q&type&k             GET  /vault/history?path   GET /vault/recent-changes?n   GET /vault/diff?sha&path
+POST /vault/revert {commit, path?}      GET  /vault/graph?center&depth   GET /vault/core   GET /vault/wanted
 GET  /vault/procedures                  POST /vault/procedures/{name}/approve
-GET  /vault/status?path                 PUT  /vault/status {path, fields, owner?}
-GET  /vault/graph?center&depth&limit    (nodes/edges for the optional graph view)
-GET  /settings  PATCH /settings         (values + schema)
-CRUD /providers  /presets  /model-roles  /tool-policies  /roots  /protected-paths  /mcp-servers  /connectors  /schedules
-POST /providers/{name}/probe            POST /presets/{name}/test   (one short completion; reports latency + usage)
-POST /mcp-servers/{id}/refresh          POST /connectors/{name}/reload
-GET  /models?provider                   (probe: list models available at a provider)
-GET  /system/health  /system/version  /system/queue  /system/logs?since&level&limit
-GET  /system/setup                      POST /system/setup {provider?, model, embedding_model?,
-                                             timezone?, projects_root?, openrouter?{base_url,api_key}}
+GET  /vault/status?path                 PUT  /vault/status {path, fields}
+GET  /settings  PATCH /settings {key: value}          (values + schema + groups; all-or-nothing validation)
+GET/POST /providers  GET/PATCH/DELETE /providers/{name}   POST /providers/{name}/probe
+GET/POST /presets    GET/PATCH/DELETE /presets/{name}     POST /presets/{name}/test
+GET  /model-roles    PUT /model-roles/{role} {preset}     GET /models?provider → {providers: [{provider, models, error}]}
+GET  /tool-policies  PUT/DELETE /tool-policies/{tool}     (tool may be a path-class key `<tool>:<prefix>`)
+GET/POST /roots  DELETE /roots?path      GET/POST /protected-paths  DELETE /protected-paths?path → 202 + approval
+GET  /secrets → {names, backend, warning}   PUT /secrets/{name} {value}   DELETE /secrets/{name}
+GET/POST /mcp-servers  GET/PATCH/DELETE /mcp-servers/{id}   POST /mcp-servers/{id}/refresh|test|reload
+GET  /connectors  GET/PATCH /connectors/{name} {enabled?, config?}   POST /connectors/{name}/reload
+GET/POST /schedules  GET/PATCH/DELETE /schedules/{id}   POST /schedules/{id}/run
+GET  /maintenance    POST /maintenance/run
+GET  /system/health  /system/version  /system/queue  /system/logs?since&level&limit → {records}
+GET  /system/setup   POST /system/setup {provider?, model, embedding_model?, timezone, projects_root, openrouter?}
 POST /system/reindex
-POST /system/promote {ref}              POST /system/rollback
+GET  /system/promote/plan?ref   POST /system/promote {ref, acknowledge_protected}   POST /system/rollback
+GET  /system/promote/log   GET /system/snapshots   GET /system/supervisor   POST /system/restart
 ```
-All mutations emit a matching WS event so every surface stays consistent.
+Update verbs: `PATCH` for partial row updates (providers, presets, conversations, mcp
+servers, connectors, schedules, settings); `PUT` where the body replaces the whole value
+(roles, tool policies, secrets, vault note/status). All mutations emit a matching WS
+event so every surface stays consistent.
 
 ### 12.2 WebSocket `/ws`
 One multiplexed socket; client sends `{subscribe: {conversations: [...] | "all"}}`.
@@ -806,6 +838,7 @@ tool.result                         data: {call_id, name, ok, preview, artifact_
 inbox.posted                        data: {id, source}
 models.changed                      data: {kind: provider|preset|role, name}
 approval.requested|resolved         data: approval row
+schedule.created|updated|deleted    data: schedule row
 item.created|updated                data: item row
 notification                        data: {title, body, item_id}
 knowledge.changed                   data: {paths}
