@@ -272,13 +272,13 @@ export const api = {
   // -- integrations ----------------------------------------------------------
   mcpServers: () => get<McpServer[]>("/mcp-servers"),
   createMcpServer: (body: Partial<McpServer>) => post<McpServer>("/mcp-servers", body),
-  updateMcpServer: (id: string, body: Partial<McpServer>) => put<McpServer>(`/mcp-servers/${id}`, body),
+  updateMcpServer: (id: string, body: Partial<McpServer>) => patch<McpServer>(`/mcp-servers/${id}`, body),
   deleteMcpServer: (id: string) => del<unknown>(`/mcp-servers/${id}`),
   refreshMcpServer: (id: string) => post<McpServer>(`/mcp-servers/${id}/refresh`),
   testMcpServer: (id: string) => post<{ ok: boolean; error?: string; tools?: unknown[] }>(`/mcp-servers/${id}/test`),
   connectors: () => get<Connector[]>("/connectors"),
   updateConnector: (name: string, body: Partial<Connector>) =>
-    put<Connector>(`/connectors/${encodeURIComponent(name)}`, body),
+    patch<Connector>(`/connectors/${encodeURIComponent(name)}`, body),
   reloadConnector: (name: string) => post<Connector>(`/connectors/${encodeURIComponent(name)}/reload`),
   secrets: () => get<SecretsInfo>("/secrets"),
   putSecret: (name: string, value: string) => put<unknown>(`/secrets/${encodeURIComponent(name)}`, { value }),
@@ -287,7 +287,7 @@ export const api = {
   // -- triggers --------------------------------------------------------------
   schedules: () => get<Schedule[]>("/schedules"),
   createSchedule: (body: Partial<Schedule>) => post<Schedule>("/schedules", body),
-  updateSchedule: (id: string, body: Partial<Schedule>) => put<Schedule>(`/schedules/${id}`, body),
+  updateSchedule: (id: string, body: Partial<Schedule>) => patch<Schedule>(`/schedules/${id}`, body),
   deleteSchedule: (id: string) => del<unknown>(`/schedules/${id}`),
   runSchedule: (id: string) => post<unknown>(`/schedules/${id}/run`),
 

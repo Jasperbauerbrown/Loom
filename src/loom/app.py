@@ -133,6 +133,7 @@ INSTALL_ORDER: list[str] = [
     "loom.artifacts",
     "loom.tools.native",
     "loom.knowledge",
+    "loom.knowledge.maintenance",
     "loom.conversation",
     "loom.triggers",
     "loom.connectors",
