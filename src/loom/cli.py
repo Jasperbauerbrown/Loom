@@ -249,9 +249,16 @@ def _render_event(event: dict[str, Any], quiet: bool) -> str:
     if kind == "assistant":
         return content
     if kind == "tool_call" and not quiet:
-        meta = event.get("meta") or {}
-        name = meta.get("name") or meta.get("tool") or "tool"
-        return f"  · {name}({_compact(meta.get('args'))})"
+        # content is the JSON list [{"id","name","arguments"}] (03 §4.2); meta.text is any preamble
+        try:
+            calls = json.loads(content) if content else []
+        except ValueError:
+            calls = []
+        lines = [f"  · {c.get('name', 'tool')}({_compact(c.get('arguments'))})" for c in calls if isinstance(c, dict)]
+        preamble = (event.get("meta") or {}).get("text")
+        if preamble:
+            lines.insert(0, str(preamble))
+        return "\n".join(lines) if lines else "  · tool call"
     if kind == "tool_result" and not quiet:
         return f"  → {_compact(content, 120)}"
     if kind == "system":

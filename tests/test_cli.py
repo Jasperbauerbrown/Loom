@@ -91,9 +91,13 @@ def test_event_rendering():
     assert cli._render_event({"kind": "assistant", "content": "hi"}, False) == "hi"
     assert cli._render_event({"kind": "thinking", "content": "hmm"}, False) == ""
     assert cli._render_event({"kind": "system", "content": "failed"}, False) == "! failed"
-    line = cli._render_event({"kind": "tool_call", "meta": {"name": "shell", "args": {"command": "ls"}}}, False)
-    assert line.startswith("  · shell(")
-    assert cli._render_event({"kind": "tool_call", "meta": {"name": "shell"}}, True) == ""
+    # tool_call content is the persisted JSON list of calls (03 §4.2); meta.text is a preamble
+    content = '[{"id": "c1", "name": "shell", "arguments": {"command": "ls"}}]'
+    line = cli._render_event({"kind": "tool_call", "content": content, "meta": {"text": ""}}, False)
+    assert line.startswith("  · shell(") and "ls" in line
+    two = cli._render_event({"kind": "tool_call", "content": content, "meta": {"text": "Checking."}}, False)
+    assert two.splitlines()[0] == "Checking." and two.splitlines()[1].startswith("  · shell(")
+    assert cli._render_event({"kind": "tool_call", "content": content, "meta": {}}, True) == ""
 
 
 def test_exit_codes_match_the_documented_statuses():

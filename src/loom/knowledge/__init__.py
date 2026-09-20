@@ -35,16 +35,20 @@ def install(app: Any) -> None:
 
 
 async def start(app: Any) -> None:
+    import asyncio
+
     try:
         if app.index.stale():
-            result = await app.index.a_rebuild()
+            result = await asyncio.to_thread(app.index.rebuild)
             log.info(
                 "vault index rebuilt: %s notes, %s aliases, %s links in %sms",
                 result["notes"], result["aliases"], result["links"], result["ms"],
             )
         else:
             app.index.load()
-            await app.index.embed_pending()
+        # Embeddings need a model call (and may load the embedding model): never hold
+        # startup for them. Alias/FTS retrieval works meanwhile; vectors arrive shortly.
+        app.spawn("vault-embed-startup", app.index.embed_pending())
     except Exception:
         log.exception("knowledge: index startup failed; retrieval degrades to what is indexed")
     app.watcher.start()
