@@ -11,6 +11,8 @@ ROUTERS: list[str] = [
     "loom.server.routers.secrets",
     "loom.server.routers.items",
     "loom.server.routers.vault",
-    # "loom.server.routers.integrations",
-    # "loom.server.routers.schedules",
+    "loom.server.routers.maintenance",
+    "loom.server.routers.integrations",
+    "loom.server.routers.schedules",
+    "loom.server.routers.promote",
 ]

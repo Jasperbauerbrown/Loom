@@ -1,0 +1,1 @@
+List every schedule: id, spec, target conversation, policy, next firing in local time, how many times it has fired, whether it is enabled, and who created it. Read this before creating a schedule that may already exist, and before telling the person what you have set up. No arguments.

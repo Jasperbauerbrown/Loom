@@ -1,0 +1,1 @@
+Delete a schedule so it never fires again. Argument: `id` (from `schedule_list`). Deleting one you did not create is allowed — there is one person here — but say which one you removed. To pause rather than remove, the person can disable it in Settings → Triggers.

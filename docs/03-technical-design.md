@@ -57,12 +57,12 @@ loom/
     knowledge/     vault.py  index.py  resolve.py  watcher.py  git.py  maintenance.py
     tools/         registry.py  dispatch.py  permissions.py  shell_prefilter.py  fs_guard.py
                    native/ (fs.py shell.py http.py knowledge.py conversation.py schedule.py artifacts.py search.py)
-    connectors/    loader.py  base.py  mcp/ (client.py transports.py)
+    connectors/    loader.py  base.py  mcp/ (client.py transports.py manager.py)
     triggers/      scheduler.py  router.py  items.py
     server/        app.py  ws.py  routers/ (conversations approvals items vault settings system)
     secrets.py     artifacts.py  promote.py
   prompts/         *.md (all model-facing text; §16)
-  connectors/      # native connector packages discovered at start (may be empty)
+  connectors/      # native connector packages discovered at start; README.md + example_echo/
   ui/              # React + Vite + TS; builds into ui-dist/ (committed)
   ui-dist/
   tests/
@@ -567,21 +567,76 @@ with short templates. The agent writes learned preferences there (charter §5.4 
 "prompt as learned artifact"). Hard cap per block; the UI shows fill level.
 
 ### 8.6 Maintenance role
-One asyncio task, runs when the model queue has been idle ≥ `maintenance_idle_seconds`
-(120) or on schedule (default nightly 03:00), under a single lock, priority 2.
-Each pass, using `prompts/maintenance-*.md`:
-1. **Consolidation sweep**: for each conversation with events past `maint_watermark`,
-   show the new user/assistant events (tool results excluded) and the current related
-   notes; ask for `knowledge_write` calls for durable facts missed inline. Advance
-   watermark. Batches by conversation so facts form from coherent units (Supermemory
-   "dreaming" lesson).
-2. **Curation**: candidate pairs from alias collisions and cosine ≥ 0.92; propose
-   merges/edits; apply via `knowledge_write` (targeted ops); `rethink` allowed here with
-   a reason. Refresh dangling links.
-3. **Housekeeping**: archive idle threads; prune artifacts of archived conversations
-   past retention; `git commit` the vault as `maintenance: <date>`.
-Everything it did is visible: the vault UI's *Recent changes* view is `git log` with
-one-click revert (`git revert`/`checkout -- path`). No approval gate (takeaways §3).
+`knowledge/maintenance.py` — `app.maintenance`. One asyncio task; one `asyncio.Lock`;
+every model call at priority 2 with `purpose="maintenance"` and the `maintenance` role.
+A pass is always the same three stages in the same order, whatever started it.
+
+**Scheduling.** The task polls `models.queue_state()` every 15s. A pass runs when either
+
+- the queue has been idle ≥ `maintenance_idle_seconds` (120), the previous pass is at
+  least that far behind, **and** there is work a pass *clears* (a conversation with
+  events past its watermark, an archivable thread, or a dirty vault — curation
+  candidates deliberately do not count: a pair the model leaves alone would re-trigger a
+  pass every idle window forever; curation rides along on passes other work started); or
+- the nightly slot (`maintenance_nightly_at`, default 03:00 local) has passed and no
+  pass has run for it — nightly always runs, work or not.
+
+The nightly rule compares the date of the most recent slot against the last slot a pass
+ran for. At startup the current slot counts as handled, so a restart never fires a
+catch-up pass and a clock change cannot fire one twice. Nothing is persisted: an idle
+pass covers anything a missed nightly would have.
+
+A second `run()` while a pass is in flight returns the in-progress report; passes never
+queue, because the next pass would see the same world. `maintenance_enabled` off stops
+the schedule, not `POST /maintenance/run`.
+
+**1. Consolidation sweep.** For each non-archived conversation with `events.id >
+maint_watermark`: take the `user`, `assistant` and `tool_call` events (tool *results*
+are never shown), render them with the compaction renderer, and split into batches of
+≈ 12,000 characters, oldest first. Each batch is one model conversation: the excerpt,
+plus the notes `index.search` returns for it (6, each capped at 1,500 chars) so the
+model edits what exists instead of duplicating it. Tools offered: `knowledge_search`,
+`knowledge_read`, `knowledge_write`, `knowledge_links`, and at most 6 tool-call rounds.
+The watermark advances to the last event of a batch only after that batch completes, and
+to the conversation's max event id when every batch does — so a model failure (logged in
+`report.errors`) re-shows exactly the events that were not consolidated. Conversations
+whose new events are all of unshown kinds advance the watermark with no model call.
+
+**2. Curation.** Candidates, deterministic and cheap: alias collisions (one normalised
+alias, two paths), near-duplicate pairs (`index.nearest`, k=3, cosine ≥
+`curation_similarity`, default 0.92), and dangling links (`index.dangling()`). Capped at
+10 per pass. Each candidate is one model conversation showing both note bodies (capped
+at 3,000 chars, older path labelled, because a merge keeps the older path) or the
+dangling target and the lines that link to it. `rethink` is allowed here, with a reason.
+
+**3. Housekeeping.** Archive `done`/`failed` threads whose `updated_at` is older than
+`thread_archive_days`; prune archived conversations' artifacts past
+`artifact_retention_days` (files then rows); commit external vault edits (§8.8); then a
+safety-net `maintenance: <YYYY-MM-DD>` commit, normally a no-op because the knowledge
+tools commit per write.
+
+**Approvals during a pass (decided 2026-09-20).** `knowledge_write:core/` is `ask`, and a
+pass has no turn to pause and no user waiting. One behaviour, no special case in the
+dispatcher: the call goes through the ordinary dispatcher, and an `ApprovalNeeded` is
+**denied immediately** — so no stale pending row sits on the now board pointing at a turn
+that will never resume — and the proposal is posted as a `knowledge` item carrying
+`action = {kind: "knowledge_write", args: {...}}`, which the person can act on. The model
+is told the write was skipped and not to retry it, and the sweep continues; the watermark
+still advances, because the pass did consider those events. Denying the row would wake
+the desk, so the desk's turn lock is held across the decision (an already-locked
+conversation needs no help — `wake` declines it too).
+
+**Visibility instead of approval** (takeaways §3). The pass emits
+`maintenance.progress {stage, message}`, keeps the last report on the instance
+(`GET /maintenance`), posts one `knowledge` item summarising a pass that changed
+something (`notify=False`), and every vault change is a git commit in the vault UI's
+*Recent changes* view, one click from revert. No approval gate on the pass itself.
+
+**Report** (`GET /maintenance` → `{running, enabled, reason, idle_seconds,
+idle_seconds_remaining, next_nightly_at, last_report}`):
+`{started_at, finished_at, reason, consolidated: [{conversation_id, events, writes}],
+curated: {candidates, applied}, archived, pruned_artifacts, committed, external_commit,
+errors}`.
 
 ### 8.7 Transcript recall
 `events_fts` is maintained by triggers on `events`. `transcript_search` returns the
@@ -591,8 +646,12 @@ event, its conversation title and timestamp, and neighbours (±2 events) on requ
 Polling (`os.scandir` + mtime/size) every `vault_poll_seconds` (2). No `watchfiles`
 dependency; thousands of files scan in milliseconds. External edits (Obsidian) are
 indexed within one poll and emitted as `knowledge.changed` so open UI views refresh.
-The vault git repo auto-commits external changes as `user: edit <path>` on the next
-maintenance pass (so history stays complete without committing on every keystroke).
+The vault git repo auto-commits external changes on the next maintenance pass (so
+history stays complete without committing on every keystroke): `user: edit <path>` for
+one file, `user: edit <n> files: a, b, … (+k more)` for several, naming up to five.
+`auto_commit_external_edits` off means the pass commits *nothing*: the safety-net commit
+stages the whole worktree, so running it would commit the very edits the setting says to
+leave alone.
 
 ## 9. Tools
 
@@ -698,18 +757,34 @@ the tool_call event `meta` and shown in the UI on hover.
 
 ## 10. Connectors and MCP
 
-### 10.1 MCP client (scratch, spec 2026-07-28 subset)
-- Transports: **stdio** (spawn `command args`, JSON-RPC over newline-delimited
-  frames, env from row with secrets substituted) and **streamable HTTP** (POST
-  requests, SSE for streams; no session assumption — per-request `_meta`).
+### 10.1 MCP client (scratch; built, protocol version `2025-06-18`)
+- Transports: **stdio** (spawn `command args`, JSON-RPC 2.0 over newline-delimited
+  frames, env from the row with secrets substituted; stderr kept in a 50-line ring and
+  quoted in `last_error`; Windows spawns with `CREATE_NO_WINDOW` and resolves `command`
+  through `shutil.which`) and **streamable HTTP** (POST per request with
+  `Accept: application/json, text/event-stream`; the answer is one JSON message or an
+  SSE stream read until the matching response arrives, dispatching notifications on the
+  way; `Mcp-Session-Id` is echoed on later requests once seen). *Cut visibly:* the
+  optional standalone GET listening stream is not implemented, so a server can push
+  notifications only while a request of ours is open — which `tools/list_changed`
+  survives, since a refresh is a request.
 - Methods: `initialize`, `notifications/initialized`, `tools/list` (cached in
   `tools_cache`, refreshed on `notifications/tools/list_changed` or manual refresh),
-  `tools/call`, `ping`. Resources/prompts/sampling/elicitation: not in v1; the client
-  returns a clear error if a server requires them.
-- Tool annotations (`readOnlyHint`, `destructiveHint`) flow into policy defaults.
+  `tools/call`, `ping`. Resources/prompts/sampling/elicitation: not in v1 — a
+  server→client request for any of them is answered with JSON-RPC error -32601 rather
+  than ignored, so the server fails clearly instead of hanging.
+- Tool results are flattened into the one string a `ToolResult` carries: text parts
+  concatenated, other parts noted as `[image <mime>, N bytes]`; `isError` → `ok=False`.
+- Tool annotations (`readOnlyHint`, `destructiveHint`) flow into policy defaults; no
+  `tool_policies` row is inserted (§9.3 rule 3 already fails closed).
+- `app.mcp` (`connectors/mcp/manager.py`) owns the rows: `connect/disconnect/reload/
+  refresh/test/create/update/delete`, each keeping the live client, the registry and the
+  row in step and emitting `mcp.status`. `start()` spawns one task per enabled row, so a
+  slow server never delays startup.
 - Failure: a server that fails to start or times out is marked `status=error` with
-  `last_error`, its tools are removed from the registry, and a *setup* item is posted.
-  Never fatal to the backend. Reconnect with backoff.
+  `last_error`, its tools are removed from the registry, and one *setup* item is posted
+  (de-duplicated while an undismissed one exists, so a retry loop cannot bury the now
+  board). Never fatal to the backend. Reconnect with backoff 5s → 5min while enabled.
 
 ### 10.2 Native connectors
 `connectors/<name>/__init__.py` exports `CONNECTOR = Connector(...)`:
@@ -723,13 +798,39 @@ Connector(name, description,
 ```
 Loader imports each package in a try/except; failure → `connectors.status=error`, item
 posted, backend continues. Enable/disable and config edits take effect on `reload`
-(POST) which re-imports the module; a full restart is never required for a connector
-change but is always safe. Events from a connector go to the router (§11.2).
+(POST) which re-executes the module; a full restart is never required for a connector
+change but is always safe. Events from a connector go to the router (§11.2), as
+`route_connector_event(app, name, title, content, meta, conversation_id)` — the
+connector's `config.conversation_id`, or the desk.
+
+Decided while building:
+- **Statuses** are `disabled | needs_config | loaded | error`. A discovered package is
+  `enabled = 1` on first sight (it is in `connectors/` because the user put it there),
+  but one whose `config_schema` has unset **required** fields stops at `needs_config`
+  with a setup item rather than running half-configured.
+- **`config_schema`** is the subset the Settings form renders: `properties` with
+  `type` / `enum` / `default` / `title` / `description`, plus `required`. `set_config`
+  validates against exactly that (unknown key, wrong type or bad enum → 400) and fills
+  defaults, so no setting exists that the UI cannot show. `conversation_id` is always
+  accepted and routes the connector's events to a thread instead of the desk.
+- **Tools** are renamed `<connector>_<tool>` and sourced `connector:<name>` by the
+  loader, so a connector author writes plain `Tool`s.
+- **Event tasks** run under `app.spawn("connector:<name>:events")`; an exception marks
+  the connector `error`, posts an item and restarts with backoff 5s → 5min.
+- **Surfaces** get a `SurfaceApi` (§12.3): `send`, `subscribe` (returns an unsubscribe),
+  `answer_approval`, `list_conversations` — thin wrappers over `conversation.post`, the
+  bus, `approvals.decide` and the conversations table, so a surface has the web UI's
+  powers and no private path.
+- The connectors folder is `<repo>/connectors/` (`LOOM_CONNECTORS_DIR` overrides it for
+  tests). `connectors/README.md` is the author's guide and `connectors/example_echo/`
+  the reference package: one read-only `echo` tool and an optional tick event source.
 
 ### 10.3 Knowledge entity per integration
 When an MCP server or connector is added, the backend creates
 `vault/connectors/<name>.md` (from `prompts/templates/connector-note.md`) with the
 tool list and a placeholder for "when to use"; the agent fills it during first use.
+The tool list lives between `<!-- tools:begin -->` and `<!-- tools:end -->` and is the
+only part a refresh rewrites, so whatever the agent wrote around it survives.
 Tier-1 integrations (charter §5.8) are just notes the agent writes.
 
 ## 11. Triggers and scheduler
@@ -807,6 +908,7 @@ GET/POST /roots  DELETE /roots?path      GET/POST /protected-paths  DELETE /prot
 GET  /secrets → {names, backend, warning}   PUT /secrets/{name} {value}   DELETE /secrets/{name}
 GET/POST /mcp-servers  GET/PATCH/DELETE /mcp-servers/{id}   POST /mcp-servers/{id}/refresh|test|reload
 GET  /connectors  GET/PATCH /connectors/{name} {enabled?, config?}   POST /connectors/{name}/reload
+     (connector rows carry config_schema, description, facets, tool names and missing_config)
 GET/POST /schedules  GET/PATCH/DELETE /schedules/{id}   POST /schedules/{id}/run
 GET  /maintenance    POST /maintenance/run
 GET  /system/health  /system/version  /system/queue  /system/logs?since&level&limit → {records}
@@ -846,6 +948,8 @@ settings.changed                    data: {keys}
 models.changed                      data: {kind: provider|preset|role, name}
 connector.status|mcp.status         data: row
 system.queue                        data: {depth, running}
+maintenance.progress                data: {stage: start|consolidate|curate|housekeep|done,
+                                           message}
 promote.progress                    data: {stage, ok, message}
 ```
 Surfaces render what they understand and ignore the rest (charter §5.2).
@@ -884,7 +988,9 @@ over the WS stream (one reducer per event type) with REST for initial loads. Bui
   classifier reason if any and the `allow always` option.
 - **Settings** — every knob (§13.2), rendered from schema.
 - **System**. Version and release pointer, promote/rollback with progress, logs tail,
-  queue, connector and MCP status, reindex, snapshot list.
+  queue, connector and MCP status, reindex, snapshot list, and maintenance: whether a
+  pass is running, when the nightly one is next due, the last pass's report, and a
+  *run maintenance now* button (`POST /maintenance/run`, live via `maintenance.progress`).
 
 ### 13.2 Settings inventory (all UI-visible; groups map to `config.py` dataclasses)
 - **General**: display name, timezone, bind address, LAN token, projects root, theme.

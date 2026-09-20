@@ -546,3 +546,39 @@ sessions do not re-litigate.
 - **2026-09-20** — Procedures written by Loom itself are approved at write time; the
   approval item exists for skills copied in from outside. Wikilinks resolve a procedure
   by its folder name, not the literal `SKILL` stem.
+- **2026-09-20** — Maintenance role built (`03` §8.6): one lock, priority 2, three stages
+  (consolidate → curate → housekeep), scheduled by an idle window with work or the
+  nightly slot; passes never queue.
+- **2026-09-20** — An approval raised *during* a maintenance pass is denied immediately
+  and re-posted as a `knowledge` item with the proposed call: a pass has no turn to
+  resume, so a pending row would point at nothing. The person still decides; the pass
+  never waits. Watermarks advance anyway.
+- **2026-09-20** — `knowledge.auto_commit_external_edits` off means a maintenance pass
+  commits nothing at all: the safety-net `maintenance: <date>` commit stages the whole
+  worktree and would otherwise commit the user's uncommitted edits regardless.
+- **2026-09-20** — The nightly slot is tracked in memory as "the date of the last slot a
+  pass ran for", seeded at startup with the current slot: no migration, no catch-up pass
+  on every restart, and a clock change cannot fire a slot twice.
+- **2026-09-20** — Triggers built. One write path for "event → inbox + item"
+  (`triggers.router.route`), used by the scheduler and by connector events; the board
+  item is written before the inbox row, so both rows exist before `conversation.post`
+  wakes the turn. `run_now` fires without shifting `next_run_at`; a schedule whose target
+  conversation is gone is disabled, not retried.
+- **2026-09-20** — `tzdata` added as a runtime dependency (`03` §19). Windows ships no
+  IANA database, so `zoneinfo` raises there and every "local time" in the scheduler and
+  the maintenance role would silently fall back to UTC. It is data, not code, and there
+  is no stdlib alternative.
+- **2026-09-20** — Integrations built: scratch MCP client (stdio + streamable HTTP,
+  protocol `2025-06-18`), the `app.mcp` manager, the native-connector loader, and the
+  `/mcp-servers` + `/connectors` endpoints. Four decisions recorded in `03` §10: (a) a
+  discovered connector is enabled by default — it is in `connectors/` because the user
+  put it there — but unset **required** config stops it at the new `needs_config` status
+  with a setup item, never half-configured; (b) the streamable-HTTP transport omits the
+  optional standalone GET listening stream, so a server pushes notifications only while
+  one of our requests is open (which `tools/list_changed` survives, a refresh being a
+  request); (c) a server→client `sampling/createMessage` or `elicitation/create` is
+  answered with JSON-RPC -32601 rather than ignored, so an unsupported server fails
+  clearly instead of hanging; (d) the connector note's tool list is delimited by
+  `<!-- tools:begin/end -->` and is the only part a refresh rewrites, so the agent's
+  "when to use" prose survives. Setup items are de-duplicated per source while one is
+  undismissed, so a 5s→5min reconnect loop cannot bury the now board.
