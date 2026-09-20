@@ -96,7 +96,9 @@ async def test_procedure_approval_endpoint(client):
     folder.mkdir(parents=True)
     (folder / "SKILL.md").write_text("---\nname: third-party\ndescription: outside\n---\nsteps\n", encoding="utf-8")
 
-    listed = (await client.get("/api/vault/procedures")).json()
+    # Loom ships its own procedures (self-modification, 03 §15.1); this is about the
+    # one that arrived from outside.
+    listed = [p for p in (await client.get("/api/vault/procedures")).json() if p["name"] == "third-party"]
     assert listed == [
         {
             "name": "third-party",

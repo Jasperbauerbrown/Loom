@@ -14,10 +14,12 @@ A loopback HTTP server on `port + 1` answers `GET /status`, `POST /restart`,
 `POST /promote {ref}` and `POST /rollback`; every request must carry
 `X-Supervisor-Token` matching `H/supervisor.token` (random, owner-only).
 
-Promotion here is only the *process* half: stop, switch the pointer, start, watch
-health, revert if it does not hold. The worktree/snapshot/probe steps of 03 §15.2 are
-the self-modification package's; they have named seams below that raise until it lands,
-and nothing calls them yet.
+Promotion is the whole of 03 §15.2 steps 5–10: snapshot, build the release worktree,
+probe it on a scratch home, swap the pointer, restart, watch health, and restore
+everything (pointers, and the database when migrations ran) if it does not hold. Every
+stage appends a JSON line to `H/promote.log`, which the backend tails and republishes
+as `promote.progress`; the backend cannot be told directly because it is the thing
+being restarted.
 
 Windows note (decided 2026-09-20): the child is started with CREATE_NEW_PROCESS_GROUP
 and its tree is killed with `taskkill /T /F`. A Job Object would be tidier but needs
@@ -32,11 +34,13 @@ import http.server
 import json
 import os
 import queue
+import shutil
 import signal
 import socketserver
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -133,25 +137,331 @@ def repo_root() -> Path:
 
 
 def python_for(release_dir: Path | None) -> str:
-    """The interpreter that runs the backend. In development that is the one running
-    this supervisor, which by construction can import `loom`. A promoted release will
-    get its own virtualenv; the self-modification package returns its python here."""
+    """The interpreter that runs the backend: a release's own virtualenv (written by
+    `uv sync` in `create_release`) when it has one, otherwise the interpreter running
+    this supervisor, which by construction can import `loom`."""
+    if release_dir is not None:
+        for relative in ("Scripts/python.exe", "bin/python"):
+            candidate = Path(release_dir) / ".venv" / relative
+            if candidate.exists():
+                return str(candidate)
     return sys.executable
 
 
 # ---------------------------------------------------------------------------------
-# seams for the self-modification package (03 §15.2). Not called yet.
+# release building: 03 §15.2 steps 5–7. Stdlib only, Windows-safe, no `loom` import.
 # ---------------------------------------------------------------------------------
+class ReleaseError(RuntimeError):
+    """A release could not be built, probed or swapped. One class, one behaviour: the
+    caller logs it as a `failed` stage and restores whatever it had already changed."""
+
+
+def run_command(command: list[str], cwd: Path | str | None = None, timeout: float = 1800.0,
+                env: dict[str, str] | None = None) -> tuple[bool, str]:
+    """Run a command; return (ok, combined output). Never raises for a non-zero exit —
+    failure is an expected input here."""
+    try:
+        proc = subprocess.run(
+            command, cwd=str(cwd) if cwd else None, capture_output=True, text=True,
+            timeout=timeout, env=env,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"{command[0]}: {exc}"
+    return proc.returncode == 0, (proc.stdout or "") + (proc.stderr or "")
+
+
+def git(*args: str, cwd: Path | str | None = None, timeout: float = 900.0) -> tuple[bool, str]:
+    return run_command(["git", *args], cwd=cwd, timeout=timeout)
+
+
+def kill_tree(pid: int) -> None:
+    """Kill a process and everything it started (decided 2026-09-20: `taskkill /T /F`
+    on Windows, process groups elsewhere)."""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True)
+    else:
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except (OSError, ValueError):
+            pass
+
+
+def health_ok(port: int, timeout: float = 3.0) -> bool:
+    url = f"http://127.0.0.1:{port}{HEALTH_PATH}"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            if response.status != 200:
+                return False
+            return bool(json.loads(response.read().decode("utf-8")).get("ok"))
+    except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+        return False
+
+
+def stamp() -> str:
+    return time.strftime("%Y%m%d-%H%M%S")
+
+
+def copy_database(source: Path, target: Path) -> bool:
+    """A consistent copy through the sqlite backup API (WAL and all). A missing source
+    is not an error: a home with no state.db is a first run."""
+    if not source.exists():
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    src = sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=30.0)
+    try:
+        dst = sqlite3.connect(str(target), timeout=30.0)
+        try:
+            with dst:
+                src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    return True
+
+
+def user_version(state_db: Path) -> int:
+    """`PRAGMA user_version` — the migration number. Used to decide whether a failed
+    promotion left the database ahead of the release we are returning to."""
+    if not state_db.exists():
+        return 0
+    try:
+        conn = sqlite3.connect(f"file:{state_db}?mode=ro", uri=True, timeout=5.0)
+        try:
+            return int(conn.execute("PRAGMA user_version").fetchone()[0])
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return 0
+
+
+# -- step 5: snapshot ---------------------------------------------------------------
 def snapshot(home: Path) -> Path:
-    raise NotImplementedError("snapshot() lands with the self-modification package (03 §15.2 step 5)")
+    """`snapshots/<ts>/state.db` plus a `pre-<ts>` tag in the vault, then prune to
+    `system.snapshot_retention`. Persist before act: this runs before anything moves."""
+    ts = stamp()
+    folder = home / "snapshots" / ts
+    folder.mkdir(parents=True, exist_ok=True)
+    copy_database(home / "state.db", folder / "state.db")
+    vault = home / "vault"
+    if (vault / ".git").exists():
+        git("tag", "-f", f"pre-{ts}", cwd=vault, timeout=60)
+    prune_snapshots(home, int(read_setting(home, "system.snapshot_retention", 10)))
+    return folder
 
 
-def create_release(home: Path, ref: str) -> str:
-    raise NotImplementedError("create_release() lands with the self-modification package (03 §15.2 step 6)")
+def prune_snapshots(home: Path, keep: int) -> list[str]:
+    """Oldest first by name (the names are timestamps). Returns what was removed."""
+    root = home / "snapshots"
+    if not root.is_dir():
+        return []
+    folders = sorted([p for p in root.iterdir() if p.is_dir()], key=lambda p: p.name)
+    removed = []
+    for folder in folders[: max(0, len(folders) - max(1, keep))]:
+        shutil.rmtree(folder, ignore_errors=True)
+        removed.append(folder.name)
+    return removed
 
 
-def probe(home: Path, release: str, port: int) -> bool:
-    raise NotImplementedError("probe() lands with the self-modification package (03 §15.2 step 7)")
+def latest_snapshot(home: Path) -> Path | None:
+    root = home / "snapshots"
+    if not root.is_dir():
+        return None
+    folders = sorted([p for p in root.iterdir() if (p / "state.db").exists()], key=lambda p: p.name)
+    return folders[-1] if folders else None
+
+
+def restore_snapshot(home: Path, folder: Path) -> bool:
+    """Put a snapshot back. The backend is not running when this is called, so the
+    `-wal`/`-shm` siblings of the live database are stale and go with it."""
+    source = folder / "state.db"
+    if not source.exists():
+        return False
+    state = home / "state.db"
+    for suffix in ("-wal", "-shm"):
+        Path(str(state) + suffix).unlink(missing_ok=True)
+    shutil.copy2(source, state)
+    return True
+
+
+# -- step 6: create the release worktree --------------------------------------------
+def ensure_src_clone(home: Path, origin: Path | str | None = None) -> Path:
+    """`releases/src.git`: one bare clone of the assistant's own repo, the origin being
+    the checkout the supervisor runs from in development."""
+    src = home / "releases" / "src.git"
+    if (src / "HEAD").exists():
+        return src
+    source = Path(origin) if origin else repo_root()
+    src.parent.mkdir(parents=True, exist_ok=True)
+    ok, out = git("clone", "--bare", str(source), str(src))
+    if not ok:
+        raise ReleaseError(f"could not clone {source} into {src}: {out.strip()}")
+    git("remote", "set-url", "origin", str(source), cwd=src)
+    git("config", "remote.origin.fetch", "+refs/heads/*:refs/heads/*", cwd=src)
+    return src
+
+
+def create_release(home: Path, ref: str, origin: Path | str | None = None,
+                   deps: bool = True, build_ui: bool = True) -> str:
+    """Fetch, resolve `ref`, add a detached worktree at `releases/<ts>-<sha7>`, install
+    its dependencies, and build the UI bundle only when `ui/` actually moved. Returns
+    the release id."""
+    src = ensure_src_clone(home, origin)
+    git("fetch", "--prune", "--tags", "origin", cwd=src)
+    git("fetch", "origin", ref, cwd=src)  # a bare sha, or a branch that is not a head here
+    ok, out = git("rev-parse", "--verify", f"{ref}^{{commit}}", cwd=src)
+    if not ok:
+        raise ReleaseError(f"{ref} does not resolve to a commit in {src}: {out.strip()}")
+    sha = out.strip().splitlines()[-1].strip()
+    release = f"{stamp()}-{sha[:7]}"
+    dest = home / "releases" / release
+    ok, out = git("worktree", "add", "--detach", str(dest), sha, cwd=src)
+    if not ok:
+        raise ReleaseError(f"could not create the worktree {dest}: {out.strip()}")
+    if deps:
+        install_deps(dest)
+    if build_ui and ui_needs_building(home, src, dest, sha):
+        build_ui_bundle(dest)
+    return release
+
+
+def install_deps(release_dir: Path) -> None:
+    """`uv sync --frozen`, falling back to a plain sync when the lockfile moved."""
+    output = ""
+    for args in (["sync", "--frozen"], ["sync"]):
+        ok, output = run_command([sys.executable, "-m", "uv", *args], cwd=release_dir)
+        if ok:
+            return
+    raise ReleaseError(f"uv sync failed in {release_dir}: {output.strip()[-2000:]}")
+
+
+def current_sha(home: Path) -> str | None:
+    """The commit the live release (or the development checkout) sits on."""
+    pointer = home / "current"
+    release = pointer.read_text(encoding="utf-8").strip() if pointer.exists() else ""
+    directory = home / "releases" / release if release else repo_root()
+    if not directory.is_dir():
+        return None
+    ok, out = git("rev-parse", "HEAD", cwd=directory, timeout=60)
+    return out.strip() if ok else None
+
+
+def newest_mtime(path: Path) -> float:
+    if not path.exists():
+        return 0.0
+    newest = path.stat().st_mtime
+    for root, dirs, files in os.walk(path):
+        dirs[:] = [d for d in dirs if d != "node_modules"]
+        for name in files:
+            try:
+                newest = max(newest, os.stat(os.path.join(root, name)).st_mtime)
+            except OSError:
+                pass
+    return newest
+
+
+def ui_needs_building(home: Path, src: Path, release_dir: Path, sha: str) -> bool:
+    """`ui-dist/` is committed, so a fresh worktree usually already carries the bundle.
+    Build only when `ui/` moved since the live release and the bundle is missing or
+    older than the sources."""
+    base = current_sha(home)
+    if base:
+        ok, out = git("diff", "--name-only", base, sha, "--", "ui/", cwd=src, timeout=120)
+        if ok and not out.strip():
+            return False
+    dist = release_dir / "ui-dist"
+    if not dist.is_dir() or not any(dist.iterdir()):
+        return True
+    return newest_mtime(release_dir / "ui") > newest_mtime(dist)
+
+
+def build_ui_bundle(release_dir: Path) -> None:
+    npm = shutil.which("npm")
+    if npm is None:
+        raise ReleaseError("npm is not on PATH; this release changes ui/ and cannot be built")
+    for args in (["--prefix", "ui", "ci"], ["--prefix", "ui", "run", "build"]):
+        ok, out = run_command([npm, *args], cwd=release_dir)
+        if not ok:
+            raise ReleaseError(f"npm {' '.join(args)} failed: {out.strip()[-2000:]}")
+
+
+# -- step 7: probe -------------------------------------------------------------------
+def probe(home: Path, release: str, port: int, timeout_s: float = 60.0) -> bool:
+    """Start the release against a *copy* of the database in a scratch LOOM_HOME and
+    wait for health. Migrations run on the copy, so a release that cannot migrate is
+    caught before anything touches live state."""
+    release_dir = home / "releases" / release
+    if not release_dir.is_dir():
+        raise ReleaseError(f"no release at {release_dir}")
+    scratch = Path(tempfile.mkdtemp(prefix="loom-probe-"))
+    process: subprocess.Popen | None = None
+    try:
+        copy_database(home / "state.db", scratch / "state.db")
+        env = dict(os.environ)
+        env["LOOM_HOME"] = str(scratch)
+        src = release_dir / "src"
+        if src.is_dir():
+            env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(src), env.get("PYTHONPATH", "")]))
+        command = [
+            python_for(release_dir), "-m", "loom", "serve",
+            "--no-supervisor", "--no-browser", "--port", str(port),
+        ]
+        kwargs: dict[str, Any] = {
+            "cwd": str(release_dir), "env": env,
+            "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
+        }
+        if os.name == "nt":
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            kwargs["start_new_session"] = True
+        try:
+            process = subprocess.Popen(command, **kwargs)
+        except OSError as exc:
+            raise ReleaseError(f"could not start the probe: {exc}") from None
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            if process.poll() is not None:
+                return False
+            if health_ok(port, timeout=2.0):
+                return True
+            time.sleep(1.0)
+        return False
+    finally:
+        if process is not None and process.poll() is None:
+            kill_tree(process.pid)
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+# -- progress log --------------------------------------------------------------------
+PROGRESS_LOG = "promote.log"
+TERMINAL_STAGES = ("done", "failed")
+
+
+def log_progress(home: Path, stage: str, ok: bool, message: str, ref: str = "",
+                 conversation_id: str = "") -> dict[str, Any]:
+    """One JSON line per stage in `APP_HOME/promote.log`. The backend tails it and
+    republishes each line as a `promote.progress` event (03 §15.2 step 10) — a file,
+    because the backend being reported on is restarted halfway through."""
+    entry = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "stage": stage,
+        "ok": bool(ok),
+        "message": message,
+        "ref": ref,
+        "conversation_id": conversation_id,
+    }
+    try:
+        home.mkdir(parents=True, exist_ok=True)
+        with (home / PROGRESS_LOG).open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry) + "\n")
+    except OSError as exc:  # the log must never take a promotion down
+        print(f"supervisor: could not write {PROGRESS_LOG}: {exc}", flush=True)
+    print(f"supervisor: {stage}: {message}", flush=True)
+    return entry
 
 
 # ---------------------------------------------------------------------------------
@@ -252,24 +562,11 @@ class Supervisor:
 
     @staticmethod
     def kill_tree(pid: int) -> None:
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True)
-        else:
-            try:
-                os.killpg(pid, signal.SIGKILL)
-            except (OSError, ValueError):
-                pass
+        kill_tree(pid)
 
     # -- health -------------------------------------------------------------------
     def healthy(self, timeout: float = 3.0) -> bool:
-        url = f"http://127.0.0.1:{self.port}{HEALTH_PATH}"
-        try:
-            with urllib.request.urlopen(url, timeout=timeout) as response:
-                if response.status != 200:
-                    return False
-                return bool(json.loads(response.read().decode("utf-8")).get("ok"))
-        except (urllib.error.URLError, OSError, ValueError, TimeoutError):
-            return False
+        return health_ok(self.port, timeout)
 
     def watchdog(self, seconds: int) -> bool:
         """Health must be reachable and stay ok for the whole window."""
@@ -351,6 +648,7 @@ class Supervisor:
         self.promoted_at = None
         self.crash_times.clear()
         self.last_error = f"auto-rolled back to {target} after {max_crashes} crashes"
+        log_progress(self.home, "failed", False, self.last_error, target)
         self.spawn()
         return True
 
@@ -376,53 +674,99 @@ class Supervisor:
         elif action == "stop":
             self.stopping = True
         elif action == "promote":
-            self.do_promote(str(command.get("ref") or ""))
+            self.do_promote(str(command.get("ref") or ""), str(command.get("conversation_id") or ""))
         elif action == "rollback":
-            self.do_rollback()
+            self.do_rollback(str(command.get("conversation_id") or ""))
 
-    def do_promote(self, ref: str) -> None:
-        """Process mechanics only: point `current` at `ref`, restart, watch, revert if it
-        does not hold. Building the release (worktree, deps, UI, probe) is the
-        self-modification package's job; this refuses rather than pretends."""
-        release_dir = self.home / "releases" / ref
-        if not release_dir.is_dir():
-            self.last_error = f"promote: no release at {release_dir}; build it first (03 §15.2 steps 5–7)"
-            print(f"supervisor: {self.last_error}", flush=True)
-            return
-        before = self.current()
-        self.kill_child()
-        self.set_current(ref)
-        self.spawn()
-        seconds = int(read_setting(self.home, "system.promotion_watchdog_seconds", DEFAULT_WATCHDOG_SECONDS))
-        if self.watchdog(seconds):
+    def do_promote(self, ref: str, conversation_id: str = "") -> None:
+        """03 §15.2 steps 5–10. Snapshot, build, probe, swap, watch — and on any failure
+        put back exactly what was changed, in reverse order. Persist before act: the
+        snapshot exists before the worktree, `previous` before `current`."""
+        home = self.home
+        before_current, before_previous = self.current(), self.previous()
+        before_version = user_version(home / "state.db")
+        snapshot_dir: Path | None = None
+        swapped = False
+
+        def stage(name: str, ok: bool, message: str) -> None:
+            log_progress(home, name, ok, message, ref, conversation_id)
+
+        try:
+            stage("snapshot", True, "snapshotting state.db and tagging the vault")
+            snapshot_dir = snapshot(home)
+            stage("release", True, f"building a release worktree for {ref}")
+            release = create_release(home, ref)
+            probe_port = self.port + 2
+            stage("probe", True, f"probing {release} on port {probe_port}")
+            if not probe(home, release, probe_port):
+                raise ReleaseError(f"{release} did not answer {HEALTH_PATH} on the probe port")
+            stage("swap", True, f"stopping the backend and pointing current at {release}")
+            self.kill_child()
+            self.set_current(release)  # writes `previous` first, then `current`
+            swapped = True
+            self.spawn()
+            seconds = int(read_setting(home, "system.promotion_watchdog_seconds", DEFAULT_WATCHDOG_SECONDS))
+            stage("watchdog", True, f"watching health for {seconds}s")
+            if not self.watchdog(seconds):
+                raise ReleaseError(f"health did not hold for {seconds}s")
             self.last_error = ""
-            print(f"supervisor: promoted {ref}", flush=True)
-            return
-        print(f"supervisor: {ref} failed the watchdog — reverting", flush=True)
-        self.kill_child()
-        if before:
-            (self.home / "current").write_text(before, encoding="utf-8")
-        else:
-            (self.home / "current").unlink(missing_ok=True)
-        self.promoted_at = None
-        self.last_error = f"promotion of {ref} failed the {seconds}s watchdog; reverted"
-        self.spawn()
+            stage("done", True, f"promoted {release} ({ref})")
+        except Exception as exc:
+            self.last_error = f"promote {ref}: {exc}"
+            restored = ""
+            if swapped:  # nothing before the swap stops the running backend
+                restored = self.restore(before_current, before_previous, snapshot_dir, before_version)
+            where = before_current or "the development checkout"
+            stage("failed", False, f"{exc}; back on {where}{restored}")
 
-    def do_rollback(self) -> None:
+    def restore(self, current: str | None, previous: str | None,
+                snapshot_dir: Path | None, before_version: int) -> str:
+        """Undo a swap: pointers back, the pre-promotion database back when the new
+        release migrated it, backend restarted. Returns what to add to the log line."""
+        self.kill_child()
+        self.write_pointer("current", current)
+        self.write_pointer("previous", previous)
+        self.promoted_at = None
+        self.crash_times.clear()
+        note = ""
+        if snapshot_dir is not None and user_version(self.home / "state.db") > before_version:
+            if restore_snapshot(self.home, snapshot_dir):
+                note = f"; restored the snapshot {snapshot_dir.name} (schema had advanced)"
+        self.spawn()
+        return note
+
+    def write_pointer(self, name: str, value: str | None) -> None:
+        path = self.home / name
+        if value:
+            path.write_text(value, encoding="utf-8")
+        else:
+            path.unlink(missing_ok=True)
+
+    def do_rollback(self, conversation_id: str = "") -> None:
+        """03 §15.4: back to `previous`, restoring the snapshot when the schema moved
+        on (state written since is lost; the UI says so before confirming)."""
+        home = self.home
         target = self.previous()
         if not target:
             self.last_error = "rollback: no previous release recorded"
-            print(f"supervisor: {self.last_error}", flush=True)
+            log_progress(home, "failed", False, self.last_error, "", conversation_id)
             return
         current = self.current()
+        log_progress(home, "rollback", True, f"pointing current at {target}", target, conversation_id)
         self.kill_child()
-        (self.home / "current").write_text(target, encoding="utf-8")
-        if current:
-            (self.home / "previous").write_text(current, encoding="utf-8")
+        version_before = user_version(home / "state.db")
+        self.write_pointer("current", target)
+        self.write_pointer("previous", current)
+        note = ""
+        snapshot_dir = latest_snapshot(home)
+        if snapshot_dir is not None and user_version(snapshot_dir / "state.db") < version_before:
+            if restore_snapshot(home, snapshot_dir):
+                note = f"; restored the snapshot {snapshot_dir.name} (schema had advanced)"
         self.promoted_at = time.time()
         self.crash_times.clear()
+        self.last_error = ""
         self.spawn()
-        print(f"supervisor: rolled back to {target}", flush=True)
+        log_progress(home, "done", True, f"rolled back to {target}{note}", target, conversation_id)
 
     # -- control server ---------------------------------------------------------------
     def status(self) -> dict[str, Any]:
@@ -485,9 +829,15 @@ class Supervisor:
                     ref = str(payload.get("ref") or "")
                     if not ref:
                         return self.reply(400, {"detail": "ref is required"})
-                    supervisor.commands.put({"action": "promote", "ref": ref})
+                    supervisor.commands.put({
+                        "action": "promote", "ref": ref,
+                        "conversation_id": str(payload.get("conversation_id") or ""),
+                    })
                 elif path == "/rollback":
-                    supervisor.commands.put({"action": "rollback"})
+                    supervisor.commands.put({
+                        "action": "rollback",
+                        "conversation_id": str(payload.get("conversation_id") or ""),
+                    })
                 else:
                     return self.reply(404, {"detail": "not found"})
                 self.reply(202, {"queued": path.lstrip("/")})

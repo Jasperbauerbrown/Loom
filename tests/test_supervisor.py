@@ -9,6 +9,7 @@ import json
 import os
 import sqlite3
 import stat
+import subprocess
 import sys
 
 import pytest
@@ -113,11 +114,18 @@ def test_cli_builds_the_supervisor_argv_with_this_interpreter():
     assert "--port" in argv and "8599" in argv and "--fake" in argv
 
 
-def test_promote_refuses_a_release_that_was_never_built(tmp_path):
+def test_promote_refuses_a_ref_that_does_not_resolve(tmp_path):
+    """An empty bare clone stands in for `releases/src.git` so nothing is fetched: the
+    point is that an unresolvable ref stops before anything moves."""
+    src = tmp_path / "releases" / "src.git"
+    src.parent.mkdir(parents=True)
+    subprocess.run(["git", "init", "--bare", str(src)], capture_output=True, check=True)
     supervisor = Supervisor(tmp_path, 8500)
     supervisor.do_promote("nope")
-    assert "no release at" in supervisor.last_error
-    assert supervisor.current() is None
+    assert "does not resolve to a commit" in supervisor.last_error
+    assert supervisor.current() is None and supervisor.process is None
+    last = json.loads((tmp_path / "promote.log").read_text(encoding="utf-8").strip().splitlines()[-1])
+    assert last["stage"] == "failed" and last["ok"] is False and last["ref"] == "nope"
 
 
 def test_rollback_without_a_previous_release_reports_rather_than_guesses(tmp_path):
@@ -126,13 +134,16 @@ def test_rollback_without_a_previous_release_reports_rather_than_guesses(tmp_pat
     assert supervisor.last_error == "rollback: no previous release recorded"
 
 
-def test_self_modification_seams_are_honest_stubs(tmp_path):
+def test_self_modification_seams_are_implemented(tmp_path):
+    """The three seams of 03 §15.2 are real now; their behaviour is exercised in
+    tests/test_supervisor_release.py."""
     from supervisor.__main__ import create_release, probe, snapshot
 
-    for call in (lambda: snapshot(tmp_path), lambda: create_release(tmp_path, "ref"), lambda: probe(tmp_path, "r", 1)):
-        with pytest.raises(NotImplementedError) as exc:
-            call()
-        assert "self-modification package" in str(exc.value)
+    assert snapshot(tmp_path).is_dir()
+    with pytest.raises(Exception):  # no repo to clone from, no release to probe
+        create_release(tmp_path, "ref", origin=tmp_path / "absent")
+    with pytest.raises(Exception):
+        probe(tmp_path, "absent-release", 1)
 
 
 def test_status_shape(tmp_path):

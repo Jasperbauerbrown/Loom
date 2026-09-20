@@ -699,6 +699,7 @@ Registry = native tools + MCP tools (prefixed `mcp_<server>_<tool>`) + connector
 | `item_post` | put a notification/setup item on the now board | no | allow |
 | `secret_set` | store a secret the user pasted (value never echoed) | no | ask |
 | `tool_search` | load deferred tool definitions | yes | allow |
+| `promote_plan` | §15: what promoting a ref would change | yes | allow (no row; read-only) |
 | `promote` | §15 | no | ask |
 
 ### 9.3 Dispatcher pipeline (one path for every call)
@@ -992,7 +993,11 @@ over the WS stream (one reducer per event type) with REST for initial loads. Bui
 - **Approvals** badge + list (pending across all conversations), each with the
   classifier reason if any and the `allow always` option.
 - **Settings** — every knob (§13.2), rendered from schema.
-- **System**. Version and release pointer, promote/rollback with progress, logs tail,
+- **System**. Version and release pointer, supervisor status, promote/rollback with
+  progress (a ref → the plan from `GET /system/promote/plan`, with the protected files
+  shown as an explicit "I have read these" checkbox that sets `acknowledge_protected`;
+  stages stream from `promote.progress` and the history comes from
+  `GET /system/promote/log`), logs tail,
   queue, connector and MCP status, reindex, snapshot list, and maintenance: whether a
   pass is running, when the nightly one is next due, the last pass's report, and a
   *run maintenance now* button (`POST /maintenance/run`, live via `maintenance.progress`).
@@ -1126,9 +1131,16 @@ returns the conversation to `idle` instead of waking the runner. That is the onl
 internal (non-model) action approvals gate, and the only branch in `decide`.
 
 ### 15.4 Rollback
-`rollback` → supervisor swaps `current` to the previous release and restarts; if the DB
-schema advanced, restores the pre-promotion snapshot (state written since is lost, and
-the UI says so before confirming).
+`rollback` (`POST /system/rollback`, or the supervisor's own `/rollback`) → the
+supervisor swaps `current` to the previous release, writes the release it left as the
+new `previous`, and restarts; if the live `PRAGMA user_version` is ahead of the newest
+snapshot, that snapshot is restored (state written since is lost, and the UI says so
+before confirming). It logs `rollback` then `done` like any other flow.
+
+`POST /system/restart` and `GET /system/supervisor` are the same client's other two
+buttons. With no supervisor running — development under `--no-supervisor` — every one
+of them answers `503` with "supervisor not running — start Loom with `loom serve`", and
+the `promote` tool returns the same sentence rather than pretending.
 
 ## 16. Prompts (all model-facing text lives here)
 ```
@@ -1142,7 +1154,8 @@ prompts/summarize.md         compaction fold
 prompts/maintenance-consolidate.md  / maintenance-curate.md
 prompts/status-safety-net.md
 prompts/preset-test.md       the one short completion `POST /presets/{name}/test` sends
-prompts/templates/*.md       new note templates (device, project, connector, procedure SKILL.md)
+prompts/templates/*.md       new note templates (device, project, connector, procedure SKILL.md,
+                             procedure-self-modification: the vault's own self-mod workflow)
 ```
 Nothing in these files references mutable state (model names, paths, rosters).
 
@@ -1213,6 +1226,8 @@ UI: `react`, `react-dom`, `vite`, `typescript`, `tailwindcss`, one Markdown rend
    recent-changes revert.
 8. **Self-modification** — releases layout, `promote` end to end, protected paths,
    snapshots, rollback, System UI progress, auto-rollback in supervisor.
+   *Built 2026-09-20 except the System screen's promote panel, which belongs to the UI
+   package and is specified in §13.1; everything it needs is served.*
 
 ## 21. Implementation questions (decided 2026-09-20; see charter decision log)
 - Ollama: native `/api/chat` for the `ollama` provider kind; no probe.

@@ -17,7 +17,9 @@ def test_bootstrap_is_idempotent_and_committed(app):
     assert (vault.root / ".gitignore").read_text(encoding="utf-8").find("workspace") > 0
 
     log = vault.git.log()
-    assert log and log[0]["message"] == "loom: bootstrap vault"
+    # Packages may add their own notes after the bootstrap (the self-modification
+    # procedure, 03 §15.1), so the bootstrap commit is the oldest, not the newest.
+    assert log and log[-1]["message"] == "loom: bootstrap vault"
 
     before = vault.read("core/about-me.md").raw
     vault.bootstrap()  # second run changes nothing

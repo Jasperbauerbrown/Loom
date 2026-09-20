@@ -586,3 +586,24 @@ sessions do not re-litigate.
   rejects a second one); summary and the volatile now-board/scope block are user-role
   `<context from="harness">` blocks, the volatile one nearest the query. Found by the
   first live turn against the bar model.
+- **2026-09-20** — Self-modification built (`03` §15). Five decisions recorded there:
+  (a) **two tools, not one** — `promote` is `ask` by policy, so its handler runs *after*
+  the approval and cannot put the protected-file list in the approval's reason; the
+  read-only `promote_plan(ref)` (and `GET /system/promote/plan`) produces that list
+  first, and `acknowledge_protected=true` asserts the person has seen it while the call
+  still goes through the ordinary ask. Nothing static denies; nothing is promoted
+  without a human. (b) The probe runs the candidate release with `LOOM_HOME` pointed at
+  a scratch directory holding a *copy* of `state.db`, rather than the `serve --probe`
+  flag `03` §15.2 once sketched: the CLI has no such flag, and adding a second serve
+  mode to express "use this home" would be a special codepath for one caller. (c) The
+  supervisor reports progress by appending JSON lines to `APP_HOME/promote.log`, which
+  the backend tails from a durable byte offset and republishes as `promote.progress`;
+  it cannot be told directly because it is the process being restarted, and the offset
+  file means a promotion is reported exactly once even though the backend dies in the
+  middle of it. (d) `promote.request_promotion` is the single codepath for steps 1–4,
+  shared by the tool and `POST /system/promote`, with the failure class carried as a
+  `code` the REST layer maps to one status each. (e) The self-modification *workflow*
+  is a vault procedure note (`procedures/self-modification/SKILL.md`, written from
+  `prompts/templates/procedure-self-modification.md` on install), not Python — §5.9's
+  "no bespoke framework" taken literally; code covers only isolation, promotion with
+  rollback, and protected paths.
