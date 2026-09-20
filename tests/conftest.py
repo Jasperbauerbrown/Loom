@@ -73,7 +73,7 @@ def _configure_fake_model(app) -> None:  # type: ignore[no-untyped-def]
         app.db.execute(
             "INSERT OR IGNORE INTO presets(name, provider, model, params, enabled, created_at, updated_at) "
             "VALUES ('fake', 'local-ollama', 'fake-model', ?, 1, ?, ?)",
-            (db.dumps({"max_tokens": 1024, "effective_ctx": 8192, "temperature": 0.2}), now, now),
+            (db.dumps({"max_tokens": 1024, "effective_ctx": 32768, "temperature": 0.2}), now, now),
         )
         app.db.execute(
             "INSERT OR IGNORE INTO presets(name, provider, model, params, enabled, created_at, updated_at) "
@@ -83,3 +83,29 @@ def _configure_fake_model(app) -> None:  # type: ignore[no-untyped-def]
         for role in ("desk", "worker", "maintenance"):
             app.db.execute("UPDATE model_roles SET preset='fake' WHERE role=?", (role,))
         app.db.execute("UPDATE model_roles SET preset='fake-embed' WHERE role='embedding'")
+
+
+# -- server fixtures (foundations package) -------------------------------------------
+@pytest.fixture
+async def client(app):
+    """An httpx.AsyncClient over the real ASGI app, with the lifespan run (so every
+    package's `start`/`stop` happens exactly as it does under uvicorn). Router tests in
+    any package use this; nothing here touches the network."""
+    import httpx
+
+    from loom.server.app import create_app
+
+    api = create_app(app)
+    async with api.router.lifespan_context(api):
+        transport = httpx.ASGITransport(app=api)
+        async with httpx.AsyncClient(transport=transport, base_url="http://loom.test") as http:
+            http.loom = app  # type: ignore[attr-defined]
+            http.api = api  # type: ignore[attr-defined]
+            yield http
+
+
+@pytest.fixture
+async def started_client(client):
+    """Alias of `client`: the lifespan is always run. Kept as a separate name so tests
+    can say which they mean."""
+    return client

@@ -498,3 +498,44 @@ sessions do not re-litigate.
   JSON columns decoded; LAN auth is a bearer token, `?token=` on the WebSocket.
 - **2026-09-20** — Path-class policies are `tool_policies` rows keyed `<tool>:<prefix>`
   (e.g. `knowledge_write:core/` = ask); no second table.
+- **2026-09-20** — Foundations built: logging + log ring, model client (both kinds,
+  streaming, outcomes), per-provider priority queue, role/preset resolution, server core
+  (auth, `/ws`, static UI), system/settings/models routers, CLI, supervisor.
+- **2026-09-20** — Model outcome mapping completed: 408/409/425/429 are `transient`,
+  any other 4xx is `fatal` (a mis-shaped request will not succeed on a retry), and the
+  context/length test runs first so a 400 about context is `overflow` whatever else it
+  says. Fills `03` §5.5.
+- **2026-09-20** — Reasoning replay is carried on the wire as `message.thinking`
+  (ollama) / `reasoning_content` (openai_compatible), and tool-call arguments as an
+  object for Ollama and a JSON string for OpenAI-compatible endpoints. One
+  transformation, in the model client, not at each caller.
+- **2026-09-20** — `loom send` follows a turn by polling `/conversations/{id}/events`
+  every 0.5s instead of opening the WebSocket: the stdlib has no WebSocket client and
+  `03` §19 forbids adding one for the CLI. Exit codes 0/1/2/3/4 documented in `03` §14.
+- **2026-09-20** — Supervisor kills the backend tree with `taskkill /T /F` on Windows
+  rather than a Job Object (`03` §3.1 said Job Object): ctypes plumbing does not belong
+  in the one file whose value is being small and obviously correct. POSIX uses process
+  groups as designed.
+- **2026-09-20** — Supervisor `promote`/`rollback` are process mechanics only for now
+  (stop, switch pointer, start, health watchdog, revert); `snapshot`/`create_release`/
+  `probe` are named seams that raise `NotImplementedError` until the self-modification
+  package lands. Scope cut visibly, per the charter.
+- **2026-09-20** — Added the `models.changed {kind, name}` WS event (`03` §12.2) so the
+  Settings screen sees provider/preset/role mutations without polling.
+- **2026-09-20** — Tools & permissions landed. Three clarifications recorded in `03` §9.1,
+  §9.3 and §15.3: (a) `Tool.read_only_for(args)` makes read-only-ness a property of the
+  call, and a read-only call turns a `classify` row into `allow` — a grant-only shortcut
+  with the shell pre-filter's justification; it never relaxes an explicit `ask` and
+  nothing static denies; (b) path-class rows `<tool>:<prefix>` match any string argument
+  of the call, longest prefix wins, and the deciding rule travels in the approval's
+  `options["policy_key"]` so `allow_always` widens exactly that rule; (c) removing a
+  protected path is an approval on the pseudo-tool `protected_paths_remove` — the
+  endpoint returns `202` with the pending row and `decide(allow)` performs the removal.
+- **2026-09-20** — Conversation core built (`run_turn`, `assemble`, compaction, threads).
+  Additions: `event.appended` WS event for every persisted event; inbox rows are never
+  re-rendered after an early turn end; a thread turn ending in plain text →
+  `waiting_input` + thread event to the parent; occupancy counts the whole prompt; the
+  pre-call brake falls through to the model when nothing can be compacted (the
+  `overflow` outcome is the authoritative failure).
+- **2026-09-20** — All REST endpoints are `async def` (sync handlers run in a threadpool:
+  no event loop to schedule turns, SQLite off the loop thread).

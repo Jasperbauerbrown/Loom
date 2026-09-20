@@ -79,8 +79,15 @@ loom/
   (owner-only permissions). Commands: `status`, `restart`, `promote {ref}`, `rollback`.
 - Restarts the backend on crash with exponential backoff (1s → 60s cap); after 5 crashes
   in 10 minutes on a freshly promoted release, rolls back automatically.
-- Windows: the backend and its children run in a Job Object so a restart kills the tree.
-  POSIX: process group.
+- Windows: the backend is started with `CREATE_NEW_PROCESS_GROUP` and its tree is killed
+  with `taskkill /T /F /PID` (decided 2026-09-20: a Job Object needs ctypes plumbing in
+  the one file whose point is to be small and obviously correct). POSIX: `start_new_session`
+  plus process-group signals.
+- `promote`/`rollback` in the supervisor are the *process* half only: stop, switch
+  `current`/`previous`, start, watch `/api/system/health` for
+  `promotion_watchdog_seconds`, revert if it does not hold. The worktree, snapshot and
+  probe steps of §15.2 are the self-modification package's and have named seams
+  (`snapshot`, `create_release`, `probe`) that raise until it lands.
 - `hydra.bat`-style launchers are replaced by `loom` (supervisor entry) for end users
   and `python -m loom serve` for development (no supervisor).
 
@@ -125,7 +132,7 @@ Settings; the screen never reappears unless the desk role is cleared.
   artifacts/<conv_id>/<event_id>.txt   # spilled tool output
   secrets.json                # fallback store only (§4.5)
   releases/<id>/              # git worktrees of the assistant's own repo (§15)
-  current                     # release pointer
+  current  previous           # release pointers (`previous` is what rollback returns to)
   snapshots/<ts>/state.db     # pre-promotion snapshots
   logs/backend.log            # rotating
   supervisor.token
@@ -326,12 +333,20 @@ and in the UI header.
 The client yields `delta(channel=content|reasoning, text)`, `tool_call(...)`, `usage`,
 `finish(reason)`. Reasoning arrives as the provider's `reasoning`/`reasoning_content`
 field or as inline `<think>…</think>`; a splitter normalises both. The runner streams
-both channels to surfaces and persists them separately (§6.3).
+both channels to surfaces and persists them separately (§6.3). On the way *out*,
+an assistant message's replayed `reasoning` (§6.3) is rendered as `message.thinking`
+for the `ollama` kind and `reasoning_content` for `openai_compatible`, and is omitted
+when empty; `tool_calls[].function.arguments` is sent as an object to Ollama and as a
+JSON string to OpenAI-compatible endpoints. One transformation, in the client.
 
 ### 5.5 Outcomes and retries
-Every call ends in one of: `ok`, `transient` (network, 5xx, malformed stream, empty
-completion), `overflow` (context too long: provider 4xx message, or `finish=length`
-with zero output), `fatal` (auth, model missing). Policy: transient → retry once with
+Every call ends in one of: `ok`, `transient` (network, timeout, 5xx, 408/409/425/429,
+malformed stream, empty completion), `overflow` (any 4xx whose body mentions a context
+or length limit, or `finish=length` with zero output), `fatal` (401/403, 404 model or
+endpoint missing, unknown provider or preset, any other 4xx — a request we shaped wrong
+will not succeed on a retry). The overflow test runs first, because a 400 about context
+is an overflow whatever else it is. Per-provider timeouts: `timeout_s` total (default
+600) and `stream_idle_s` between chunks (default 120); both end the call as `transient`. Policy: transient → retry once with
 the same request; overflow → force-compact (§6.5) and rebuild, at most
 `forced_compactions_per_turn` (2); fatal → try `fallback_role` if set, else end the
 turn with a visible `system` event and status `failed`.
@@ -366,6 +381,10 @@ rows are marked `delivered_at` only when the turn completes successfully, so a c
 turn redelivers. Non-user sources render with a one-line header
 (`[from thread "3D map" 01J8…]`, `[schedule "weekly homework"]`) as user-role messages.
 A wake on a `running` conversation is a no-op: the row is picked up mid-turn.
+A row's `user` event is written the moment it is claimed (persist before act); a turn
+that ends early (approval pause, crash) leaves the row undelivered, and the next turn
+claims it again without re-rendering it (the claim query reports the persisted event
+id). So a message is never lost and never duplicated.
 
 ### 6.3 `run_turn(conversation_id)` — the only agent loop
 ```
@@ -415,7 +434,7 @@ replayed across turns; counted at zero in occupancy.
 
 ### 6.5 Compaction ladder (decided, from Hydra/Manus)
 ```
-occupancy = (len(summary) + Σ len(live events)) / 4 × token_factor
+occupancy = chars(all messages + tool schemas as sent) / 4 × token_factor   (prefix included)
 limit     = min(effective_ctx × compact_threshold(0.75),
                 effective_ctx − min(max_tokens, effective_ctx / 2))
 ```
@@ -463,6 +482,10 @@ writes back (the factor is a property of model + content, so the preset is its h
   artifact ids of test output), sets status `done`, emits to parent.
 - **User in a thread**: the same surface calls as the desk; user messages set priority 0
   for that turn.
+- **Turn end without finish** (decided 2026-09-20): a thread turn that ends with plain
+  text (a question, a report, or the wrap-up after the step budget) sets status
+  `waiting_input` and forwards that text to the parent as a thread event. The parent
+  decides by judgment whether to answer, redirect, or involve the person.
 - **Archival**: maintenance archives `done`/`failed` threads idle for
   `thread_archive_days` (14). Archived threads stay searchable (FTS) and reopenable.
 
@@ -572,9 +595,19 @@ maintenance pass (so history stays complete without committing on every keystrok
 ```python
 Tool(name, description, parameters: JSONSchema,
      annotations={readOnlyHint, destructiveHint},   # MCP-standard names
+     read_only_for=lambda args: ...,                 # per-call read-only test (http GET)
      path_params=("path", "cwd"),                    # args the fs guard checks
      timeout_s, handler)
 ```
+`read_only_for` exists because read-only-ness is sometimes a property of the arguments,
+not the tool: `http` GET/HEAD is a read, `http` POST is not. `Tool.is_read_only(args)`
+is the one answer the permission layer asks for.
+
+`ToolContext` carries, besides the conversation and the call: `priority` (the turn's
+model-queue priority, which the classifier inherits), `meta` (the dispatcher writes
+`{policy, decision, reason}` here and the runner persists it on the `tool_call` event)
+and `extras` (per-turn scratch; `tool_search` puts the names it exposed in
+`extras["exposed"]`).
 Registry = native tools + MCP tools (prefixed `mcp_<server>_<tool>`) + connector tools
 (prefixed `<connector>_<tool>`). All are exposed every turn unless the count exceeds
 `tool_expose_max` (48), in which case native tools stay and the rest are reachable via
@@ -617,6 +650,28 @@ Registry = native tools + MCP tools (prefixed `mcp_<server>_<tool>`) + connector
 An approval persists `approvals(pending)`, emits `approval.requested`, and the turn
 returns (§6.3). A decision `allowed_always` for `add_root` writes the root; for a tool it
 sets `tool_policies[tool]=allow`. Both are ordinary settings the UI shows.
+
+**Step 4 in full** (`tools/permissions.py`, `decide(app, tool, args) -> (mode, policy_key)`):
+
+1. *Path-class rows* — a `tool_policies` row keyed `<tool>:<prefix>` applies when any
+   string argument of the call starts with `<prefix>` (so `knowledge_write:core/`
+   catches `knowledge_write(path="core/me.md")` without the guard, which knowledge
+   tools bypass with `path_params=()`). The longest matching prefix wins.
+2. *The tool's row* — `tool_policies[<tool>]`.
+3. *No row* (every MCP and connector tool, registered long after the bootstrap and
+   never given a row): read-only → `allow`, else `ask`.
+
+On top of that sits one grant-only shortcut, the same principle as the shell pre-filter:
+a call that is read-only *for these arguments* turns a matching `classify` row into
+`allow`, because asking a model whether a GET is reversible spends a generation on a
+foregone conclusion. It relaxes only `classify`, never an explicit `ask`, and nothing
+static can produce a denial.
+
+`policy_key` — the rule that decided — is stored in the approval's `options` so
+`allow_always` widens exactly that rule (the path class, not the whole tool).
+
+The guard's `add_root` option is the narrowest root that would let the call through:
+the path itself when it is a directory, its parent otherwise.
 
 ### 9.4 Shell pre-filter (can only grant)
 Split on `&&`, `||`, `;`, `|` respecting quotes. For each stage: first token (after
@@ -703,7 +758,8 @@ the UI's board panel. Turns produced by triggers run at priority 1.
 ### 12.1 REST (prefix `/api`)
 ```
 GET  /conversations?kind&status         POST /conversations {kind:'thread', goal, scope_note?, roots?, role?}
-GET  /conversations/{id}                GET  /conversations/{id}/events?after&limit&kinds
+GET  /conversations/{id}                GET  /conversations/{id}/events?after&before&limit&kinds
+PATCH /conversations/{id} {title?, preset?, step_budget?}   GET /conversations/{id}/artifacts   GET /artifacts/{id}?offset&limit
 POST /conversations/{id}/messages {content}     POST /conversations/{id}/cancel
 POST /conversations/{id}/archive        GET  /conversations/{id}/occupancy
 GET  /approvals?status                  POST /approvals/{id} {decision: allow|deny|allow_always, add_root?: bool}
@@ -716,7 +772,10 @@ CRUD /providers  /presets  /model-roles  /tool-policies  /roots  /protected-path
 POST /providers/{name}/probe            POST /presets/{name}/test   (one short completion; reports latency + usage)
 POST /mcp-servers/{id}/refresh          POST /connectors/{name}/reload
 GET  /models?provider                   (probe: list models available at a provider)
-GET  /system/health  /system/version  /system/queue  /system/logs?since&level
+GET  /system/health  /system/version  /system/queue  /system/logs?since&level&limit
+GET  /system/setup                      POST /system/setup {provider?, model, embedding_model?,
+                                             timezone?, projects_root?, openrouter?{base_url,api_key}}
+POST /system/reindex
 POST /system/promote {ref}              POST /system/rollback
 ```
 All mutations emit a matching WS event so every surface stays consistent.
@@ -727,16 +786,23 @@ Server events:
 ```
 {type, ts, conversation_id?, data}
 conversation.created|updated        data: row (status carries idle/busy)
-message.start                       data: {event_id?, role}
+message.start                       data: {role: assistant, step}
 message.delta                       data: {channel: content|reasoning, text}
-message.end                         data: {event_id}
-tool.call                           data: {call_id, name, args(redacted), policy, reason?}
-tool.result                         data: {call_id, ok, preview, artifact_id?}
+message.end                         data: {event_id, event}          (event = the persisted row)
+event.appended                      data: event row  — every persisted event (user, assistant,
+                                    tool_call, tool_result, thinking, system, compaction);
+                                    the one mechanism that keeps every surface's transcript equal
+tool.call                           data: {call_id, name, args(redacted), event_id}
+tool.result                         data: {call_id, name, ok, preview, artifact_id?, event_id,
+                                           policy, decision, reason}
+inbox.posted                        data: {id, source}
+models.changed                      data: {kind: provider|preset|role, name}
 approval.requested|resolved         data: approval row
 item.created|updated                data: item row
 notification                        data: {title, body, item_id}
 knowledge.changed                   data: {paths}
 settings.changed                    data: {keys}
+models.changed                      data: {kind: provider|preset|role, name}
 connector.status|mcp.status         data: row
 system.queue                        data: {depth, running}
 promote.progress                    data: {stage, ok, message}
@@ -813,8 +879,20 @@ over the WS stream (one reducer per event type) with REST for initial loads. Bui
 `loom serve [--port] [--no-supervisor]`, `send [--thread ID|--new "goal"] "text"`
 (streams and blocks until the turn ends; exit code reflects status), `threads [--all]`,
 `approvals [--allow ID|--deny ID]`, `items`, `status`, `reindex`, `vault search|read`,
-`schedules`, `promote REF`, `rollback`. All commands are thin REST/WS clients; the CLI
+`schedules`, `promote REF`, `rollback`. All commands are thin REST clients; the CLI
 holds no logic of its own.
+
+`send` follows a turn by polling `GET /conversations/{id}/events?after=` every 0.5s and
+printing what is new, rather than opening the WebSocket: no stdlib WebSocket client
+exists and §19 forbids adding one for this. Exit codes: 0 `idle`/`done`, 1 `failed`,
+2 `waiting_input`/`waiting_approval`, 3 no model configured, 4 backend unreachable or
+the endpoint does not exist yet.
+
+Base URL: `--url`, else `$LOOM_URL`, else `http://127.0.0.1:<general.port read from the
+home's state.db, or 8500>`. Token: `--token`, else `$LOOM_TOKEN`. `loom serve` runs the
+supervisor (§3.1) as a child; `--no-supervisor` serves in-process (development, and what
+`CLAUDE.md`'s command block means). `--fake` serves with the fake model client and a
+fake provider/preset/roles so the UI can be developed with no Ollama running.
 
 ## 15. Self-modification and promotion
 
@@ -849,7 +927,12 @@ thread resumes (§6.3 step 1) and reads the outcome from the promote log.
 `supervisor/`, `src/loom/tools/permissions.py`, `src/loom/tools/fs_guard.py`,
 `src/loom/tools/shell_prefilter.py`, `src/loom/promote.py`,
 `src/loom/secrets.py`, `APP_HOME/secrets.json`, `APP_HOME/supervisor.token`.
-Editable in Settings; removing an entry is itself an `ask`.
+Editable in Settings; removing an entry is itself an `ask`. Mechanically:
+`DELETE /api/protected-paths?path=` deletes nothing — it creates an approval on the desk
+for the pseudo-tool `protected_paths_remove` and answers `202` with the pending row.
+`approvals.decide(allow)` performs the removal and, since no turn is waiting on it,
+returns the conversation to `idle` instead of waking the runner. That is the only
+internal (non-model) action approvals gate, and the only branch in `decide`.
 
 ### 15.4 Rollback
 `rollback` → supervisor swaps `current` to the previous release and restarts; if the DB
@@ -867,6 +950,7 @@ prompts/classify.md          permission judge
 prompts/summarize.md         compaction fold
 prompts/maintenance-consolidate.md  / maintenance-curate.md
 prompts/status-safety-net.md
+prompts/preset-test.md       the one short completion `POST /presets/{name}/test` sends
 prompts/templates/*.md       new note templates (device, project, connector, procedure SKILL.md)
 ```
 Nothing in these files references mutable state (model names, paths, rosters).
@@ -954,3 +1038,7 @@ UI: `react`, `react-dom`, `vite`, `typescript`, `tailwindcss`, one Markdown rend
   `PATCH /api/settings` takes a partial `{key: value}` map, validates all-or-nothing,
   returns the new values, emits `settings.changed {keys}`.
 - Every mutation emits its matching WS event before the HTTP response returns.
+- Endpoints are `async def`; SQLite runs on the loop thread; blocking work uses
+  `asyncio.to_thread`. A sync handler would run in Starlette's threadpool, where there
+  is no running loop to schedule a turn from and where SQLite would be touched off the
+  loop thread, against the 2026-09-20 decision.

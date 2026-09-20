@@ -1,0 +1,299 @@
+"""`assemble` — the only context builder (03 §7).
+
+Message layout sent to the model:
+
+    [0] system  slots [1]–[4]: soul + kind prompt, tools line, core blocks, procedures
+                index. Byte-stable across turns (sorted, no dates) for the prompt cache.
+    [1] system  slots [5]–[7]: now board (desk) / project note (thread), now line +
+                steps remaining, summary. Rebuilt every step.
+    ...        slot [8]: live events replayed since `summary_cutoff`, evictions applied.
+    user       slot [9]: <knowledge may_be_irrelevant="true"> pre-loaded entities, spliced
+                immediately before this turn's first user message. Ephemeral.
+    user…      slot [10]: this turn's claimed inbox rows, then whatever the runner appends
+                (assistant steps with in-turn reasoning, tool results, mid-turn inbox).
+"""
+
+from __future__ import annotations
+
+import datetime as _dt
+import zoneinfo
+from dataclasses import dataclass, field
+from typing import Any
+
+from .. import db, items, prompts
+from ..tools.registry import Tool
+from . import events, inbox
+
+KNOWLEDGE_OPEN = '<knowledge may_be_irrelevant="true">'
+KNOWLEDGE_CLOSE = "</knowledge>"
+
+
+@dataclass
+class Context:
+    conv: dict[str, Any]
+    prefix: list[dict[str, Any]]  # one system message, stable
+    history: list[dict[str, Any]]  # slot [8], events before this turn
+    turn: list[dict[str, Any]]  # slot [9] + [10] + in-turn appends
+    resolved_paths: list[str]
+    knowledge_text: str
+    exposed: set[str] = field(default_factory=set)  # tool names loaded via tool_search this turn
+    turn_start_event_id: int | None = None
+
+    def messages(self, app, steps_remaining: int | None = None) -> list[dict[str, Any]]:  # type: ignore[no-untyped-def]
+        return [*self.prefix, volatile_system(app, self.conv, steps_remaining), *self.history, *self.turn]
+
+    def tools(self, app, enabled: bool = True) -> list[Tool]:  # type: ignore[no-untyped-def]
+        if not enabled:
+            return []
+        limit = int(app.settings.get("conversation.tool_expose_max"))
+        return app.tools.expose(limit, self.exposed)
+
+    def tool_schemas(self, app, enabled: bool = True) -> list[dict[str, Any]] | None:  # type: ignore[no-untyped-def]
+        tools = self.tools(app, enabled)
+        return [t.to_openai() for t in tools] if tools else None
+
+    def chars(self, app, steps_remaining: int | None = None) -> int:  # type: ignore[no-untyped-def]
+        n = 0
+        for m in self.messages(app, steps_remaining):
+            c = m.get("content")
+            n += len(c) if isinstance(c, str) else 0
+            for tc in m.get("tool_calls") or []:
+                n += len(db.dumps(tc))
+        schemas = self.tool_schemas(app)
+        if schemas:
+            n += len(db.dumps(schemas))
+        return n
+
+
+# -- slots [1]–[4] -----------------------------------------------------------------
+
+def stable_prefix(app, kind: str) -> str:  # type: ignore[no-untyped-def]
+    parts = [prompts.load("system"), prompts.load("kind-desk" if kind == "desk" else "kind-thread")]
+    parts.append("Tools are provided via the API; use `tool_search` for more.")
+    core = app.index.core_blocks(int(app.settings.get("knowledge.core_block_chars")))
+    if core:
+        blocks = [f"## {path}\n{text}" for path, text in core]
+        parts.append("# Core notes\n\n" + "\n\n".join(blocks))
+    procedures = app.index.procedures_index()
+    if procedures:
+        parts.append("# Procedures (procedure_load <name> for the full text)\n" + procedures)
+    return "\n\n".join(p for p in parts if p)
+
+
+# -- slots [5]–[7] -----------------------------------------------------------------
+
+def now_line(app) -> str:  # type: ignore[no-untyped-def]
+    tz_name = app.settings.get("general.timezone") or "UTC"
+    try:
+        tz = zoneinfo.ZoneInfo(tz_name)
+    except Exception:
+        tz = _dt.timezone.utc
+        tz_name = "UTC"
+    now = _dt.datetime.now(tz)
+    return f"now: {now.strftime('%Y-%m-%d %H:%M')} ({tz_name}, {now.strftime('%A')})"
+
+
+def now_board(app) -> str:  # type: ignore[no-untyped-def]
+    """Desk slot [5]: pending approvals, unseen items, running threads (capped)."""
+    lines: list[str] = []
+    approvals = app.db.execute(
+        "SELECT a.id, a.tool, a.conversation_id, c.title FROM approvals a JOIN conversations c ON c.id=a.conversation_id "
+        "WHERE a.status='pending' ORDER BY a.created_at"
+    ).fetchall()
+    for a in approvals:
+        lines.append(f'- approval pending: {a["tool"]} in "{a["title"] or a["conversation_id"]}" ({a["conversation_id"]})')
+    for it in items.unseen(app):
+        lines.append(f"- {it['kind']}: {it['title']}" + (f" — {it['body'][:120]}" if it.get("body") else ""))
+    cap = int(app.settings.get("conversation.now_board_max_threads"))
+    threads = app.db.execute(
+        "SELECT id, title, goal, status, scope_note FROM conversations WHERE kind='thread' "
+        "AND status IN ('running','waiting_approval','waiting_input') ORDER BY updated_at DESC LIMIT ?",
+        (cap,),
+    ).fetchall()
+    for t in threads:
+        doing = ""
+        if t["scope_note"]:
+            try:
+                fields, _owner = app.vault.read_status(t["scope_note"])
+                if fields:
+                    doing = fields.get("doing") or fields.get("state") or ""
+            except Exception:
+                doing = ""
+        label = t["title"] or t["goal"][:60]
+        lines.append(f'- thread "{label}" ({t["id"]}): {t["status"]}' + (f" — {doing[:120]}" if doing else ""))
+    if not lines:
+        return "# Now board\n(empty)"
+    return "# Now board\n" + "\n".join(lines)
+
+
+def scope_block(app, conv: dict[str, Any]) -> str:  # type: ignore[no-untyped-def]
+    path = conv.get("scope_note")
+    if not path:
+        return f"# Scope\ngoal: {conv.get('goal') or ''}\n(no scope note)"
+    try:
+        note = app.vault.read(path)
+        body = note.body if note.error is None else note.raw
+    except Exception as exc:  # missing note is an expected input
+        return f"# Scope note {path}\n(unreadable: {exc})\ngoal: {conv.get('goal') or ''}"
+    return f"# Scope note {path}\n{body.strip()}"
+
+
+def volatile_system(app, conv: dict[str, Any], steps_remaining: int | None = None) -> dict[str, Any]:  # type: ignore[no-untyped-def]
+    parts = [now_board(app) if conv["kind"] == "desk" else scope_block(app, conv)]
+    line = now_line(app)
+    if conv["kind"] == "thread" and steps_remaining is not None:
+        line += f"\n[steps remaining: {steps_remaining}]"
+    parts.append(line)
+    if conv.get("summary"):
+        parts.append("# Summary of earlier conversation\n" + conv["summary"])
+    return {"role": "system", "content": "\n\n".join(parts)}
+
+
+# -- slot [8] -------------------------------------------------------------------
+
+def replay(app, conv: dict[str, Any], before_event_id: int | None = None) -> list[dict[str, Any]]:  # type: ignore[no-untyped-def]
+    """Live events since `summary_cutoff` as chat messages, evictions applied; each
+    message carries `_event_id` (stripped before sending)."""
+    cutoff = int(conv.get("summary_cutoff") or 0)
+    evs = events.list_events(app, conv["id"], after=cutoff, before=before_event_id, limit=1_000_000)
+    evicted: dict[int, str | None] = {}
+    for e in evs:
+        if e["kind"] == "compaction" and e["meta"].get("kind") == "evict":
+            arts = e["meta"].get("artifacts") or {}
+            for i in e["meta"].get("event_ids", []):
+                evicted[int(i)] = arts.get(str(i))
+    return messages_from_events(evs, evicted)
+
+
+def messages_from_events(evs: list[dict[str, Any]], evicted: dict[int, str | None] | None = None) -> list[dict[str, Any]]:
+    """`evicted` maps tool_result event id → artifact id (or None) for stubbed results."""
+    evicted = evicted or {}
+    msgs: list[dict[str, Any]] = []
+    open_calls: set[str] = set()
+    for e in evs:
+        kind = e["kind"]
+        if kind == "user":
+            msgs.append({"role": "user", "content": e["content"], "_event_id": e["id"]})
+        elif kind == "assistant":
+            msgs.append({"role": "assistant", "content": e["content"], "_event_id": e["id"]})
+        elif kind == "tool_call":
+            calls = db.loads(e["content"], [])
+            msgs.append(
+                {
+                    "role": "assistant",
+                    "content": e["meta"].get("text") or "",
+                    "tool_calls": [
+                        {
+                            "id": c["id"],
+                            "type": "function",
+                            "function": {"name": c["name"], "arguments": db.dumps(c.get("arguments", {}))},
+                        }
+                        for c in calls
+                    ],
+                    "_event_id": e["id"],
+                }
+            )
+            open_calls = {c["id"] for c in calls}
+        elif kind == "tool_result":
+            call_id = e["meta"].get("call_id", "")
+            if e["id"] in evicted:
+                art = evicted[e["id"]] or e["meta"].get("artifact_id")
+                content = f"[evicted; artifact_recall({art})]" if art else "[evicted]"
+            else:
+                content = e["content"]
+            msgs.append({"role": "tool", "tool_call_id": call_id, "content": content, "_event_id": e["id"]})
+            open_calls.discard(call_id)
+        # thinking / system / status / compaction: never replayed
+    return msgs
+
+
+def strip_private(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [{k: v for k, v in m.items() if not k.startswith("_")} for m in messages]
+
+
+# -- slot [9] -------------------------------------------------------------------
+
+async def resolve_knowledge(app, conv: dict[str, Any], text: str) -> tuple[list[str], str]:  # type: ignore[no-untyped-def]
+    """Slot [9] inputs: resolved entity paths and the rendered pre-load block. Async
+    because the embedding fill-up is a model call; failures leave the slot empty."""
+    if not text.strip():
+        return [], ""
+    exclude = {conv["scope_note"]} if conv.get("scope_note") else set()
+    try:
+        paths = await app.index.resolve(text, exclude=exclude)
+    except Exception:
+        paths = []
+    if not paths:
+        return [], ""
+    budget = int(app.settings.get("knowledge.preload_budget_tokens"))
+    body = app.index.preload(paths, budget)
+    if not body.strip():
+        return paths, ""
+    return paths, f"{KNOWLEDGE_OPEN}\n{body.strip()}\n{KNOWLEDGE_CLOSE}"
+
+
+# -- the builder ------------------------------------------------------------------
+
+def assemble(  # type: ignore[no-untyped-def]
+    app,
+    conv: dict[str, Any],
+    claimed: list[dict[str, Any]],
+    turn_start_event_id: int | None,
+    *,
+    resolved: tuple[list[str], str] | None = None,
+) -> Context:
+    """Build the context for a turn. `claimed` rows have already been persisted as user
+    events with ids ≥ `turn_start_event_id`; history replays everything before that and
+    `turn` holds the knowledge block + this turn's user messages. On a mid-turn rebuild
+    (after compaction) pass `turn_start_event_id` again and the previously resolved
+    knowledge so the splice lands in the same place."""
+    prefix = [{"role": "system", "content": stable_prefix(app, conv["kind"])}]
+    all_msgs = replay(app, conv)
+    if turn_start_event_id is None:
+        history, turn_msgs = all_msgs, []
+    else:
+        history = [m for m in all_msgs if m["_event_id"] < turn_start_event_id]
+        turn_msgs = [m for m in all_msgs if m["_event_id"] >= turn_start_event_id]
+    paths, knowledge_text = resolved if resolved is not None else ([], "")
+    turn: list[dict[str, Any]] = []
+    if knowledge_text:
+        turn.append({"role": "user", "content": knowledge_text, "_ephemeral": True})
+    turn.extend(turn_msgs)
+    return Context(
+        conv=conv,
+        prefix=prefix,
+        history=history,
+        turn=turn,
+        resolved_paths=paths,
+        knowledge_text=knowledge_text,
+        turn_start_event_id=turn_start_event_id,
+    )
+
+
+def occupancy(app, conv: dict[str, Any], ctx: Context | None = None) -> dict[str, Any]:  # type: ignore[no-untyped-def]
+    """Estimated prompt tokens vs the compaction limit (03 §6.5)."""
+    from ..models import roles
+
+    try:
+        resolved = roles.resolve(app, role=conv["role"], preset=conv.get("preset"))
+        params = resolved.params
+    except Exception:
+        params = {}
+    effective_ctx = int(params.get("effective_ctx") or 32768)
+    max_tokens = int(params.get("max_tokens") or 4096)
+    threshold = float(app.settings.get("conversation.compact_threshold"))
+    limit = int(min(effective_ctx * threshold, effective_ctx - min(max_tokens, effective_ctx / 2)))
+    factor = float(conv.get("token_factor") or 1.0)
+    if ctx is None:
+        ctx = assemble(app, conv, [], None)
+    chars = ctx.chars(app)
+    tokens = int(chars / 4 * factor)
+    return {
+        "occupancy_tokens": tokens,
+        "limit_tokens": limit,
+        "effective_ctx": effective_ctx,
+        "max_tokens": max_tokens,
+        "token_factor": factor,
+        "chars": chars,
+        "summary_chars": len(conv.get("summary") or ""),
+    }
