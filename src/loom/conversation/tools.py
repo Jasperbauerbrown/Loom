@@ -30,6 +30,7 @@ def create_thread(  # type: ignore[no-untyped-def]
     preset: str | None = None,
     title: str | None = None,
     excerpt: str | None = None,
+    aliases: list[str] | None = None,
     role: str = "worker",
     created_by: str = "user",
 ) -> dict[str, Any]:
@@ -51,10 +52,10 @@ def create_thread(  # type: ignore[no-untyped-def]
         if row is None or not row["enabled"]:
             raise ThreadError(f"preset {preset!r} does not exist or is disabled")
     if not scope_note and project_name:
-        scope_note = app.vault.ensure_project_note(project_name)
+        scope_note = app.vault.ensure_project_note(project_name, aliases=aliases)
     elif scope_note and not app.vault.exists(scope_note):
         stem = scope_note.rsplit("/", 1)[-1].removesuffix(".md")
-        scope_note = app.vault.ensure_project_note(stem.replace("-", " "))
+        scope_note = app.vault.ensure_project_note(stem.replace("-", " "), aliases=aliases)
     roots = [_norm(r) for r in (roots or []) if r]
     cid = ulid()
     now = db.now_iso()
@@ -127,6 +128,7 @@ async def _create(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
             preset=args.get("preset"),
             title=args.get("title"),
             excerpt=args.get("excerpt"),
+            aliases=args.get("aliases") or None,
             created_by=f"conversation:{ctx.conversation_id}",
         )
     except ThreadError as exc:
@@ -267,6 +269,7 @@ def tools() -> list[Tool]:
                 "goal": {"type": "string"},
                 "scope_note": {"type": "string", "description": "vault path of the project note"},
                 "project_name": {"type": "string", "description": "name for a new project note when none exists"},
+                "aliases": {"type": "array", "items": {"type": "string"}, "description": "other names people will use for a new project note"},
                 "excerpt": {"type": "string"},
                 "roots": {"type": "array", "items": {"type": "string"}},
                 "preset": {"type": "string"},

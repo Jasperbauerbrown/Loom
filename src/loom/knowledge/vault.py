@@ -477,9 +477,10 @@ class Vault:
         return self.read(row["path"]).body.strip()
 
     # -- entity helpers ---------------------------------------------------------
-    def ensure_project_note(self, name: str, root: str | None = None) -> str:
+    def ensure_project_note(self, name: str, root: str | None = None, aliases: list[str] | None = None) -> str:
         """The project note a thread scopes to (03 §6.7). Idempotent: an existing note
-        with this slug is returned untouched."""
+        with this slug is returned untouched. `aliases` are the names people will use
+        for it ("3d map", "map project"); the project name is always one."""
         stem = notes.slug(name)
         path = f"projects/{stem}.md"
         if self.exists(path):
@@ -488,7 +489,7 @@ class Vault:
         text = self.template("project", title=name, alias=name.strip().lower(), root=str(folder).replace("\\", "/"))
         parsed = notes.parse(text)
         fm = dict(parsed.frontmatter)
-        fm["aliases"] = clean_aliases([name])
+        fm["aliases"] = clean_aliases([name, *(aliases or [])])
         fm["root"] = str(folder).replace("\\", "/")
         self.write(path, parsed.body, op="create", frontmatter=fm, actor="loom")
         return path

@@ -221,10 +221,10 @@ async def test_transient_retries_once(app, fake):
 
 async def test_cancel_persists_partial(app, fake):
     desk = app.desk_id()
-    fake.script(Scripted(content="one two three four five", delay_s=0.05))
+    fake.script(Scripted(content="one two three four five", delay_s=0.4))
     conversation.post(app, desk, "talk")  # wakes the turn task
     task = app.tasks[f"turn:{desk}"]
-    await asyncio.sleep(0.01)
+    await asyncio.sleep(0.05)  # well inside the fake's delay, even under full-suite load
     app.cancel_flags.add(desk)
     await task
     ev = _events(app, desk, ["assistant"])
