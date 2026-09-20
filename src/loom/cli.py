@@ -378,7 +378,8 @@ def cmd_schedules(args: argparse.Namespace) -> int:
 def cmd_promote(args: argparse.Namespace) -> int:
     api = Api(base_url(args), token_for(args), timeout=600.0)
     try:
-        print(json.dumps(api.post("/system/promote", json={"ref": args.ref}), indent=2, sort_keys=True))
+        body = {"ref": args.ref, "acknowledge_protected": bool(args.acknowledge_protected)}
+        print(json.dumps(api.post("/system/promote", json=body), indent=2, sort_keys=True))
         return 0
     finally:
         api.close()
@@ -464,8 +465,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("schedules", help="list schedules").set_defaults(func=cmd_schedules)
 
-    promote = sub.add_parser("promote", help="promote a git ref")
+    promote = sub.add_parser("promote", help="promote a git ref (plan it first: GET /api/system/promote/plan)")
     promote.add_argument("ref")
+    promote.add_argument(
+        "--acknowledge-protected",
+        action="store_true",
+        help="confirm a promotion whose diff touches protected paths (the 409 lists them)",
+    )
     promote.set_defaults(func=cmd_promote)
 
     sub.add_parser("rollback", help="roll back to the previous release").set_defaults(func=cmd_rollback)

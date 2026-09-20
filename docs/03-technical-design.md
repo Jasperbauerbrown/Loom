@@ -1036,7 +1036,7 @@ over the WS stream (one reducer per event type) with REST for initial loads. Bui
 `loom serve [--port] [--no-supervisor]`, `send [--thread ID|--new "goal"] "text"`
 (streams and blocks until the turn ends; exit code reflects status), `threads [--all]`,
 `approvals [--allow ID|--deny ID]`, `items`, `status`, `reindex`, `vault search|read`,
-`schedules`, `promote REF`, `rollback`. All commands are thin REST clients; the CLI
+`schedules`, `promote REF [--acknowledge-protected]` (a promotion whose diff touches protected paths is refused with the file list until the flag is given), `rollback`. All commands are thin REST clients; the CLI
 holds no logic of its own.
 
 `send` follows a turn by polling `GET /conversations/{id}/events?after=` every 0.5s and
