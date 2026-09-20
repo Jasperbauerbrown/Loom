@@ -1,11 +1,55 @@
-"""Package wiring for loom.knowledge (stub until its work package lands).
+"""Knowledge: the vault (truth), the index (cache), the watcher (external edits).
 
-Contract with app.py: install(app) is synchronous wiring (register tools, attach
-objects to app); start(app)/stop(app) are optional async lifecycle hooks.
+`install(app)` bootstraps the vault — git repo, type folders, core templates — and
+attaches `app.vault`, `app.index`, `app.watcher`, then registers the knowledge tools.
+It must work against an empty directory, because that is the first-run case and the
+test fixture's case alike.
+
+`start(app)` rebuilds the index when it disagrees with the files (03 §3.2) and starts
+the watcher; `stop(app)` stops the watcher. Nothing here can fail the backend: a missing
+git binary costs history, a missing embedding model costs cosine search, and both
+degrade to a working vault with alias and full-text retrieval.
 """
 
 from __future__ import annotations
 
+import logging
+from typing import Any
 
-def install(app) -> None:  # type: ignore[no-untyped-def]
-    pass
+log = logging.getLogger(__name__)
+
+
+def install(app: Any) -> None:
+    from ..tools.native import knowledge as knowledge_tools
+    from .index import Index
+    from .vault import Vault
+
+    app.vault = Vault(app)
+    app.vault.bootstrap()
+    app.index = Index(app)
+    from .watcher import Watcher
+
+    app.watcher = Watcher(app)
+    for tool in knowledge_tools.tools():
+        app.tools.register(tool, replace=True)
+
+
+async def start(app: Any) -> None:
+    try:
+        if app.index.stale():
+            result = await app.index.a_rebuild()
+            log.info(
+                "vault index rebuilt: %s notes, %s aliases, %s links in %sms",
+                result["notes"], result["aliases"], result["links"], result["ms"],
+            )
+        else:
+            app.index.load()
+            await app.index.embed_pending()
+    except Exception:
+        log.exception("knowledge: index startup failed; retrieval degrades to what is indexed")
+    app.watcher.start()
+
+
+async def stop(app: Any) -> None:
+    if app.watcher is not None:
+        app.watcher.stop()
