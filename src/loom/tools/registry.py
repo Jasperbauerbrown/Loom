@@ -43,6 +43,9 @@ class ToolContext:
     call_id: str
     event_id: int | None = None  # the tool_call event, once persisted
     request_text: str = ""  # the claimed user text / thread goal, for classify and logs
+    priority: int = 0  # model-queue priority of the turn that issued the call (0 interactive)
+    meta: dict[str, Any] = field(default_factory=dict)  # dispatcher writes {policy, decision, reason}
+    extras: dict[str, Any] = field(default_factory=dict)  # per-turn scratch (tool_search's "exposed")
 
     @property
     def conversation_id(self) -> str:
@@ -65,11 +68,23 @@ class Tool:
     parameters: dict[str, Any]  # JSON schema object: {"type":"object","properties":{...},"required":[...]}
     handler: Handler
     read_only: bool = False  # MCP readOnlyHint
+    read_only_for: Callable[[dict[str, Any]], bool] | None = None  # per-call read-only test (http GET/HEAD)
     destructive: bool = False  # MCP destructiveHint
     path_params: tuple[str, ...] = ()  # args the fs guard resolves and checks
     timeout_s: float | None = None  # None → dispatcher picks by source/kind
     source: str = "native"  # native | mcp:<server> | connector:<name>
     deferred: bool = False  # true when hidden behind tool_search this turn (set by registry.expose)
+
+    def is_read_only(self, args: dict[str, Any] | None = None) -> bool:
+        """Effective read-only for one call: the static hint, or the per-call test."""
+        if self.read_only:
+            return True
+        if self.read_only_for is None:
+            return False
+        try:
+            return bool(self.read_only_for(args or {}))
+        except Exception:
+            return False
 
     def to_openai(self) -> dict[str, Any]:
         return {
@@ -87,6 +102,7 @@ class Tool:
             "description": self.description,
             "parameters": self.parameters,
             "read_only": self.read_only,
+            "read_only_for": self.read_only_for is not None,
             "destructive": self.destructive,
             "path_params": list(self.path_params),
             "timeout_s": self.timeout_s,
