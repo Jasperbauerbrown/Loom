@@ -1029,7 +1029,8 @@ over the WS stream (one reducer per event type) with REST for initial loads. Bui
   seconds and nightly time, curation similarity threshold, auto-commit external edits.
 - **Permissions**: per-tool mode table (allow/ask/classify, grouped native / MCP /
   connector), shell read-only command list, allowed roots, protected paths, shell
-  flavour (cmd/Git Bash/PowerShell/sh), classifier role.
+  flavour (cmd/Git Bash/PowerShell/sh), classifier role, classifier timeout (a verdict slower
+  than this becomes an ask; one retry when the provider is busy).
 - **Integrations**: MCP servers (CRUD, test connection, refresh tools, env with secret
   picker), connectors (enable, config form, reload, status), secrets (names only:
   add/replace/delete; values write-only).

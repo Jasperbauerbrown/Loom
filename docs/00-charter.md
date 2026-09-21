@@ -616,3 +616,7 @@ sessions do not re-litigate.
   transcripts stay append-only and searchable. Vault folders can be deleted from the UI
   in one revertible commit (`core/` refused); "open in file manager" is bounded to
   APP_HOME and the allowed roots.
+- **2026-09-21** — The permission judge has its own bounded timeout
+  (`permissions.classifier_timeout_s`, default 45 s, one retry on a busy provider) and
+  fails closed to `ask` with the reason on the card. A hosted 9B judge stalled ten
+  minutes behind OpenRouter's 429s; a verdict that late is worth nothing.

@@ -132,6 +132,11 @@ async def judge(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) ->
     """("allow"|"ask", reason). Never raises."""
     from ..models import roles
 
+    # A verdict is worth nothing if it arrives minutes later: the provider's generous
+    # streaming timeouts are for real generations. The judge gets a short bound of its
+    # own (a setting), one retry for a busy provider, and then fails closed to `ask`
+    # with the reason visible on the approval card (2026-09-21).
+    bound = float(app.settings.get("permissions.classifier_timeout_s"))
     try:
         role = classifier_role(app, ctx.conversation)
         request = roles.build_request(
@@ -141,16 +146,20 @@ async def judge(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) ->
                 {"role": "system", "content": prompts.load("classify")},
                 {"role": "user", "content": render_inputs(app, ctx, tool, args)},
             ],
+            overrides={"timeout_s": bound, "stream_idle_s": bound},
             conversation_id=(ctx.conversation or {}).get("id"),
             purpose="classify",
         )
         result = await app.models.chat(request, priority_for(ctx))
+        if not getattr(result, "ok", False) and getattr(result, "outcome", "") == "transient":
+            log.info("classifier transient failure (%s); retrying once", result.error)
+            result = await app.models.chat(request, priority_for(ctx))
     except Exception as exc:
         log.warning("classifier call failed: %r", exc)
         return "ask", f"classifier unavailable: {type(exc).__name__}: {exc}"
 
     if not getattr(result, "ok", False):
-        return "ask", f"classifier unavailable: {result.error or result.outcome}"
+        return "ask", f"classifier did not answer ({result.error or result.outcome}; bound {bound:.0f}s) — asking instead"
     payload = extract_json(result.content or "")
     if payload is None:
         return "ask", "classifier unavailable: no JSON verdict in the reply"
