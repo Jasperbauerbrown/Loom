@@ -7,6 +7,9 @@ threads. Entry points every other package uses:
         Schedule run_turn unless a turn is already running (it claims the inbox itself).
     run_turn(app, conversation_id)   (runner.py) — the only agent loop.
     create_thread(app, ...)          (tools.py) — spawn, used by the tool and the API.
+    status_fields(app, conv) / write_status(app, conv, fields, owner)   (status.py) —
+        the one reader and writer of a thread's status; the sink is the scope note's
+        block or, for a task without one, `status` events in its own transcript.
 """
 
 from __future__ import annotations
@@ -16,6 +19,8 @@ from typing import Any
 
 from .. import db
 from .runner import run_turn, wake  # noqa: F401  (re-exported)
+from .status import read as status_fields  # noqa: F401
+from .status import write as write_status  # noqa: F401
 from .tools import ThreadError, create_thread, tools  # noqa: F401
 
 log = logging.getLogger(__name__)

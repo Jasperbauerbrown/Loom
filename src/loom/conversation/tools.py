@@ -13,7 +13,7 @@ from typing import Any
 from .. import db, items, prompts
 from ..ids import ulid
 from ..tools.registry import Tool, ToolContext, ToolResult
-from . import compaction, events
+from . import compaction, events, status
 
 
 class ThreadError(Exception):
@@ -150,7 +150,9 @@ async def _create(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         )
     except ThreadError as exc:
         return ToolResult.error(str(exc))
-    return ToolResult(f"created thread {row['id']} (\"{row['title']}\"); scope note: {row.get('scope_note') or 'none'}. It will report back when it needs input or finishes.")
+    scope = row.get("scope_note")
+    kind = f"scope note: {scope}" if scope else "a task (no scope note; status in its transcript, walkthrough to the daily log)"
+    return ToolResult(f"created thread {row['id']} (\"{row['title']}\"); {kind}. It will report back when it needs input or finishes.")
 
 
 async def _send(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
@@ -213,54 +215,64 @@ async def _finish(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     if not summary or not walkthrough:
         return ToolResult.error("summary and walkthrough are both required")
     scope = conv.get("scope_note")
-    note_path = None
-    if scope:
-        stem = scope.rsplit("/", 1)[-1].removesuffix(".md")
-        note_path = f"projects/{stem}/walkthrough-{local_date(app)}.md"
-        n = 2
-        while app.vault.exists(note_path):
-            note_path = f"projects/{stem}/walkthrough-{local_date(app)}-{n}.md"
-            n += 1
-        try:
+    date = local_date(app)
+    title = conv.get("title") or conv["id"]
+    try:
+        if scope:
+            # A project: its own walkthrough note, linked from the project note.
+            stem = scope.rsplit("/", 1)[-1].removesuffix(".md")
+            note_path = f"projects/{stem}/walkthrough-{date}.md"
+            n = 2
+            while app.vault.exists(note_path):
+                note_path = f"projects/{stem}/walkthrough-{date}-{n}.md"
+                n += 1
             app.vault.write(
                 note_path,
-                f"# Walkthrough — {conv.get('title') or stem}\n\n{walkthrough}\n",
+                f"# Walkthrough — {title}\n\n{walkthrough}\n",
                 op="create",
-                frontmatter={"title": f"Walkthrough {local_date(app)}: {conv.get('title') or stem}", "type": "walkthrough", "conversation": conv["id"], "state": state},
+                frontmatter={"title": f"Walkthrough {date}: {title}", "type": "walkthrough", "conversation": conv["id"], "state": state},
             )
             link = note_path.removesuffix(".md")
             note = app.vault.read(scope)
             section = "" if "## Walkthroughs" in note.body else "## Walkthroughs\n"
-            app.vault.write(scope, f"{section}- [[{link}]] ({state}, {local_date(app)})", op="append")
-            app.vault.write_status(scope, conv["id"], {"state": "done" if state == "done" else "blocked", "doing": "", "next": "", "done": summary})
-        except Exception as exc:
-            return ToolResult.error(f"could not write the walkthrough: {exc}")
+            app.vault.write(scope, f"{section}- [[{link}]] ({state}, {date})", op="append")
+        else:
+            # A task: a section in the daily log, so the evidence outlives the transcript
+            # without leaving a project note behind (03 §6.7, decided 2026-09-21).
+            note_path = f"log/{date}.md"
+            section = f"## {title} ({conv['id']})\nstate: {state}\n\n{walkthrough}\n"
+            if app.vault.exists(note_path):
+                app.vault.write(note_path, section, op="append")
+            else:
+                app.vault.write(note_path, f"# {date}\n\n{section}", op="create", frontmatter={"type": "log", "title": date})
+        status.write(app, conv, {"state": "done" if state == "done" else "blocked", "doing": "", "next": "", "done": summary}, owner=conv["id"])
+    except Exception as exc:
+        return ToolResult.error(f"could not write the walkthrough: {exc}")
     ctx.extras["finish"] = {"state": state, "summary": summary, "walkthrough_path": note_path}
     ctx.extras["status_written"] = True
-    return ToolResult(f"finished ({state}); walkthrough at {note_path or '(no scope note)'}. This turn ends now.")
+    return ToolResult(f"finished ({state}); walkthrough at {note_path}. This turn ends now.")
 
 
-STATUS_FIELDS = ("state", "goal", "done", "doing", "next", "blockers")
+STATUS_FIELDS = status.FIELDS
 
 
 async def _status_update(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     app = ctx.app
     conv = ctx.conversation
-    scope = conv.get("scope_note")
-    if not scope:
-        return ToolResult.error("this conversation has no scope note; status_update applies to threads with a project note")
+    if conv["kind"] != "thread":
+        return ToolResult.error("status_update applies to threads; the desk publishes no status")
     fields = {k: (str(v) if not isinstance(v, list) else "\n".join(f"- {x}" for x in v)) for k, v in args.items() if k in STATUS_FIELDS and v is not None}
     if not fields:
         return ToolResult.error("nothing to update; pass at least one of " + ", ".join(STATUS_FIELDS))
-    if "state" in fields and fields["state"] not in ("planning", "working", "blocked", "waiting", "done"):
-        return ToolResult.error("state must be one of planning, working, blocked, waiting, done")
+    if "state" in fields and fields["state"] not in status.STATES:
+        return ToolResult.error("state must be one of " + ", ".join(status.STATES))
     try:
-        app.vault.write_status(scope, conv["id"], fields)
+        sink = status.write(app, conv, fields, owner=conv["id"])
     except Exception as exc:
         return ToolResult.error(f"status write failed: {exc}")
     ctx.extras["status_written"] = True
-    app.bus.emit("knowledge.changed", {"paths": [scope]}, conv["id"])
-    return ToolResult("status block updated: " + ", ".join(fields))
+    where = "status block updated" if sink == "note" else "status recorded"
+    return ToolResult(f"{where}: " + ", ".join(fields))
 
 
 async def _item_post(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
@@ -284,8 +296,8 @@ def tools() -> list[Tool]:
             "conversation_create", prompts.load("tools/conversation_create"),
             _schema({
                 "goal": {"type": "string"},
-                "scope_note": {"type": "string", "description": "vault path of the project note"},
-                "project_name": {"type": "string", "description": "name for a new project note when none exists"},
+                "scope_note": {"type": "string", "description": "vault path of the project note; omit (and project_name) for a one-off task"},
+                "project_name": {"type": "string", "description": "name for a new project note when the work is a project and has no note yet"},
                 "aliases": {"type": "array", "items": {"type": "string"}, "description": "other names people will use for a new project note"},
                 "excerpt": {"type": "string"},
                 "roots": {"type": "array", "items": {"type": "string"}},
@@ -303,7 +315,7 @@ def tools() -> list[Tool]:
         Tool("conversation_finish", prompts.load("tools/conversation_finish"),
              _schema({"summary": {"type": "string"}, "walkthrough": {"type": "string"}, "state": {"type": "string", "enum": ["done", "failed"]}}, ["summary", "walkthrough"]), _finish),
         Tool("status_update", prompts.load("tools/status_update"),
-             _schema({k: {"type": "string"} for k in STATUS_FIELDS} | {"state": {"type": "string", "enum": ["planning", "working", "blocked", "waiting", "done"]}}, []), _status_update),
+             _schema({k: {"type": "string"} for k in STATUS_FIELDS} | {"state": {"type": "string", "enum": list(status.STATES)}}, []), _status_update),
         Tool("item_post", prompts.load("tools/item_post"),
              _schema({"kind": {"type": "string", "enum": ["notification", "setup"]}, "title": {"type": "string"}, "body": {"type": "string"}, "notify": {"type": "boolean"}}, ["title"]), _item_post),
     ]

@@ -6,11 +6,11 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ... import conversation as conv_pkg
 from ... import db
-from ...conversation import events, inbox
+from ...conversation import events, inbox, status
 from ...conversation.context import occupancy
 from ..deps import get_app
 
@@ -18,15 +18,20 @@ router = APIRouter()
 
 
 def _status_line(app, row: dict[str, Any]) -> str:  # type: ignore[no-untyped-def]
-    if row.get("kind") != "thread" or not row.get("scope_note"):
+    if row.get("kind") != "thread":
         return ""
     try:
-        fields, _owner = app.vault.read_status(row["scope_note"])
+        fields, _owner, _sink = status.read(app, row)
     except Exception:
         return ""
     if not fields:
         return ""
     return (fields.get("doing") or fields.get("state") or "").strip()[:200]
+
+
+def _status_payload(app, row: dict[str, Any]) -> dict[str, Any]:  # type: ignore[no-untyped-def]
+    fields, owner, source = status.read(app, row)
+    return {"fields": fields, "owner": owner, "source": source}
 
 
 def _row(app, conversation_id: str) -> dict[str, Any]:  # type: ignore[no-untyped-def]
@@ -140,6 +145,33 @@ async def list_events(
         rows.reverse()
         return rows
     return events.list_events(app, conversation_id, after=after, limit=limit, kinds=kind_list)
+
+
+class StatusBody(BaseModel):
+    fields: dict[str, Any] = Field(default_factory=dict)
+
+
+@router.get("/conversations/{conversation_id}/status")
+async def get_status(conversation_id: str, app=Depends(get_app)) -> dict[str, Any]:
+    """The thread's status wherever it lives: the scope note's block (`source: note`) or
+    its transcript's status events (`source: transcript`, a task)."""
+    return _status_payload(app, _row(app, conversation_id))
+
+
+@router.put("/conversations/{conversation_id}/status")
+async def put_status(conversation_id: str, body: StatusBody, app=Depends(get_app)) -> dict[str, Any]:
+    """The person edits the plan through the same writer the thread uses; a note block
+    keeps its owner, a transcript event records `user` as its author."""
+    row = _row(app, conversation_id)
+    if row["kind"] != "thread":
+        raise HTTPException(400, "the desk publishes no status")
+    if not body.fields:
+        raise HTTPException(400, "fields is empty")
+    try:
+        status.write(app, row, body.fields, owner="user")
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+    return _status_payload(app, row)
 
 
 @router.get("/conversations/{conversation_id}/inbox")

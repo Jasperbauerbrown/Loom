@@ -1,11 +1,18 @@
 // Thread view (`#/c/<id>` for kind==="thread", 03 §6.7). Left: header + conversation.
-// Right: status/plan panel driven by the project note's status block, walkthrough
-// links, artifacts and lineage.
+// Right: status/plan panel (the scope note's status block, or for a task the status
+// events in its transcript), walkthrough links, artifacts and lineage.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { store, useStore } from "../lib/store";
-import type { Artifact, VaultStatus, VaultTreeNode } from "../lib/types";
+import type {
+  Artifact,
+  Conversation as ConversationRow,
+  ThreadStatus,
+  VaultSearchHit,
+  VaultStatus,
+  VaultTreeNode,
+} from "../lib/types";
 import { href, navigate, notePath } from "../lib/router";
 import { bytes, localTime, relativeTime } from "../lib/format";
 import { Badge, Button, Confirm, Empty, FieldRow, Section, Spinner, Textarea } from "../components/ui";
@@ -21,36 +28,49 @@ const STATUS_FIELDS: { key: keyof VaultStatus["fields"]; label: string; multilin
   { key: "blockers", label: "Blockers", multiline: true },
 ];
 
-function StatusPanel({ scopeNote }: { scopeNote: string }) {
-  const [status, setStatus] = useState<VaultStatus | null>(null);
+function StatusPanel({ id, scopeNote }: { id: string; scopeNote: string | null }) {
+  const [status, setStatus] = useState<ThreadStatus | null>(null);
   const [fields, setFields] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const dirtyRef = useRef(false);
+  const markDirty = (value: boolean) => {
+    dirtyRef.current = value;
+    setDirty(value);
+  };
+  // Re-read when the sink changes underneath us: a note write (knowledge.changed) or a
+  // new `status` event in this thread's transcript. Unsaved edits are kept.
+  const knowledgeStale = useStore((s) => s.knowledgeStale, Object.is);
+  const lastStatusEvent = useStore((s) => {
+    const list = s.events[id];
+    if (!list) return 0;
+    for (let i = list.length - 1; i >= 0; i--) if (list[i].kind === "status") return list[i].id;
+    return 0;
+  }, Object.is);
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
     (async () => {
-      const row = await store.guard(() => api.vaultStatus(scopeNote));
+      const row = await store.guard(() => api.conversationStatus(id));
       if (cancelled) return;
       setStatus(row ?? null);
-      setFields((row?.fields as Record<string, string>) ?? {});
-      setDirty(false);
+      if (!dirtyRef.current) setFields((row?.fields as Record<string, string>) ?? {});
       setLoading(false);
     })();
     return () => {
       cancelled = true;
     };
-  }, [scopeNote]);
+  }, [id, scopeNote, knowledgeStale, lastStatusEvent]);
 
   async function save() {
     setSaving(true);
-    const row = await store.guard(() => api.saveVaultStatus(scopeNote, fields));
+    const row = await store.guard(() => api.saveConversationStatus(id, fields));
     setSaving(false);
     if (row) {
       setStatus(row);
-      setDirty(false);
+      setFields((row.fields as Record<string, string>) ?? {});
+      markDirty(false);
     }
   }
 
@@ -62,11 +82,16 @@ function StatusPanel({ scopeNote }: { scopeNote: string }) {
     );
   }
 
+  const where =
+    status?.source === "note"
+      ? `In the project note${status.owner ? ` · owned by ${status.owner}` : ""}`
+      : status?.source === "transcript"
+        ? `In the transcript${status.owner ? ` · last written by ${status.owner}` : ""}`
+        : "";
+
   return (
     <div>
-      {status?.owner ? (
-        <p className="mb-2 text-[11.5px] text-neutral-500">Owned by {status.owner}</p>
-      ) : null}
+      {where ? <p className="mb-2 text-[11.5px] break-words text-neutral-500">{where}</p> : null}
       {STATUS_FIELDS.map(({ key, label, multiline }) => (
         <FieldRow key={key} label={label}>
           {multiline ? (
@@ -75,7 +100,7 @@ function StatusPanel({ scopeNote }: { scopeNote: string }) {
               value={fields[key] ?? ""}
               onChange={(e) => {
                 setFields({ ...fields, [key]: e.target.value });
-                setDirty(true);
+                markDirty(true);
               }}
             />
           ) : (
@@ -84,7 +109,7 @@ function StatusPanel({ scopeNote }: { scopeNote: string }) {
               value={fields[key] ?? ""}
               onChange={(e) => {
                 setFields({ ...fields, [key]: e.target.value });
-                setDirty(true);
+                markDirty(true);
               }}
             />
           )}
@@ -113,37 +138,58 @@ function collectNotes(nodes: VaultTreeNode[]): VaultTreeNode[] {
   return out;
 }
 
-function WalkthroughLinks({ scopeNote }: { scopeNote: string }) {
-  // Walkthroughs live at projects/<name>/walkthrough-YYYY-MM-DD.md (03 §6.7): list them
-  // from the vault tree by path, newest first. The tree is dropped on knowledge.changed,
-  // so a finish that writes one shows up here without a refresh.
+type WalkthroughHit = { path: string; title?: string | null };
+
+function WalkthroughLinks({ conversation }: { conversation: ConversationRow }) {
+  // A project's walkthroughs live at projects/<name>/walkthrough-YYYY-MM-DD.md (03 §6.7):
+  // list them from the vault tree by path, newest first. A task's walkthrough is a
+  // section of the daily log naming the thread id: find those by search. Both refresh on
+  // knowledge.changed, so a finish shows up here without a reload.
+  const scopeNote = conversation.scope_note;
   const tree = useStore((s) => s.vaultTree);
+  const knowledgeStale = useStore((s) => s.knowledgeStale, Object.is);
+  const [logHits, setLogHits] = useState<VaultSearchHit[] | null>(null);
+
   useEffect(() => {
-    if (tree === null) void store.loadVaultTree();
-  }, [tree]);
-  const prefix = scopeNote.replace(/\.md$/, "") + "/walkthrough-";
-  const hits = useMemo(
-    () =>
-      tree === null
-        ? null
-        : collectNotes(tree)
-            .filter((n) => n.path.startsWith(prefix))
-            .sort((a, b) => (a.path < b.path ? 1 : -1)),
-    [tree, prefix],
-  );
+    if (scopeNote && tree === null) void store.loadVaultTree();
+  }, [scopeNote, tree]);
+
+  useEffect(() => {
+    if (scopeNote) return;
+    let cancelled = false;
+    (async () => {
+      const rows = await store.guard(() => api.vaultSearch(conversation.id));
+      if (!cancelled) setLogHits((rows ?? []).filter((h) => h.path.startsWith("log/")));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [scopeNote, conversation.id, knowledgeStale]);
+
+  const prefix = (scopeNote ?? "").replace(/\.md$/, "") + "/walkthrough-";
+  const hits = useMemo<WalkthroughHit[] | null>(() => {
+    if (!scopeNote) return logHits;
+    if (tree === null) return null;
+    return collectNotes(tree)
+      .filter((n) => n.path.startsWith(prefix))
+      .sort((a, b) => (a.path < b.path ? 1 : -1));
+  }, [scopeNote, tree, prefix, logHits]);
 
   if (hits === null) return <Spinner />;
   if (hits.length === 0) return <Empty>No walkthroughs yet.</Empty>;
   return (
-    <ul className="space-y-1">
-      {hits.map((h) => (
-        <li key={h.path}>
-          <a className="text-[12.5px] text-sky-700 hover:underline dark:text-sky-400" href={notePath(h.path)}>
-            {h.title || h.path}
-          </a>
-        </li>
-      ))}
-    </ul>
+    <div>
+      {!scopeNote ? <p className="mb-1 text-[11px] text-neutral-500">In the daily log</p> : null}
+      <ul className="space-y-1">
+        {hits.map((h) => (
+          <li key={h.path}>
+            <a className="text-[12.5px] text-sky-700 hover:underline dark:text-sky-400" href={notePath(h.path)}>
+              {h.title || h.path}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -230,16 +276,20 @@ export function ThreadView({ id }: { id: string }) {
               </dd>
             </div>
           ) : null}
-          {conversation.scope_note ? (
-            <div className="flex justify-between gap-2">
-              <dt className="text-neutral-500">Scope note</dt>
-              <dd className="truncate">
+          <div className="flex justify-between gap-2">
+            <dt className="text-neutral-500">Scope note</dt>
+            <dd className="truncate">
+              {conversation.scope_note ? (
                 <a className="text-sky-700 hover:underline dark:text-sky-400" href={notePath(conversation.scope_note)}>
                   {conversation.scope_note}
                 </a>
-              </dd>
-            </div>
-          ) : null}
+              ) : (
+                <span className="text-neutral-500" title="A task: status in its transcript, walkthrough in the daily log">
+                  none (task)
+                </span>
+              )}
+            </dd>
+          </div>
           <div className="flex justify-between gap-2">
             <dt className="text-neutral-500">Created</dt>
             <dd>{localTime(conversation.created_at)}</dd>
@@ -254,16 +304,12 @@ export function ThreadView({ id }: { id: string }) {
           ) : null}
         </dl>
 
-        {conversation.scope_note ? (
-          <>
-            <Section title="Status">
-              <StatusPanel scopeNote={conversation.scope_note} />
-            </Section>
-            <Section title="Walkthroughs">
-              <WalkthroughLinks scopeNote={conversation.scope_note} />
-            </Section>
-          </>
-        ) : null}
+        <Section title="Status">
+          <StatusPanel id={id} scopeNote={conversation.scope_note} />
+        </Section>
+        <Section title="Walkthroughs">
+          <WalkthroughLinks conversation={conversation} />
+        </Section>
 
         <Section title="Artifacts">
           <ArtifactsList id={id} />

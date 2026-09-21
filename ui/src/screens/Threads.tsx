@@ -148,14 +148,17 @@ function NewThreadDialog({ onClose }: { onClose: () => void }) {
         />
       </FieldRow>
 
-      <FieldRow label="Scope note" help="The project note this thread will read and write status to.">
+      <FieldRow
+        label="Scope note (optional)"
+        help="Leave empty for a one-off task: its status stays in its transcript and its walkthrough goes to the daily log. Give a project note when the work has a filesystem root, produces files, or you will come back to it."
+      >
         <Input
           value={scopeNote ?? scopeQuery}
           onChange={(e) => {
             setScopeNote(null);
             setScopeQuery(e.target.value);
           }}
-          placeholder="Search project notes…"
+          placeholder="Search project notes, or leave empty for a task…"
         />
         {!scopeNote && (hits.length > 0 || slug) ? (
           <div className="mt-1 max-h-40 overflow-y-auto rounded-md border border-neutral-200 dark:border-neutral-800">

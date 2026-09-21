@@ -216,7 +216,7 @@ vault/
   core/           about-me.md  preferences.md  conventions.md   (always in context, §7)
   devices/  projects/  people/  connectors/  courses/  topics/   (one note per entity)
   procedures/<name>/SKILL.md [+ scripts/, references/]           (Agent Skills format)
-  log/YYYY-MM-DD.md                                              (optional daily notes, agent-written)
+  log/YYYY-MM-DD.md                                              (daily notes, agent-written: task walkthroughs land here)
 ```
 
 Note format:
@@ -478,21 +478,35 @@ writes back (the factor is a property of model + content, so the preset is its h
 
 ### 6.7 Threads
 - **Spawn** (`conversation.create`): payload = `goal`, optional `scope_note` (project
-  note path; created first if missing, with `root` under `projects_root` setting),
-  optional `roots`, `excerpt` (model-selected text from the parent), optional `preset`
-  override (a preset name; validated against enabled presets).
+  note path; created first if missing, with `root` under `projects_root` setting) or
+  `project_name`, optional `roots`, `excerpt` (model-selected text from the parent),
+  optional `preset` override (a preset name; validated against enabled presets).
   `depth = parent.depth + 1`; refused above `max_thread_depth` (default 3).
   Row written and `conversation.created` emitted **before** the first turn is scheduled.
-- **Scope in context**: the project note (with status block) is slot [5] every turn.
-- **Status**: `status_update(fields)` rewrites the block; the safety net (§6.3 step 5)
-  guarantees at most one turn of staleness.
+- **Project or task** (decided 2026-09-21): the scope note is optional. A thread with one
+  is a project; a thread without one is a *task* — bounded work (investigate, check,
+  report, update notes) that must not leave a dead project note behind. The nullable
+  column picks every sink below; nothing else knows the difference, so a task that grows
+  into a project is a field set (`scope_note`), not a migration. The desk chooses at
+  spawn time with the effort ladder's question: a filesystem root, files to produce, or
+  the person coming back to it → project; otherwise a task.
+- **Scope in context**: slot [5] every turn is the project note (with status block) or,
+  for a task, the goal plus the current status fields.
+- **Status**: one reader and one writer (`conversation/status.py`). `status_update(fields)`
+  rewrites the note's block, or for a task appends a `status` event to its own
+  transcript (`content` = one-line summary, `meta = {fields, owner}`; merged with the
+  previous event, never replayed to the model). The now board, the status line and the
+  thread panel read through the same call; the safety net (§6.3 step 5) guarantees at
+  most one turn of staleness either way.
 - **Events to parent**: on state change (`blocked`, `waiting`, `done`, `failed`) the
   runner writes an inbox row to `parent_id` with a header and a summary, plus an `item`
   (policy from settings: thread events default *interrupt* → notification). The parent
   verifies by judgment (charter §5.7); nothing else fires.
 - **Finish** (`conversation.finish(summary, walkthrough)`): writes the walkthrough as a
   linked note `projects/<name>/walkthrough-YYYY-MM-DD.md` (what changed, how verified,
-  artifact ids of test output), sets status `done`, emits to parent.
+  artifact ids of test output) — or, for a task, appends it as a section
+  `## <title> (<id>)` to the daily note `log/YYYY-MM-DD.md` (created on first use) —
+  sets status `done`, emits to parent.
 - **User in a thread**: the same surface calls as the desk; user messages set priority 0
   for that turn.
 - **Turn end without finish** (decided 2026-09-20): a thread turn that ends with plain
@@ -513,7 +527,7 @@ writes back (the factor is a property of model + content, so the preset is its h
 | — | *end of cache-friendly prefix* | | |
 | [7] | `summary` (if any), fenced `<context from="harness">` | user, right after the prefix | changes only on fold |
 | [8] | Live events since `summary_cutoff`, replayed in order; `thinking`/`system`/`status` kinds skipped; evictions applied | assistant / user / tool | stable within a turn |
-| [5]+[6] | Desk: the **now board** (pending approvals, unseen items, running threads with one-line status). Thread: the **project note** including status block. Then `now: 2026-09-20 14:02 (America/…)` + threads: `[steps remaining: N]`. One fenced `<context from="harness">` block | user, immediately before this turn's messages | volatile |
+| [5]+[6] | Desk: the **now board** (pending approvals, unseen items, running threads with one-line status). Thread: the **project note** including status block, or for a task the goal + its status fields. Then `now: 2026-09-20 14:02 (America/…)` + threads: `[steps remaining: N]`. One fenced `<context from="harness">` block | user, immediately before this turn's messages | volatile |
 | [9] | Resolved entities for this input (§8.2–8.3), wrapped `<knowledge may_be_irrelevant="true">…</knowledge>`; ephemeral, never persisted | user | volatile |
 | [10] | Claimed inbox messages as user-role messages, then the turn's own assistant / tool messages | user / assistant / tool | volatile |
 
@@ -700,7 +714,7 @@ Registry = native tools + MCP tools (prefixed `mcp_<server>_<tool>`) + connector
 | `shell` | one command line, `cwd` in roots, env passthrough minus secrets, timeout, output cap; Windows: cmd.exe or Git Bash per setting | no | classify (pre-filter first) |
 | `http` | GET/POST/… with headers/body; secret templating | no (GET treated read-only) | classify |
 | `knowledge_*`, `procedure_load`, `transcript_search`, `artifact_recall` | §8.4 | mixed | allow (core/ → ask) |
-| `status_update` | write the status block of the thread's scope note | no | allow |
+| `status_update` | publish the thread's status: the scope note's block, or `status` events in a task's transcript | no | allow |
 | `conversation_create / send / read / list / finish` | §6.7 | read/list yes | allow |
 | `schedule_create / list / delete` | §11 | list yes | allow (caps enforced) |
 | `item_post` | put a notification/setup item on the now board | no | allow |
@@ -906,6 +920,7 @@ POST /conversations/{id}/messages {content}  → 202 {inbox_id}; 409 when no mod
 POST /conversations/{id}/cancel         POST /conversations/{id}/archive     POST /conversations/{id}/clear (409 while running)
 GET  /conversations/{id}/occupancy      GET  /conversations/{id}/artifacts     GET /artifacts/{id}?offset&limit
 GET  /conversations/{id}/inbox          rows posted but not yet in the transcript (surfaces render them as *queued*)
+GET  /conversations/{id}/status         → {fields|null, owner|null, source: note|transcript|none}   PUT /conversations/{id}/status {fields} (owner `user`; a note block keeps its owner)
 GET  /approvals?status                  GET  /approvals/{id}   POST /approvals/{id} {decision: allow|deny|allow_always, add_root?}
 GET  /items?unseen&include_dismissed    GET  /items/{id}   POST /items/{id}/seen   POST /items/{id}/dismiss
 GET  /vault/tree                        GET  /vault/note?path   PUT /vault/note {path, content}   DELETE /vault/note?path   DELETE /vault/folder?path (core/ refused)
@@ -1001,10 +1016,12 @@ remembered in `localStorage` so a reload does not flash the default look.
   actionable. Header: occupancy meter (used/limit, colour by proximity to compaction),
   queue indicator, model role in use.
 - **Threads**. List (status, goal, last update, depth tree). Thread view = same
-  conversation component + a **Status/plan panel** rendering the status block as an
-  editable form (edits write through `PUT /vault/note`), links to walkthroughs and
-  artifacts, "open project folder" and "spawned by" links. Create-thread dialog:
-  goal, scope note (search/create), roots, role.
+  conversation component + a **Status/plan panel** rendering the status as an editable
+  form for every thread (`GET`/`PUT /conversations/{id}/status`, captioned "in the
+  project note" or "in the transcript"), links to walkthroughs (the project folder's
+  notes, or for a task the `log/` notes naming it) and artifacts, "open project folder"
+  and "spawned by" links; a task shows "none (task)" for its scope note. Create-thread
+  dialog: goal, scope note (optional; search/create — empty spawns a task), roots, role.
 - **Vault**. Tree by type; note view/edit (Markdown editor with wikilink completion and
   frontmatter form); backlinks and outgoing links; search (fused); **Recent changes**
   (git log with diff and revert); wanted notes (dangling links); core block fill meters;

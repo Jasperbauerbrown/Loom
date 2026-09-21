@@ -371,6 +371,14 @@ export interface VaultStatus {
   owner?: string | null;
 }
 
+/** `GET`/`PUT /conversations/{id}/status`: a thread's status wherever it lives — the
+ *  scope note's block (`note`) or, for a task, `status` events in its transcript. */
+export interface ThreadStatus {
+  fields: VaultStatus["fields"] | null;
+  owner: string | null;
+  source: "note" | "transcript" | "none";
+}
+
 export interface CoreMeter {
   path: string;
   chars: number;

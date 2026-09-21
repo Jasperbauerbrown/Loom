@@ -31,6 +31,7 @@ import type {
   SetupState,
   Snapshot,
   SupervisorStatus,
+  ThreadStatus,
   ToolPolicy,
   VaultChange,
   VaultNote,
@@ -224,6 +225,10 @@ export const api = {
   vaultStatus: (path: string) => get<VaultStatus>("/vault/status", { path }),
   saveVaultStatus: (path: string, fields: Record<string, string>) =>
     put<VaultStatus>("/vault/status", { path, fields }),
+  /** A thread's status from whichever sink holds it (note block or transcript). */
+  conversationStatus: (id: string) => get<ThreadStatus>(`/conversations/${id}/status`),
+  saveConversationStatus: (id: string, fields: Record<string, string>) =>
+    put<ThreadStatus>(`/conversations/${id}/status`, { fields }),
   vaultCore: () => get<CoreMeter[]>("/vault/core"),
   vaultWanted: () => get<{ target: string; sources: string[] }[]>("/vault/wanted"),
   vaultProcedures: () => get<Procedure[]>("/vault/procedures"),

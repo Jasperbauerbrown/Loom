@@ -29,7 +29,7 @@ from ..models import roles
 from ..models.types import PRIORITY_BACKGROUND, PRIORITY_INTERACTIVE, ChatRequest, Delta, Result, ToolCall
 from ..tools import approvals, dispatch
 from ..tools.registry import ToolContext, ToolResult
-from . import compaction, events, inbox
+from . import compaction, events, inbox, status
 from .context import Context, assemble, resolve_knowledge, strip_private
 from .compaction import CompactionError
 
@@ -470,11 +470,8 @@ def _post_turn(app, state: TurnState) -> None:  # type: ignore[no-untyped-def]
 async def _status_safety_net(app, state: TurnState) -> None:  # type: ignore[no-untyped-def]
     """Threads: a turn that wrote no status gets one at turn end (03 §6.3 step 5)."""
     conv = state.conv
-    path = conv.get("scope_note")
-    if not path:
-        return
     try:
-        fields, owner = app.vault.read_status(path)
+        fields, owner, _sink = status.read(app, conv)
     except Exception:
         fields, owner = None, None
     turn_events = events.list_events(app, state.cid, after=(state.turn_start_event_id or 1) - 1, limit=10_000)
@@ -495,8 +492,7 @@ async def _status_safety_net(app, state: TurnState) -> None:  # type: ignore[no-
         new_fields = _extract_json(result.content)
         if state.finished is not None:
             new_fields["state"] = "done" if state.finished.get("state", "done") == "done" else "blocked"
-        app.vault.write_status(path, owner or state.cid, new_fields)
-        app.bus.emit("knowledge.changed", {"paths": [path]}, state.cid)
+        status.write(app, conv, new_fields, owner=owner or state.cid)
     except Exception as exc:
         log.warning("status safety net failed for %s: %s", state.cid, exc)
         _system(app, state.cid, f"status safety net failed: {exc}")

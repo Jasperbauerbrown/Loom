@@ -22,7 +22,7 @@ from typing import Any
 
 from .. import db, items, prompts
 from ..tools.registry import Tool
-from . import events, inbox
+from . import events, inbox, status
 
 KNOWLEDGE_OPEN = '<knowledge may_be_irrelevant="true">'
 KNOWLEDGE_CLOSE = "</knowledge>"
@@ -124,13 +124,12 @@ def now_board(app) -> str:  # type: ignore[no-untyped-def]
     ).fetchall()
     for t in threads:
         doing = ""
-        if t["scope_note"]:
-            try:
-                fields, _owner = app.vault.read_status(t["scope_note"])
-                if fields:
-                    doing = fields.get("doing") or fields.get("state") or ""
-            except Exception:
-                doing = ""
+        try:
+            fields, _owner, _sink = status.read(app, dict(t))
+            if fields:
+                doing = fields.get("doing") or fields.get("state") or ""
+        except Exception:
+            doing = ""
         label = t["title"] or t["goal"][:60]
         lines.append(f'- thread "{label}" ({t["id"]}): {t["status"]}' + (f" — {doing[:120]}" if doing else ""))
     if not lines:
@@ -141,7 +140,12 @@ def now_board(app) -> str:  # type: ignore[no-untyped-def]
 def scope_block(app, conv: dict[str, Any]) -> str:  # type: ignore[no-untyped-def]
     path = conv.get("scope_note")
     if not path:
-        return f"# Scope\ngoal: {conv.get('goal') or ''}\n(no scope note)"
+        # A task: no project note; its status lives in its own transcript (03 §6.7).
+        try:
+            fields, _owner, _sink = status.read(app, conv)
+        except Exception:
+            fields = None
+        return f"# Scope\ngoal: {conv.get('goal') or ''}\n\n# Status\n{status.render(fields)}"
     try:
         note = app.vault.read(path)
         body = note.body if note.error is None else note.raw

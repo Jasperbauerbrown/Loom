@@ -7,7 +7,7 @@ import { store } from "../../lib/store";
 import { Input, Select, Spinner } from "../ui";
 import { notePath } from "../../lib/router";
 
-const TYPES = ["", "device", "project", "people", "connector", "course", "topic", "procedure"];
+const TYPES = ["", "device", "project", "people", "connector", "course", "topic", "procedure", "log"];
 
 export function VaultSearch() {
   const [q, setQ] = useState("");

@@ -420,12 +420,8 @@ per-tool permission mode, allowed roots and protected paths.
 - Connectors: hot-load individually, or always via promotion + restart? Lean: restart
   only, until it hurts.
 - The `classify` policy text: what counts as in-scope for a thread vs. the desk?
-- Projects vs. tasks (raised 2026-09-21): every thread scopes to a note under
-  `projects/`, so a one-off investigation (find the printers on the LAN) leaves a dead
-  project note and a walkthrough folder behind while its real output is a device note.
-  Candidate mechanisms: optional scope note (a task is a thread without one; status
-  lives in the transcript's `status` events); scope to any entity note; a `tasks/`
-  type with its own retention; retention by shape. Undecided.
+- Projects vs. tasks: decided 2026-09-21 (see the decision log) — the scope note is
+  optional; a thread without one is a task.
 - Pre-load token budget and compaction thresholds (tuning, not design).
 - Companion doc: `03-technical-design.md` carries implementation-level detail.
 
@@ -661,3 +657,10 @@ sessions do not re-litigate.
   search; the Approvals screen orders its buttons like the inline card. Left open: the
   now board's "Queued" group holds unseen items and now shares a word with queued
   messages; the `mono` palette's dark badges and links are faint by construction.
+- **2026-09-21** — A thread's scope note is optional; a thread without one is a *task*.
+  Status goes through one reader and one writer whose sink the nullable column picks:
+  the note's block for a project, `status` events in the thread's own transcript for a
+  task (never replayed to the model). A task's walkthrough is appended to the daily
+  `log/YYYY-MM-DD.md`. Chosen over a `tasks/` type, scoping to any entity note, or
+  retention-by-shape because a task that grows into a project is a field set, not a
+  migration — and a one-off investigation no longer leaves a dead project note behind.
