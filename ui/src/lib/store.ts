@@ -709,10 +709,13 @@ export class Store {
     this.set((s) => ({ ...s, conversations: { ...s.conversations, [row.id]: row } }));
   }
 
-  /** Load a page of history. `before` pages backwards from the oldest known event. */
+  /** Load a page of history: the newest page when `before` is not given (the API's
+   * default page is the *oldest*), else the page before that event id. */
   async loadEvents(id: string, opts: { before?: number; limit?: number } = {}) {
     const limit = opts.limit ?? 100;
-    const rows = await this.guard(() => api.events(id, { before: opts.before, limit }));
+    const rows = await this.guard(() =>
+      api.events(id, opts.before === undefined ? { limit, tail: true } : { before: opts.before, limit }),
+    );
     if (!rows) return;
     this.set((s) => {
       const merged = mergeEvents(s.events[id] ?? [], rows);

@@ -937,7 +937,7 @@ the UI's board panel. Turns produced by triggers run at priority 1.
 ```
 GET  /conversations?kind&status&include_archived   POST /conversations {goal, scope_note?|project_name?, aliases?, roots?, preset?, title?, parent_id?, excerpt?}
 GET  /conversations/{id}                PATCH /conversations/{id} {title?, preset?, step_budget?, clear_preset?}
-GET  /conversations/{id}/events?after&before&limit&kinds
+GET  /conversations/{id}/events?after&before&limit&kinds&tail   (tail=1 → the newest `limit`, ascending; the UI's first page)
 POST /conversations/{id}/messages {content, images?: [image_id]}  → 202 {inbox_id}; 400 empty (no text and no images) or unknown image id; 409 when no model is configured
 POST /conversations/{id}/images  (raw image bytes; Content-Type image/*) → {id, mime, bytes}; 415 not an image, 413 over image_max_mb
 GET  /conversations/{id}/images/{image_id} → the bytes, immutable cache headers; 404 on miss or a malformed id

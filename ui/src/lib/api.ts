@@ -154,7 +154,7 @@ export const api = {
     role?: string;
     parent_id?: string;
   }) => post<Conversation>("/conversations", body),
-  events: (id: string, params?: { after?: number; before?: number; limit?: number; kinds?: string }) =>
+  events: (id: string, params?: { after?: number; before?: number; limit?: number; kinds?: string; tail?: boolean }) =>
     get<ConvEvent[]>(`/conversations/${id}/events`, params),
   sendMessage: (id: string, content: string, images?: string[]) =>
     post<unknown>(`/conversations/${id}/messages`, images && images.length ? { content, images } : { content }),

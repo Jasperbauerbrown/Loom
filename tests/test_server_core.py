@@ -351,3 +351,18 @@ async def test_inbox_endpoint_lists_rows_not_yet_in_the_transcript(client):
     assert [r["content"] for r in rows] == ["later"]
     assert set(rows[0]) == {"id", "conversation_id", "source", "content", "meta", "created_at"}
     assert (await client.get("/api/conversations/nope/inbox")).status_code == 404
+
+
+async def test_events_tail_returns_the_newest_page_ascending(client):
+    from loom.conversation import events as ev
+
+    app = client.loom
+    desk = app.desk_id()
+    for i in range(5):
+        ev.append(app, desk, "user", f"m{i}")
+    oldest = (await client.get(f"/api/conversations/{desk}/events", params={"limit": 2})).json()
+    newest = (await client.get(f"/api/conversations/{desk}/events", params={"limit": 2, "tail": "true"})).json()
+    assert [e["content"] for e in oldest] == ["m0", "m1"]
+    assert [e["content"] for e in newest] == ["m3", "m4"]
+    before = (await client.get(f"/api/conversations/{desk}/events", params={"limit": 2, "before": newest[0]["id"]})).json()
+    assert [e["content"] for e in before] == ["m1", "m2"]

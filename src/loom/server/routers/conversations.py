@@ -138,11 +138,16 @@ async def list_events(
     before: int | None = None,
     limit: int = Query(200, ge=1, le=2000),
     kinds: str | None = None,
+    tail: bool = False,
     app=Depends(get_app),
 ) -> list[dict[str, Any]]:
+    """Ascending page of events. `after` follows a turn (the CLI), `before` pages back
+    through history, and `tail=1` returns the newest `limit` — what a surface opening a
+    transcript wants. Without `tail` or `before` the page is the oldest `limit`, which
+    is why the web UI showed a 300-event desk from its beginning (2026-09-21)."""
     _row(app, conversation_id)
     kind_list = [k for k in (kinds or "").split(",") if k] or None
-    if before is not None:
+    if before is not None or tail:
         rows = events.list_events(app, conversation_id, after=after, before=before, limit=limit, kinds=kind_list, descending=True)
         rows.reverse()
         return rows
