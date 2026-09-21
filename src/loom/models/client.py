@@ -123,7 +123,7 @@ def _partial_suffix(buf: str, tag: str) -> int:
 # ---------------------------------------------------------------------------------
 # outcome mapping (03 §5.5)
 # ---------------------------------------------------------------------------------
-def classify_http(status: int, body: str) -> tuple[Outcome, str]:
+def classify_http(status: int, body: str, url: str | None = None) -> tuple[Outcome, str]:
     text = (body or "").strip()
     lowered = text.lower()
     detail = _first_line(text)
@@ -132,7 +132,10 @@ def classify_http(status: int, body: str) -> tuple[Outcome, str]:
     if status in (401, 403):
         return "fatal", f"authentication failed (HTTP {status}): {detail}"
     if status == 404:
-        return "fatal", f"model or endpoint not found (HTTP {status}): {detail}"
+        # A 404 is nearly always a wrong base URL or model id; name the URL so the
+        # person can see which without reading logs.
+        where = f" at {url}" if url else ""
+        return "fatal", f"model or endpoint not found (HTTP {status}){where}: {detail} — check the provider's base URL and the model id"
     if status in (408, 409, 425, 429):
         return "transient", f"provider busy (HTTP {status}): {detail}"
     if 400 <= status < 500:
@@ -285,7 +288,7 @@ class Client:
         except (httpx.HTTPError, OSError) as exc:
             raise ModelError("transient", f"{provider}: {type(exc).__name__}: {exc}") from exc
         if response.status_code >= 400:
-            outcome, message = classify_http(response.status_code, response.text)
+            outcome, message = classify_http(response.status_code, response.text, url=url)
             raise ModelError(outcome, f"{provider}: {message}")
         try:
             payload = response.json()
@@ -310,8 +313,7 @@ class Client:
         return params
 
     def _endpoint(self, provider: dict[str, Any], path: str) -> tuple[str, str]:
-        base = str(provider.get("base_url") or "").rstrip("/")
-        return base + path, self._api_key(provider)
+        return join_endpoint(str(provider.get("base_url") or ""), path), self._api_key(provider)
 
     def _headers(self, provider: dict[str, Any]) -> dict[str, str]:
         headers = {"Accept": "application/json"}
@@ -486,7 +488,7 @@ class Client:
         try:
             if response.status_code >= 400:
                 text = (await response.aread()).decode("utf-8", "replace")
-                outcome, message = classify_http(response.status_code, text)
+                outcome, message = classify_http(response.status_code, text, url=url)
                 raise ModelError(outcome, message)
             iterator = response.aiter_lines().__aiter__()
             while True:
@@ -522,7 +524,7 @@ class Client:
         except (httpx.HTTPError, OSError) as exc:
             raise ModelError("transient", f"embedding call failed: {type(exc).__name__}: {exc}") from exc
         if response.status_code >= 400:
-            outcome, message = classify_http(response.status_code, response.text)
+            outcome, message = classify_http(response.status_code, response.text, url=url)
             raise ModelError(outcome, message)
         try:
             payload = response.json()
@@ -784,3 +786,15 @@ async def test_preset(app, name: str) -> dict[str, Any]:  # type: ignore[no-unty
         "error": result.error,
         "model": result.model,
     }
+
+
+def join_endpoint(base_url: str, path: str) -> str:
+    """Join a provider base URL and an API path without doubling a version prefix.
+
+    People paste the base URL a provider documents — `https://openrouter.ai/api/v1`,
+    `https://api.openai.com/v1` — and the client's paths already start with `/v1/`.
+    Either form of base works: a trailing `/v1` is not repeated (2026-09-21)."""
+    base = base_url.strip().rstrip("/")
+    if path.startswith("/v1/") and base.lower().endswith("/v1"):
+        path = path[len("/v1"):]
+    return base + path

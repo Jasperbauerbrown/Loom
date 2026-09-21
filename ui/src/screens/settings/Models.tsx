@@ -411,14 +411,24 @@ function PresetDialog({
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [probedModels, setProbedModels] = useState<string[] | null>(null);
+  const [probeError, setProbeError] = useState<string | null>(null);
   const [probing, setProbing] = useState(false);
 
   async function probe() {
     if (!provider) return;
     setProbing(true);
+    setProbeError(null);
     const res = await store.guard(() => api.probeProvider(provider));
     setProbing(false);
-    if (res) setProbedModels(res.models);
+    if (!res) return;
+    if (res.error) {
+      // A failed probe must be visible here, not only in the providers table: it is
+      // usually a wrong base URL or key, and typing a model name blind hides that.
+      setProbeError(res.error);
+      setProbedModels(null);
+      return;
+    }
+    setProbedModels(res.models);
   }
 
   function num(v: string): number | undefined {
@@ -486,7 +496,7 @@ function PresetDialog({
             ))}
           </Select>
         </FieldRow>
-        <FieldRow label="Model" help="Probe the provider to fill in choices, or type one.">
+        <FieldRow label="Model" help={probeError ? `Probe failed: ${probeError}` : "Probe the provider to fill in choices, or type one."}>
           <div className="flex gap-1.5">
             {probedModels ? (
               <Select value={model} onChange={(e) => setModel(e.target.value)}>

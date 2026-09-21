@@ -445,3 +445,13 @@ async def test_probe_is_a_noop_when_providers_exist(app):
     from loom.models import client as model_client
 
     assert (await model_client.probe_local_ollama(app))["provider"] is None
+
+
+def test_join_endpoint_does_not_double_the_version_prefix():
+    from loom.models.client import join_endpoint
+
+    assert join_endpoint("https://openrouter.ai/api/v1", "/v1/chat/completions") == "https://openrouter.ai/api/v1/chat/completions"
+    assert join_endpoint("https://openrouter.ai/api/v1/", "/v1/models") == "https://openrouter.ai/api/v1/models"
+    assert join_endpoint("https://openrouter.ai/api", "/v1/models") == "https://openrouter.ai/api/v1/models"
+    assert join_endpoint("http://127.0.0.1:11434", "/api/chat") == "http://127.0.0.1:11434/api/chat"
+    assert join_endpoint("https://host/V1", "/v1/embeddings") == "https://host/V1/embeddings"
