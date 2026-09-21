@@ -38,6 +38,21 @@ def _resolve(ctx: ToolContext, path: str) -> Path:
     return Path(normalise(path, cwd=_base(ctx)))
 
 
+def _with_base_hint(ctx: ToolContext, raw: str, result: ToolResult) -> ToolResult:
+    """A relative path that missed: say what it was resolved against, so the model can
+    correct the path instead of hunting for the file (a thread spent twenty calls on
+    `projects/x.md` landing in the artifacts root, 2026-09-21)."""
+    if result.ok or "no such" not in result.content:
+        return result
+    cleaned = str(raw).strip().strip('"').strip("'").replace("\\", "/")
+    if not cleaned or cleaned.startswith(("/", "~")) or (len(cleaned) > 1 and cleaned[1] == ":"):
+        return result
+    base = _base(ctx)
+    if not base:
+        return result
+    return ToolResult(content=f"{result.content} (relative paths resolve against the first allowed root, {base})", ok=False, meta=result.meta)
+
+
 def is_binary(path: Path) -> bool:
     try:
         with path.open("rb") as fh:
@@ -108,7 +123,7 @@ async def fs_read_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     path = _resolve(ctx, str(args["path"]))
     offset = int(args.get("offset") or 0)
     limit = int(args.get("limit") or 400)
-    return await asyncio.to_thread(_read_sync, path, offset, limit)
+    return _with_base_hint(ctx, str(args["path"]), await asyncio.to_thread(_read_sync, path, offset, limit))
 
 
 # ---------------------------------------------------------------------------------
@@ -142,7 +157,7 @@ async def fs_list_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     pattern = str(args.get("pattern") or "**/*")
     max_results = int(args.get("max_results") or 500)
     include_hidden = bool(args.get("include_hidden") or False)
-    return await asyncio.to_thread(_list_sync, root, pattern, max_results, include_hidden)
+    return _with_base_hint(ctx, str(args["path"]), await asyncio.to_thread(_list_sync, root, pattern, max_results, include_hidden))
 
 
 # ---------------------------------------------------------------------------------
@@ -299,9 +314,10 @@ def _edit_sync(path: Path, old: str, new: str, replace_all: bool) -> ToolResult:
 
 async def fs_edit_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     path = _resolve(ctx, str(args["path"]))
-    return await asyncio.to_thread(
+    result = await asyncio.to_thread(
         _edit_sync, path, str(args.get("old") or ""), str(args.get("new") or ""), bool(args.get("replace_all") or False)
     )
+    return _with_base_hint(ctx, str(args["path"]), result)
 
 
 # ---------------------------------------------------------------------------------

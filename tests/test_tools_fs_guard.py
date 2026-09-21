@@ -176,3 +176,13 @@ def test_missing_and_empty_path_arguments_are_ignored(app):
 def test_within_roots_helper(app, project, tmp_path):
     assert fs_guard.within_roots(app, _desk(app), str(project / "a.txt")) is True
     assert fs_guard.within_roots(app, _desk(app), str(tmp_path / "nope" / "a.txt")) is False
+
+
+@pytest.mark.skipif(not WINDOWS, reason="MSYS drive spellings only mean something on Windows")
+def test_normalise_reads_msys_and_cygwin_drive_paths():
+    # Git Bash prints C:/Users as /c/Users; the model hands it straight back.
+    assert fs_guard.normalise("/c/Users/x/file.md") == "C:/Users/x/file.md"
+    assert fs_guard.normalise("/cygdrive/d/data") == "D:/data"
+    assert fs_guard.normalise("/c") == "C:/"
+    # a relative path that merely starts with a letter is untouched
+    assert fs_guard.normalise("c/Users", cwd="D:/base") == "D:/base/c/Users"

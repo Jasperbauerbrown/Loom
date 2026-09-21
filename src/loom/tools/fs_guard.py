@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -27,13 +28,29 @@ from .registry import Tool
 log = logging.getLogger(__name__)
 
 
+_MSYS_DRIVE = re.compile(r"^/(?:cygdrive/)?([A-Za-z])(?=/|$)")
+
+
+def _from_msys(raw: str) -> str:
+    """Git Bash and Cygwin spell `C:/x` as `/c/x`; the model reads those in shell output
+    and hands them back to the file tools. Left alone, `abspath` would make `/c/x` into
+    `<cwd drive>:/c/x` — a real directory nobody asked for (seen 2026-09-21)."""
+    match = _MSYS_DRIVE.match(raw)
+    if not match:
+        return raw
+    return f"{match.group(1).upper()}:" + (raw[match.end():] or "/")
+
+
 def normalise(path: str, cwd: str | None = None) -> str:
     """Absolute, `..`-resolved, forward slashes, case preserved. Relative paths resolve
     against `cwd` (default: the process working directory). Lexical on purpose: a
     symlink must not be able to move a path out of a root behind the user's back, and
-    the path need not exist yet (fs_write creates it)."""
+    the path need not exist yet (fs_write creates it). On Windows, MSYS/Cygwin drive
+    spellings (`/c/Users/...`) are read as `C:/Users/...`."""
     raw = os.path.expanduser(str(path).strip().strip('"').strip("'"))
     raw = raw.replace("\\", "/")
+    if os.name == "nt":
+        raw = _from_msys(raw)
     if not os.path.isabs(raw) and cwd:
         raw = os.path.join(str(cwd).replace("\\", "/"), raw)
     out = os.path.normpath(os.path.abspath(raw)).replace("\\", "/")

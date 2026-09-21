@@ -365,3 +365,11 @@ def test_path_params_are_declared_where_the_guard_needs_them(app):
     assert app.tools.get("fs_write").path_params == ("path",)
     assert app.tools.get("shell").path_params == ("cwd",)
     assert app.tools.get("http").path_params == ()
+
+
+async def test_fs_read_names_the_base_when_a_relative_path_misses(app, ctx, project):
+    result = await run(app, ctx, "fs_read", {"path": "projects/nope.md"})
+    assert not result.ok and "no such file" in result.content
+    assert "relative paths resolve against the first allowed root" in result.content
+    absolute = await run(app, ctx, "fs_read", {"path": str(project / "nope.md")})
+    assert "relative paths" not in absolute.content
