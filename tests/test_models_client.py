@@ -455,3 +455,24 @@ def test_join_endpoint_does_not_double_the_version_prefix():
     assert join_endpoint("https://openrouter.ai/api", "/v1/models") == "https://openrouter.ai/api/v1/models"
     assert join_endpoint("http://127.0.0.1:11434", "/api/chat") == "http://127.0.0.1:11434/api/chat"
     assert join_endpoint("https://host/V1", "/v1/embeddings") == "https://host/V1/embeddings"
+
+
+async def test_openai_reasoning_off_sends_effort_none(app):
+    """OpenRouter leaves a Qwen judge thinking unless told not to; `off` must be explicit
+    (the classifier hit "length limit with no output" with max_tokens=200, 2026-09-21)."""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            content=sse({"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]}, "[DONE]"),
+        )
+
+    client = make_client(app, handler, kind="openai_compatible")
+    await drain(client, request_for("hosted", reasoning="off"))
+    assert seen["body"]["reasoning"] == {"effort": "none"}
+    await drain(client, request_for("hosted", reasoning="on"))
+    assert seen["body"]["reasoning"] == {"effort": "medium"}
+    await drain(client, request_for("hosted"))
+    assert "reasoning" not in seen["body"]

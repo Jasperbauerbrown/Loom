@@ -597,9 +597,15 @@ def _ollama_think(reasoning: Any) -> bool | None:
 
 
 def _openai_reasoning(reasoning: Any) -> dict[str, Any] | None:
-    if reasoning in (None, "", "off"):
+    if reasoning in (None, ""):
         return None
     value = str(reasoning)
+    if value == "off":
+        # OpenRouter's unified knob: `effort: none` is what stops a model that reasons by
+        # default (Qwen 3.x). Omitting the parameter leaves it thinking, and a small
+        # max_tokens then buys reasoning and no answer — the permission judge and the
+        # maintenance pass both hit "length limit with no output" that way (2026-09-21).
+        return {"effort": "none"}
     if value.startswith("budget:"):
         try:
             return {"max_tokens": int(value.split(":", 1)[1])}
