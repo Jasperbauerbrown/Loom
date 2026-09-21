@@ -30,7 +30,7 @@ from ..models.types import PRIORITY_BACKGROUND, PRIORITY_INTERACTIVE, ChatReques
 from ..tools import approvals, dispatch
 from ..tools.registry import ToolContext, ToolResult
 from . import compaction, events, inbox, status
-from .context import Context, assemble, resolve_knowledge, strip_private
+from .context import Context, assemble, image_urls, resolve_knowledge, strip_private, tool_image_followup
 from .compaction import CompactionError
 
 log = logging.getLogger(__name__)
@@ -366,6 +366,7 @@ async def _dispatch_calls(app, state: TurnState, ctx: Context, event_id: int, ca
         if isinstance(outcomes[c.id], dispatch.ApprovalNeeded):
             paused = True
     any_pause = False
+    followers: list[dict[str, Any]] = []
     for c in calls:
         out = outcomes.get(c.id)
         if out is None:
@@ -373,7 +374,12 @@ async def _dispatch_calls(app, state: TurnState, ctx: Context, event_id: int, ca
         if isinstance(out, dispatch.ApprovalNeeded):
             any_pause = True
             continue
-        _persist_result(app, state, ctx, c, out, ctxs[c.id])
+        follower = _persist_result(app, state, ctx, c, out, ctxs[c.id])
+        if follower is not None:
+            followers.append(follower)
+    # Image followers ride after the whole step's tool messages, in call order — the
+    # same shape `messages_from_events` rebuilds on replay.
+    ctx.turn.extend(followers)
     _absorb_extras(state, ctx)
     if any_pause:
         # dispatch already created the approval rows and set waiting_approval
@@ -381,22 +387,29 @@ async def _dispatch_calls(app, state: TurnState, ctx: Context, event_id: int, ca
     return False
 
 
-def _persist_result(app, state: TurnState, ctx: Context | None, call: ToolCall, result: ToolResult, tctx: ToolContext) -> None:  # type: ignore[no-untyped-def]
+def _persist_result(app, state: TurnState, ctx: Context | None, call: ToolCall, result: ToolResult, tctx: ToolContext) -> dict[str, Any] | None:  # type: ignore[no-untyped-def]
+    """Persist one result and append its tool message to the turn. Returns the image
+    follower message (not yet appended) when the result carried images, else None."""
     meta = {"call_id": call.id, "name": call.name, "ok": result.ok, **{k: v for k, v in tctx.meta.items()}}
     if result.meta.get("artifact_id"):
         meta["artifact_id"] = result.meta["artifact_id"]
+    images = result.meta.get("images") or []
+    if images:
+        meta["images"] = images
     ev = events.append(app, state.cid, "tool_result", result.content, meta)
     row = events.get(app, ev)
     app.bus.emit(
         "tool.result",
         {"call_id": call.id, "name": call.name, "ok": result.ok, "preview": result.content[:400],
          "artifact_id": meta.get("artifact_id"), "event_id": ev, "policy": meta.get("policy"),
-         "decision": meta.get("decision"), "reason": meta.get("reason")},
+         "decision": meta.get("decision"), "reason": meta.get("reason"), "images": images},
         state.cid,
     )
     app.bus.emit("event.appended", row, state.cid)
-    if ctx is not None:
-        ctx.turn.append({"role": "tool", "tool_call_id": call.id, "content": result.content})
+    if ctx is None:
+        return None
+    ctx.turn.append({"role": "tool", "tool_call_id": call.id, "content": result.content})
+    return tool_image_followup(app, state.cid, call.id, images) if images else None
 
 
 def _absorb_extras(state: TurnState, ctx: Context) -> None:
@@ -550,11 +563,19 @@ def _persist_claimed(app, state: TurnState, rows: list[dict[str, Any]], ctx: Con
         if r.get("persisted_event_id"):
             continue  # already in the transcript from an unfinished turn (approval pause / crash)
         text = inbox.render(app, r)
-        ev = events.append(app, state.cid, "user", text, {"inbox_id": r["id"], "source": r["source"]})
+        meta: dict[str, Any] = {"inbox_id": r["id"], "source": r["source"]}
+        images = (r.get("meta") or {}).get("images") or []
+        if images:
+            meta["images"] = images
+        ev = events.append(app, state.cid, "user", text, meta)
         row = events.get(app, ev)
         app.bus.emit("event.appended", row, state.cid)
         if ctx is not None:
-            ctx.turn.append({"role": "user", "content": text})
+            msg: dict[str, Any] = {"role": "user", "content": text}
+            urls = image_urls(app, state.cid, images) if images else []
+            if urls:
+                msg["images"] = urls
+            ctx.turn.append(msg)
 
 
 def _last_user_text(app, cid: str) -> str:  # type: ignore[no-untyped-def]

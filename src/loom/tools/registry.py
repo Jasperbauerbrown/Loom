@@ -28,6 +28,10 @@ class ToolResult:
     content: str
     ok: bool = True
     meta: dict[str, Any] = field(default_factory=dict)  # small structured extras (exit_code, status, ...)
+    # Images the tool returned, each {"data": bytes, "mime": str}. The dispatcher stores
+    # them as image artifacts and replaces this with refs in meta["images"]; bytes never
+    # reach the transcript.
+    images: list[dict[str, Any]] | None = None
 
     @staticmethod
     def error(message: str, **meta: Any) -> "ToolResult":

@@ -16,6 +16,7 @@ Message layout sent to the model:
 from __future__ import annotations
 
 import datetime as _dt
+import logging
 import zoneinfo
 from dataclasses import dataclass, field
 from typing import Any
@@ -24,8 +25,52 @@ from .. import db, items, prompts
 from ..tools.registry import Tool
 from . import events, inbox, status
 
+log = logging.getLogger(__name__)
+
 KNOWLEDGE_OPEN = '<knowledge may_be_irrelevant="true">'
 KNOWLEDGE_CLOSE = "</knowledge>"
+
+
+# -- images ------------------------------------------------------------------------
+# Transcript rows carry only `{"id", "mime"}` refs (03 §4.4); the data URLs the model
+# sees are built here, at assembly time, and live only in memory.
+
+def image_urls(app, conversation_id: str, refs: list[Any] | None) -> list[str]:  # type: ignore[no-untyped-def]
+    """Refs → data URLs. A missing file (pruned, deleted by hand) is skipped with a log
+    line: an absent image must never break context assembly."""
+    urls: list[str] = []
+    store = getattr(app, "artifacts", None)
+    for ref in refs or []:
+        image_id = str(ref.get("id") or "") if isinstance(ref, dict) else str(ref or "")
+        url = store.image_data_url(conversation_id, image_id) if store is not None and image_id else None
+        if url is None:
+            log.warning("conversation %s: image %s referenced by the transcript is missing — skipped", conversation_id, image_id)
+            continue
+        urls.append(url)
+    return urls
+
+
+def tool_image_followup(app, conversation_id: str, call_id: str, refs: list[Any] | None) -> dict[str, Any] | None:  # type: ignore[no-untyped-def]
+    """The user-role message that carries a tool result's images. Tool-role messages
+    cannot carry image parts on most providers, so the result stays text (with a marker
+    per image) and this follower is appended after the whole step's tool messages — the
+    same shape in replay and in-turn. Never persisted: the result's `meta.images` is the
+    record."""
+    urls = image_urls(app, conversation_id, refs)
+    if not urls:
+        return None
+    note = prompts.load("context/tool-image-note").replace("{call_id}", str(call_id or ""))
+    return {"role": "user", "content": note, "images": urls}
+
+
+def image_tokens_for(app, conv: dict[str, Any]) -> int:  # type: ignore[no-untyped-def]
+    """The per-image prompt-token estimate of the conversation's preset."""
+    from ..models import roles
+
+    try:
+        return roles.image_tokens(roles.resolve(app, role=conv["role"], preset=conv.get("preset")).params)
+    except Exception:
+        return roles.DEFAULT_IMAGE_TOKENS
 
 
 @dataclass
@@ -65,12 +110,14 @@ class Context:
         return [t.to_openai() for t in tools] if tools else None
 
     def chars(self, app, steps_remaining: int | None = None) -> int:  # type: ignore[no-untyped-def]
+        per_image = image_tokens_for(app, self.conv) * 4
         n = 0
         for m in self.messages(app, steps_remaining):
             c = m.get("content")
             n += len(c) if isinstance(c, str) else 0
             for tc in m.get("tool_calls") or []:
                 n += len(db.dumps(tc))
+            n += len(m.get("images") or []) * per_image
         schemas = self.tool_schemas(app)
         if schemas:
             n += len(db.dumps(schemas))
@@ -187,18 +234,49 @@ def replay(app, conv: dict[str, Any], before_event_id: int | None = None) -> lis
             arts = e["meta"].get("artifacts") or {}
             for i in e["meta"].get("event_ids", []):
                 evicted[int(i)] = arts.get(str(i))
-    return messages_from_events(evs, evicted)
+    return messages_from_events(app, conv["id"], evs, evicted)
 
 
-def messages_from_events(evs: list[dict[str, Any]], evicted: dict[int, str | None] | None = None) -> list[dict[str, Any]]:
-    """`evicted` maps tool_result event id → artifact id (or None) for stubbed results."""
+def messages_from_events(  # type: ignore[no-untyped-def]
+    app, conversation_id: str, evs: list[dict[str, Any]], evicted: dict[int, str | None] | None = None
+) -> list[dict[str, Any]]:
+    """`evicted` maps tool_result event id → artifact id (or None) for stubbed results.
+    Image-bearing tool results queue a follower message that is flushed after the step's
+    last tool message (before the next event of any other kind); evicted results lost
+    their images with their content, so they get none."""
     evicted = evicted or {}
     msgs: list[dict[str, Any]] = []
     open_calls: set[str] = set()
+    followers: list[dict[str, Any]] = []
+
+    def flush() -> None:
+        msgs.extend(followers)
+        followers.clear()
+
     for e in evs:
         kind = e["kind"]
+        if kind == "tool_result":
+            call_id = e["meta"].get("call_id", "")
+            if e["id"] in evicted:
+                art = evicted[e["id"]] or e["meta"].get("artifact_id")
+                content = f"[evicted; artifact_recall({art})]" if art else "[evicted]"
+            else:
+                content = e["content"]
+                if e["meta"].get("images"):
+                    follower = tool_image_followup(app, conversation_id, call_id, e["meta"]["images"])
+                    if follower is not None:
+                        follower["_event_id"] = e["id"]
+                        followers.append(follower)
+            msgs.append({"role": "tool", "tool_call_id": call_id, "content": content, "_event_id": e["id"]})
+            open_calls.discard(call_id)
+            continue
+        flush()
         if kind == "user":
-            msgs.append({"role": "user", "content": e["content"], "_event_id": e["id"]})
+            msg: dict[str, Any] = {"role": "user", "content": e["content"], "_event_id": e["id"]}
+            urls = image_urls(app, conversation_id, e["meta"].get("images"))
+            if urls:
+                msg["images"] = urls
+            msgs.append(msg)
         elif kind == "assistant":
             msgs.append({"role": "assistant", "content": e["content"], "_event_id": e["id"]})
         elif kind == "tool_call":
@@ -219,16 +297,8 @@ def messages_from_events(evs: list[dict[str, Any]], evicted: dict[int, str | Non
                 }
             )
             open_calls = {c["id"] for c in calls}
-        elif kind == "tool_result":
-            call_id = e["meta"].get("call_id", "")
-            if e["id"] in evicted:
-                art = evicted[e["id"]] or e["meta"].get("artifact_id")
-                content = f"[evicted; artifact_recall({art})]" if art else "[evicted]"
-            else:
-                content = e["content"]
-            msgs.append({"role": "tool", "tool_call_id": call_id, "content": content, "_event_id": e["id"]})
-            open_calls.discard(call_id)
         # thinking / system / status / compaction: never replayed
+    flush()
     return msgs
 
 

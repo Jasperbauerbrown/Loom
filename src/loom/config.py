@@ -203,6 +203,7 @@ FIELDS: list[Field] = [
     Field("conversation.artifact_head_chars", "int", 2000, "Artifact preview head (chars)", "", "number", min=0, max=50000),
     Field("conversation.artifact_tail_chars", "int", 1000, "Artifact preview tail (chars)", "", "number", min=0, max=50000),
     Field("conversation.artifact_retention_days", "int", 90, "Artifact retention (days)", "For archived conversations only.", "number", min=1, max=3650),
+    Field("conversation.image_max_mb", "int", 10, "Image size cap (MB)", "Uploads, fs_read images and screenshots above this are refused.", "number", min=1, max=100),
     Field("conversation.thread_archive_days", "int", 14, "Archive finished threads after (days)", "", "number", min=1, max=3650),
     Field("conversation.max_thread_depth", "int", 3, "Max thread depth", "", "number", min=1, max=10),
     Field("conversation.tool_expose_max", "int", 48, "Max tools exposed per turn", "Above this, non-native tools load via tool_search.", "number", min=8, max=512),

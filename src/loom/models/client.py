@@ -31,7 +31,7 @@ from typing import Any, AsyncIterator, Iterable
 
 import httpx
 
-from .. import db
+from .. import db, prompts
 from . import roles
 from .types import (
     PRIORITY_INTERACTIVE,
@@ -338,7 +338,11 @@ class Client:
         if params.get("max_tokens") is not None:
             options["num_predict"] = int(params["max_tokens"])
 
-        body: dict[str, Any] = {"model": request.model, "messages": messages_for("ollama", request.messages), "stream": True}
+        body: dict[str, Any] = {
+            "model": request.model,
+            "messages": messages_for("ollama", request.messages, multimodal=roles.is_multimodal(params)),
+            "stream": True,
+        }
         if request.tools:
             body["tools"] = request.tools
         if options:
@@ -402,7 +406,7 @@ class Client:
         url, _ = self._endpoint(provider, "/v1/chat/completions")
         body: dict[str, Any] = {
             "model": request.model,
-            "messages": messages_for("openai_compatible", request.messages),
+            "messages": messages_for("openai_compatible", request.messages, multimodal=roles.is_multimodal(params)),
             "stream": True,
             "stream_options": {"include_usage": True},
         }
@@ -542,26 +546,52 @@ class Client:
 # ---------------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------------
-def messages_for(kind: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def messages_for(kind: str, messages: list[dict[str, Any]], multimodal: bool = False) -> list[dict[str, Any]]:
     """Render the canonical message list into a provider's wire shape.
 
     The canonical shape is OpenAI's, plus a `reasoning` key on assistant messages for
-    in-turn reasoning replay (03 §6.3). Each kind names that field differently, and
-    disagrees about whether `tool_calls[].function.arguments` is an object or a JSON
-    string; both are one transformation here rather than a special case at each caller.
-    An empty or absent `reasoning` is omitted — never sent as "".
+    in-turn reasoning replay (03 §6.3) and an in-memory `images` key (data URLs) on user
+    messages. Each kind names the reasoning field differently, and disagrees about
+    whether `tool_calls[].function.arguments` is an object or a JSON string; both are one
+    transformation here rather than a special case at each caller. An empty or absent
+    `reasoning` is omitted — never sent as "".
+
+    Images are the only place `content` stops being a string, and only on the wire: a
+    multimodal OpenAI-compatible call gets a parts array, Ollama gets its `images` array
+    of bare base64, and a text-only preset gets one placeholder line per image (from
+    `prompts/context/image-placeholder.md`) so a strict chat template never sees a list.
     """
     out: list[dict[str, Any]] = []
     for message in messages:
         rendered = dict(message)
+        images = [u for u in (rendered.pop("images", None) or []) if isinstance(u, str) and u]
         reasoning = rendered.pop("reasoning", None)
         if reasoning and rendered.get("role") == "assistant":
             rendered["thinking" if kind == "ollama" else "reasoning_content"] = reasoning
         calls = rendered.get("tool_calls")
         if calls:
             rendered["tool_calls"] = [_render_call(kind, call) for call in calls]
+        if images:
+            text = rendered.get("content") if isinstance(rendered.get("content"), str) else ""
+            if not multimodal:
+                note = prompts.load("context/image-placeholder")
+                rendered["content"] = "\n".join(([text] if text else []) + [note] * len(images))
+            elif kind == "ollama":
+                rendered["content"] = text
+                rendered["images"] = [_bare_base64(u) for u in images]
+            else:
+                parts: list[dict[str, Any]] = [{"type": "text", "text": text}] if text else []
+                parts.extend({"type": "image_url", "image_url": {"url": u}} for u in images)
+                rendered["content"] = parts
         out.append(rendered)
     return out
+
+
+def _bare_base64(url: str) -> str:
+    """Ollama wants the base64 payload without the `data:<mime>;base64,` prefix."""
+    if url.startswith("data:") and ";base64," in url:
+        return url.split(";base64,", 1)[1]
+    return url
 
 
 def _render_call(kind: str, call: dict[str, Any]) -> dict[str, Any]:

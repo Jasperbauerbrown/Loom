@@ -19,6 +19,7 @@ from typing import Any
 import httpx
 
 from ... import prompts
+from ...artifacts import IMAGE_MIMES, image_dimensions, sniff_image
 from ..registry import Tool, ToolContext, ToolResult
 
 METHODS = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
@@ -39,12 +40,47 @@ def client_factory(timeout: float, follow_redirects: bool) -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=timeout, follow_redirects=follow_redirects)
 
 
-def _format(response: httpx.Response) -> str:
+def _head_lines(response: httpx.Response) -> list[str]:
     content_type = response.headers.get("content-type", "")
     lines = [f"HTTP {response.status_code} {content_type}".rstrip()]
     for name in INTERESTING_HEADERS:
         if name in response.headers and name != "content-type":
             lines.append(f"{name}: {response.headers[name]}")
+    return lines
+
+
+def _image_mime(response: httpx.Response) -> str | None:
+    """The response's image type when it is one: sniffed from the bytes first (servers
+    mislabel), the declared content-type second."""
+    body = response.content or b""
+    sniffed = sniff_image(body[:16])
+    if sniffed:
+        return sniffed
+    declared = response.headers.get("content-type", "").split(";")[0].strip().lower()
+    return declared if declared in IMAGE_MIMES else None
+
+
+def _format_image(response: httpx.Response, mime: str, cap: int) -> ToolResult:
+    body = response.content or b""
+    lines = _head_lines(response)
+    if len(body) > cap:
+        return ToolResult.error(
+            "\n".join(lines) + f"\n\nimage is {len(body)} bytes, over the {cap // (1024 * 1024)} MB image cap (conversation.image_max_mb)",
+            status=response.status_code, url=str(response.url),
+        )
+    dims = image_dimensions(body)
+    shape = f", {dims[0]}×{dims[1]}" if dims else ""
+    return ToolResult(
+        content="\n".join(lines) + f"\n\n[image: {mime}{shape}, {len(body)} bytes]",
+        ok=response.status_code < 400,
+        meta={"status": response.status_code, "url": str(response.url), "mime": mime, "bytes": len(body)},
+        images=[{"data": body, "mime": mime}],
+    )
+
+
+def _format(response: httpx.Response) -> str:
+    lines = _head_lines(response)
+    content_type = response.headers.get("content-type", "")
     body = response.text or ""
     if "json" in content_type.lower() and body.strip():
         try:
@@ -82,6 +118,10 @@ async def http_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         return ToolResult.error(f"{method} {url} failed: {type(exc).__name__}: {exc}")
     except (ValueError, OSError) as exc:
         return ToolResult.error(f"{method} {url} failed: {exc}")
+    mime = _image_mime(response)
+    if mime:
+        cap = int(ctx.app.settings.get("conversation.image_max_mb")) * 1024 * 1024
+        return _format_image(response, mime, cap)
     return ToolResult(
         content=_format(response),
         ok=response.status_code < 400,

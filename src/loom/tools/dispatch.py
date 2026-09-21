@@ -25,6 +25,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from .. import prompts
+from ..artifacts import sniff_image
 from ..models.types import ToolCall
 from ..secrets import SecretMissing
 from . import approvals, classify, fs_guard, permissions, shell_prefilter
@@ -156,6 +158,32 @@ async def dispatch(app: Any, ctx: ToolContext, call: ToolCall) -> ToolResult | A
     return await execute(app, ctx, tool, args)
 
 
+def _store_images(app: Any, ctx: ToolContext, result: ToolResult, content: str) -> str:
+    refs: list[dict[str, Any]] = list(result.meta.get("images") or [])
+    notes: list[str] = []
+    for image in result.images or []:
+        data = image.get("data") if isinstance(image, dict) else None
+        mime = str((image.get("mime") if isinstance(image, dict) else "") or "") or (sniff_image(data) if isinstance(data, (bytes, bytearray)) else "")
+        if app.artifacts is None:
+            notes.append("[image not stored: no artifact store]")
+            continue
+        try:
+            if not isinstance(data, (bytes, bytearray)):
+                raise ValueError("image data is not bytes")
+            ref = app.artifacts.store_image(ctx.conversation_id, bytes(data), mime or "")
+        except (ValueError, OSError) as exc:
+            notes.append(f"[image not stored: {exc}]")
+            continue
+        refs.append({"id": ref["id"], "mime": ref["mime"]})
+        notes.append(prompts.load("context/tool-image-marker").replace("{id}", ref["id"]))
+    result.images = None
+    if refs:
+        result.meta["images"] = refs
+    if notes:
+        content = content + ("\n" if content else "") + "\n".join(notes)
+    return content
+
+
 async def execute(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) -> ToolResult:
     """Steps 5–7. Used by `dispatch` and, after an approval, by the runner."""
     private_args = args
@@ -183,6 +211,11 @@ async def execute(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) 
         result = ToolResult.error(f"{tool.name} returned {type(result).__name__}, not a ToolResult")
 
     content = result.content if isinstance(result.content, str) else str(result.content)
+    if result.images:
+        # Store first, reference second: each image becomes an artifact file and a
+        # `{id, mime}` ref in meta; the text gets one marker line per image so the model
+        # can name it later. Bytes never pass redaction or bounding (03 §4.4).
+        content = _store_images(app, ctx, result, content)
     if app.secrets is not None:
         try:
             content = app.secrets.redact(content)

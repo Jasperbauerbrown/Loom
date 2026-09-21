@@ -99,12 +99,17 @@ def evict(app, conv: dict[str, Any]) -> bool:  # type: ignore[no-untyped-def]
     return True
 
 
+def _image_note(e: dict[str, Any]) -> str:
+    n = len((e.get("meta") or {}).get("images") or [])
+    return f" [+{n} image{'s' if n != 1 else ''}]" if n else ""
+
+
 def render_for_summary(evs: list[dict[str, Any]]) -> str:
     lines: list[str] = []
     for e in evs:
         k = e["kind"]
         if k == "user":
-            lines.append(f"USER: {e['content']}")
+            lines.append(f"USER: {e['content']}{_image_note(e)}")
         elif k == "assistant":
             lines.append(f"ASSISTANT: {e['content']}")
         elif k == "thinking":
@@ -119,7 +124,7 @@ def render_for_summary(evs: list[dict[str, Any]]) -> str:
         elif k == "tool_result":
             status = "ok" if e["meta"].get("ok", True) else "ERROR"
             preview = e["content"][:160].replace("\n", " ")
-            lines.append(f"TOOL RESULT ({status}): {preview}")
+            lines.append(f"TOOL RESULT ({status}): {preview}{_image_note(e)}")
         elif k == "system":
             lines.append(f"SYSTEM: {e['content']}")
     return "\n".join(lines)

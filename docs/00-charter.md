@@ -664,3 +664,13 @@ sessions do not re-litigate.
   `log/YYYY-MM-DD.md`. Chosen over a `tasks/` type, scoping to any entity note, or
   retention-by-shape because a task that grows into a project is a field set, not a
   migration — and a one-off investigation no longer leaves a dead project note behind.
+- **2026-09-21** — Image input, Hydra's design carried over: image bytes are artifact
+  files (`img_<ulid>`), transcripts hold only `{id, mime}` refs and data URLs exist in
+  memory at assembly time; a preset says `multimodal` (else every image is a placeholder
+  line, so text-only models never see a parts array) and `image_tokens` (a fixed
+  per-image estimate for occupancy — honest at chars/4 precision); a tool result's
+  images ride a user-role follower after the step's tool messages because tool messages
+  cannot carry them; `fs_read` and `http` return images when they meet one; a
+  `screenshot` tool captures through the OS (PowerShell/System.Drawing, `screencapture`,
+  `grim`…) rather than a new dependency; uploads are raw bodies, not multipart, for the
+  same reason.

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from ... import prompts
+from ...artifacts import image_dimensions, sniff_image
 from ..fs_guard import normalise
 from ..registry import Tool, ToolContext, ToolResult
 
@@ -86,13 +87,41 @@ def _iter_paths(root: Path, pattern: str, include_hidden: bool) -> Iterator[Path
 # ---------------------------------------------------------------------------------
 # fs_read
 # ---------------------------------------------------------------------------------
-def _read_sync(path: Path, offset: int, limit: int) -> ToolResult:
+def _read_image(path: Path, mime: str, cap: int) -> ToolResult:
+    """An image file comes back whole, as the image (offset/limit do not apply)."""
+    size = path.stat().st_size
+    if size > cap:
+        return ToolResult.error(
+            f"{path} is a {size}-byte {mime}, over the {cap // (1024 * 1024)} MB image cap (conversation.image_max_mb); downscale it first"
+        )
+    data = path.read_bytes()
+    dims = image_dimensions(data)
+    shape = f", {dims[0]}×{dims[1]}" if dims else ""
+    return ToolResult(
+        content=f"{path}: {mime}{shape}, {size} bytes",
+        images=[{"data": data, "mime": mime}],
+        meta={"path": str(path), "mime": mime, "bytes": size},
+    )
+
+
+def _read_sync(path: Path, offset: int, limit: int, image_cap: int = 10 * 1024 * 1024) -> ToolResult:
     if path.is_dir():
         return ToolResult.error(f"{path} is a directory; use fs_list")
     if not path.exists():
         return ToolResult.error(f"no such file: {path}")
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(16)
+    except OSError as exc:
+        return ToolResult.error(f"cannot read {path}: {exc}")
+    mime = sniff_image(head)
+    if mime:
+        try:
+            return _read_image(path, mime, image_cap)
+        except OSError as exc:
+            return ToolResult.error(f"cannot read {path}: {exc}")
     if is_binary(path):
-        return ToolResult.error(f"{path} is a binary file; fs_read returns text only")
+        return ToolResult.error(f"{path} is a binary file; fs_read returns text and images (png, jpeg, webp, gif) only")
     try:
         content = read_text(path)
     except OSError as exc:
@@ -123,7 +152,8 @@ async def fs_read_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     path = _resolve(ctx, str(args["path"]))
     offset = int(args.get("offset") or 0)
     limit = int(args.get("limit") or 400)
-    return _with_base_hint(ctx, str(args["path"]), await asyncio.to_thread(_read_sync, path, offset, limit))
+    cap = int(ctx.app.settings.get("conversation.image_max_mb")) * 1024 * 1024
+    return _with_base_hint(ctx, str(args["path"]), await asyncio.to_thread(_read_sync, path, offset, limit, cap))
 
 
 # ---------------------------------------------------------------------------------

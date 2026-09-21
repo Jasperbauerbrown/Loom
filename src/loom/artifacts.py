@@ -8,12 +8,19 @@ pruned by maintenance after `conversation.artifact_retention_days`.
 
 `bound` is the only entry point the dispatcher uses: it decides, spills, and returns the
 text to persist.
+
+Images (2026-09-21) live beside the spills as `artifacts/<conversation>/img_<ulid><ext>`
+with no table row: the transcript keeps only `{"id", "mime"}` refs on event meta, data
+URLs are built at context-assembly time, and every chars/4 estimate stays blind to
+base64. Write-before-reference: the file lands before any event points at it.
 """
 
 from __future__ import annotations
 
+import base64
 import datetime as _dt
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +30,51 @@ from .ids import ulid
 log = logging.getLogger(__name__)
 
 ELLIPSIS = "\n…\n"
+
+IMAGE_MIMES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
+_EXT_TO_MIME = {ext: mime for mime, ext in IMAGE_MIMES.items()}
+# `img_` + a 26-char Crockford ULID: the strict shape doubles as the traversal guard.
+IMAGE_ID_RE = re.compile(r"^img_[0-9A-HJKMNP-TV-Z]{26}$")
+
+
+def sniff_image(data: bytes) -> str | None:
+    """The mime of a supported image by its magic bytes, else None."""
+    head = bytes(data[:16])
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if head.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def image_dimensions(data: bytes) -> tuple[int, int] | None:
+    """(width, height) for PNG, JPEG and GIF from their headers; None when unknown."""
+    try:
+        if data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) >= 24:
+            return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+        if data[:6] in (b"GIF87a", b"GIF89a") and len(data) >= 10:
+            return int.from_bytes(data[6:8], "little"), int.from_bytes(data[8:10], "little")
+        if data[:3] == b"\xff\xd8\xff":
+            i = 2
+            while i + 9 < len(data):
+                if data[i] != 0xFF:
+                    i += 1
+                    continue
+                marker = data[i + 1]
+                if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+                    i += 2
+                    continue
+                length = int.from_bytes(data[i + 2 : i + 4], "big")
+                if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+                    return int.from_bytes(data[i + 7 : i + 9], "big"), int.from_bytes(data[i + 5 : i + 7], "big")
+                i += 2 + length
+    except Exception:  # a malformed header is not worth a crash: dimensions are decoration
+        return None
+    return None
 
 
 class Store:
@@ -86,6 +138,67 @@ class Store:
             f"artifact_recall(id=\"{row['id']}\", offset, limit) for more]"
         )
         return f"{row['head']}{ELLIPSIS}{row['tail']}\n{pointer}", row["id"]
+
+    # -- images -----------------------------------------------------------------
+    def image_cap_bytes(self) -> int:
+        return int(self.app.settings.get("conversation.image_max_mb")) * 1024 * 1024
+
+    def _image_folder(self, conversation_id: str) -> Path:
+        cid = str(conversation_id or "")
+        if not cid or "/" in cid or "\\" in cid or cid in (".", ".."):
+            raise ValueError(f"invalid conversation id {conversation_id!r}")
+        return self.root / cid
+
+    def store_image(self, conversation_id: str, data: bytes, mime: str) -> dict[str, Any]:
+        """Persist image bytes; returns `{"id", "mime", "bytes"}`. `ValueError` for an
+        unsupported type or a size over `conversation.image_max_mb`. The file exists
+        before the caller writes any event that refers to it."""
+        ext = IMAGE_MIMES.get(str(mime or "").lower())
+        if ext is None:
+            raise ValueError(f"unsupported image type {mime!r} (supported: {', '.join(sorted(IMAGE_MIMES))})")
+        cap = self.image_cap_bytes()
+        if len(data) > cap:
+            raise ValueError(
+                f"image is {len(data)} bytes, over the {cap // (1024 * 1024)} MB cap (conversation.image_max_mb)"
+            )
+        folder = self._image_folder(conversation_id)
+        folder.mkdir(parents=True, exist_ok=True)
+        image_id = f"img_{ulid()}"
+        (folder / f"{image_id}{ext}").write_bytes(bytes(data))
+        return {"id": image_id, "mime": str(mime).lower(), "bytes": len(data)}
+
+    def find_image(self, conversation_id: str, image_id: str) -> tuple[Path, str] | None:
+        """`(path, mime)` for a stored image, or None for a bad id shape or a missing file."""
+        if not IMAGE_ID_RE.match(str(image_id or "")):
+            return None
+        try:
+            folder = self._image_folder(conversation_id)
+        except ValueError:
+            return None
+        for ext, mime in _EXT_TO_MIME.items():
+            path = folder / f"{image_id}{ext}"
+            if path.is_file():
+                return path, mime
+        return None
+
+    def read_image(self, conversation_id: str, image_id: str) -> tuple[bytes, str] | None:
+        found = self.find_image(conversation_id, image_id)
+        if found is None:
+            return None
+        path, mime = found
+        try:
+            return path.read_bytes(), mime
+        except OSError as exc:
+            log.warning("image %s unreadable: %s", image_id, exc)
+            return None
+
+    def image_data_url(self, conversation_id: str, image_id: str) -> str | None:
+        """The model-facing wire form: `data:<mime>;base64,…`, or None on any miss."""
+        got = self.read_image(conversation_id, image_id)
+        if got is None:
+            return None
+        data, mime = got
+        return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
 
     # -- read -------------------------------------------------------------------
     def get(self, artifact_id: str) -> dict[str, Any] | None:
@@ -154,6 +267,21 @@ class Store:
                 log.warning("artifact %s: unlink failed (%s); dropping the row anyway", row["id"], exc)
             self.app.db.execute("DELETE FROM artifacts WHERE id=?", (row["id"],))
             removed += 1
+        # Images have no rows: sweep the same conversations' folders by name.
+        stale = self.app.db.execute(
+            "SELECT id FROM conversations WHERE status='archived' AND archived_at IS NOT NULL AND archived_at < ?",
+            (cutoff,),
+        ).fetchall()
+        for conv in stale:
+            folder = self.root / str(conv["id"])
+            if not folder.is_dir():
+                continue
+            for path in folder.glob("img_*"):
+                try:
+                    path.unlink()
+                    removed += 1
+                except OSError as exc:
+                    log.warning("image %s: unlink failed (%s)", path.name, exc)
         return removed
 
 

@@ -13,11 +13,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import fs, http, misc, shell
+from . import fs, http, misc, screen, shell
 
 
 def tools() -> list[Any]:
-    return [*fs.tools(), *shell.tools(), *http.tools(), *misc.tools()]
+    return [*fs.tools(), *shell.tools(), *http.tools(), *screen.tools(), *misc.tools()]
 
 
 def install(app: Any) -> None:

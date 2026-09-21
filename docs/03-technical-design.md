@@ -153,7 +153,8 @@ providers(name TEXT PK, kind TEXT /*ollama|openai_compatible*/, base_url TEXT,
           api_key_ref TEXT, params TEXT /*json defaults*/, enabled INT)
 presets(name TEXT PK, provider TEXT, model TEXT,
         params TEXT /*json: max_tokens, temperature, top_p, effective_ctx, num_ctx,
-        keep_alive, timeout_s, reasoning (on|off|budget), token_factor_seed*/,
+        keep_alive, timeout_s, reasoning (on|off|budget), token_factor_seed,
+        multimodal (bool), image_tokens (per-image prompt-token estimate)*/,
         notes TEXT, enabled INT, created_at TEXT, updated_at TEXT)
 model_roles(role TEXT PK /*desk|worker|maintenance|utility|embedding*/, preset TEXT)
 
@@ -268,6 +269,15 @@ Tool output longer than `tool_output_cap` (default 8,000 chars) is written to
 never deleted while their conversation exists; archived conversations' artifacts are
 pruned by maintenance after `artifact_retention_days` (default 90).
 
+**Images** (2026-09-21). Image bytes — uploaded by the person, returned by `fs_read`,
+`http` or `screenshot` — are stored beside the spills as
+`artifacts/<conv>/img_<ulid>.<png|jpg|webp|gif>` with no table row; the strict id shape
+is the traversal guard. Transcript rows carry only refs, `meta.images = [{id, mime}]`, on
+`user` and `tool_result` events (and on inbox rows); data URLs are built at
+context-assembly time and live in memory only, so no chars/4 estimate and no FTS row ever
+sees base64. Cap: `conversation.image_max_mb` (default 10), enforced at upload, in the
+tools and in the store. Pruning sweeps `img_*` in the same folders as the spills.
+
 ### 4.5 Secrets
 `secrets.py` exposes `get(name) / set(name, value) / delete / list_names`. Backend:
 `keyring` (Windows Credential Manager, macOS Keychain, Secret Service). Fallback when
@@ -311,7 +321,9 @@ Three layers, all UI-managed:
 - **Preset**: a named model configuration on a provider — `qwen36-35b-local`,
   `qwen36-27b-macmini`, `sonnet-openrouter` — carrying model id and every generation
   and window parameter (`max_tokens`, `temperature`, `top_p`, `effective_ctx`,
-  `num_ctx`, `keep_alive`, `timeout_s`, reasoning mode) plus the machine-written
+  `num_ctx`, `keep_alive`, `timeout_s`, reasoning mode, `multimodal` — the model
+  accepts image input — and `image_tokens`, the per-image prompt-token estimate used
+  for occupancy and compaction, default 1000) plus the machine-written
   `token_factor_seed`. Presets are reusable: many roles and threads may point at one.
   Params merge provider defaults < preset < per-call overrides, key-wise.
 - **Role**: `desk`, `worker`, `maintenance`, `utility`, `embedding` → one preset each.
@@ -526,10 +538,19 @@ writes back (the factor is a property of model + content, so the preset is its h
 | [4] | Procedures index: one line per `SKILL.md` (`name — description`) | system | stable |
 | — | *end of cache-friendly prefix* | | |
 | [7] | `summary` (if any), fenced `<context from="harness">` | user, right after the prefix | changes only on fold |
-| [8] | Live events since `summary_cutoff`, replayed in order; `thinking`/`system`/`status` kinds skipped; evictions applied | assistant / user / tool | stable within a turn |
+| [8] | Live events since `summary_cutoff`, replayed in order; `thinking`/`system`/`status` kinds skipped; evictions applied. A `user` event's `meta.images` become data URLs on its message; a `tool_result` with images stays text (one `[image <id> attached to this result]` marker per image) and is followed, after the step's last tool message, by a user-role *follower* carrying the images (`prompts/context/tool-image-note.md`) — tool-role messages cannot carry image parts. Evicted results lose their images with their content. | assistant / user / tool | stable within a turn |
 | [5]+[6] | Desk: the **now board** (pending approvals, unseen items, running threads with one-line status). Thread: the **project note** including status block, or for a task the goal + its status fields. Then `now: 2026-09-20 14:02 (America/…)` + threads: `[steps remaining: N]`. One fenced `<context from="harness">` block | user, immediately before this turn's messages | volatile |
 | [9] | Resolved entities for this input (§8.2–8.3), wrapped `<knowledge may_be_irrelevant="true">…</knowledge>`; ephemeral, never persisted | user | volatile |
-| [10] | Claimed inbox messages as user-role messages, then the turn's own assistant / tool messages | user / assistant / tool | volatile |
+| [10] | Claimed inbox messages as user-role messages (with their images), then the turn's own assistant / tool messages and image followers | user / assistant / tool | volatile |
+
+Images on the wire: inside Loom `content` is always a string and images ride an
+in-memory `images` key of data URLs. `models.client.messages_for` renders them per
+provider and preset: a `multimodal` preset on an OpenAI-compatible provider gets the
+content-parts array (`text` + `image_url` parts), on Ollama the `images` array of bare
+base64; a text-only preset gets one placeholder line per image
+(`prompts/context/image-placeholder.md`) so a strict chat template never sees a list.
+Each image counts as `image_tokens × 4` characters in every estimate (`ChatRequest.chars`,
+`Context.chars`, occupancy, compaction) — the base64 is never counted.
 
 Exactly one system message, first (decided 2026-09-20: Qwen 3.x chat templates reject a
 system message anywhere else). Slots [1]–[4] are byte-stable across turns (no dates,
@@ -706,13 +727,14 @@ Registry = native tools + MCP tools (prefixed `mcp_<server>_<tool>`) + connector
 ### 9.2 Native tool inventory (decided) and default policies
 | Tool | Purpose | readOnly | Default policy |
 |---|---|---|---|
-| `fs_read` | file or line slice; 8k cap; paging footer | yes | allow |
+| `fs_read` | file or line slice; 8k cap; paging footer; an image file (png/jpeg/webp/gif under `image_max_mb`) is returned as the image | yes | allow |
 | `fs_list` | glob under a root | yes | allow |
 | `fs_search` | regex/grep with context | yes | allow |
 | `fs_write` | create/overwrite (guarded) | no | allow (within roots) |
 | `fs_edit` | exact `old`→`new` replace, must be unique | no | allow (within roots) |
 | `shell` | one command line, `cwd` in roots, env passthrough minus secrets, timeout, output cap; Windows: cmd.exe or Git Bash per setting | no | classify (pre-filter first) |
-| `http` | GET/POST/… with headers/body; secret templating | no (GET treated read-only) | classify |
+| `http` | GET/POST/… with headers/body; secret templating; an image response is returned as the image | no (GET treated read-only) | classify |
+| `screenshot` | capture a monitor, the whole virtual screen, a region or a window (by title, Windows) as an image; `scale` downsizes; via PowerShell/System.Drawing on Windows, `screencapture` on macOS, `grim`/`gnome-screenshot`/`import`/`scrot` on Linux — no dependency | yes | allow |
 | `knowledge_*`, `procedure_load`, `transcript_search`, `artifact_recall` | §8.4 | mixed | allow (core/ → ask) |
 | `status_update` | publish the thread's status: the scope note's block, or `status` events in a task's transcript | no | allow |
 | `conversation_create / send / read / list / finish` | §6.7 | read/list yes | allow |
@@ -916,7 +938,9 @@ the UI's board panel. Turns produced by triggers run at priority 1.
 GET  /conversations?kind&status&include_archived   POST /conversations {goal, scope_note?|project_name?, aliases?, roots?, preset?, title?, parent_id?, excerpt?}
 GET  /conversations/{id}                PATCH /conversations/{id} {title?, preset?, step_budget?, clear_preset?}
 GET  /conversations/{id}/events?after&before&limit&kinds
-POST /conversations/{id}/messages {content}  → 202 {inbox_id}; 409 when no model is configured
+POST /conversations/{id}/messages {content, images?: [image_id]}  → 202 {inbox_id}; 400 empty (no text and no images) or unknown image id; 409 when no model is configured
+POST /conversations/{id}/images  (raw image bytes; Content-Type image/*) → {id, mime, bytes}; 415 not an image, 413 over image_max_mb
+GET  /conversations/{id}/images/{image_id} → the bytes, immutable cache headers; 404 on miss or a malformed id
 POST /conversations/{id}/cancel         POST /conversations/{id}/archive     POST /conversations/{id}/clear (409 while running)
 GET  /conversations/{id}/occupancy      GET  /conversations/{id}/artifacts     GET /artifacts/{id}?offset&limit
 GET  /conversations/{id}/inbox          rows posted but not yet in the transcript (surfaces render them as *queued*)
@@ -964,7 +988,7 @@ event.appended                      data: event row  — every persisted event (
                                     tool_call, tool_result, thinking, system, compaction);
                                     the one mechanism that keeps every surface's transcript equal
 tool.call                           data: {call_id, name, args(redacted), event_id}
-tool.result                         data: {call_id, name, ok, preview, artifact_id?, event_id,
+tool.result                         data: {call_id, name, ok, preview, artifact_id?, images: [{id, mime}], event_id,
                                            policy, decision, reason}
 inbox.posted                        data: {id, source, content, created_at, meta} — fired the moment a
                                     message is posted; a surface drops the row from its *queued* list
@@ -1011,7 +1035,10 @@ remembered in `localStorage` so a reload does not flash the default look.
   show as **queued** cards at the foot of the transcript — `inbox.posted` puts them
   there, the `user` event with the matching `meta.inbox_id` replaces them — so the
   person sees that the text landed and when it will be read. The composer draft is kept
-  per conversation (sessionStorage) and survives navigating away and back. Right rail:
+  per conversation (sessionStorage) and survives navigating away and back. Images attach
+  by paperclip, paste or drop; each uploads at once (`POST …/images`) and shows as a
+  thumbnail chip until sent; user bubbles, queued cards and tool rows with images show a
+  thumbnail strip served from `GET …/images/{id}` (click opens the full image). Right rail:
   **Now board** (items grouped: needs you / running threads / queued), each item
   actionable. Header: occupancy meter (used/limit, colour by proximity to compaction),
   queue indicator, model role in use.
@@ -1048,7 +1075,8 @@ remembered in `localStorage` so a reload does not flash the default look.
   secret picker, default params, concurrency, enabled; probe button lists live
   models). *Presets* (CRUD: name, provider, model picked from the probe list or typed,
   every generation/window parameter with provider defaults shown as placeholders,
-  reasoning mode, notes; "test" runs one short completion; shows calibrated
+  reasoning mode, a *multimodal* toggle with the per-image token estimate, notes;
+  "test" runs one short completion; shows calibrated
   `token_factor_seed` read-only; usage count of roles/threads pointing at it; delete
   blocked while referenced). *Roles* (five dropdowns → preset; `fallback_role`;
   `background_max_tokens`). Every conversation's header shows which preset it is

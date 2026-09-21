@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .. import db
-from .types import ChatRequest, ModelError
+from .types import DEFAULT_IMAGE_TOKENS, ChatRequest, ModelError, image_tokens, is_multimodal  # noqa: F401  (re-exported)
 
 ROLES = ("desk", "worker", "maintenance", "utility", "embedding")
 
@@ -32,6 +32,8 @@ PRESET_PARAM_KEYS = (
     "timeout_s",
     "reasoning",
     "token_factor_seed",
+    "multimodal",
+    "image_tokens",
 )
 PROVIDER_PARAM_KEYS = ("timeout_s", "concurrency", "stream_idle_s")
 

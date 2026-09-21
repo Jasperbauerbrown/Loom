@@ -24,6 +24,26 @@ PRIORITY_MAINTENANCE: Priority = 2
 Outcome = Literal["ok", "transient", "overflow", "fatal"]
 Channel = Literal["content", "reasoning"]
 
+# Fixed per-image prompt-token estimate (03 §6.5): vision encoders spend roughly this
+# for a screenshot-sized image; a preset's `image_tokens` overrides it and real-usage
+# calibration corrects the drift. Honest at chars/4 precision.
+DEFAULT_IMAGE_TOKENS = 1000
+
+
+def image_tokens(params: dict[str, Any] | None) -> int:
+    try:
+        value = int((params or {}).get("image_tokens") or DEFAULT_IMAGE_TOKENS)
+    except (TypeError, ValueError):
+        value = DEFAULT_IMAGE_TOKENS
+    return max(1, value)
+
+
+def is_multimodal(params: dict[str, Any] | None) -> bool:
+    value = (params or {}).get("multimodal")
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
 
 @dataclass
 class ChatRequest:
@@ -51,9 +71,11 @@ class ChatRequest:
         return int(self.params.get("effective_ctx") or 32768)
 
     def chars(self) -> int:
-        """Character count of the prompt as sent, for token calibration (03 §6.6)."""
+        """Character count of the prompt as sent, for token calibration (03 §6.6). Images
+        count as `image_tokens × 4` chars each, never as their base64."""
         import json
 
+        per_image = image_tokens(self.params) * 4
         n = 0
         for m in self.messages:
             c = m.get("content")
@@ -63,6 +85,7 @@ class ChatRequest:
                 n += len(json.dumps(c))
             for tc in m.get("tool_calls") or []:
                 n += len(json.dumps(tc))
+            n += len(m.get("images") or []) * per_image
         if self.tools:
             n += len(json.dumps(self.tools))
         return n

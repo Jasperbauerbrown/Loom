@@ -5,11 +5,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from ... import conversation as conv_pkg
 from ... import db
+from ...artifacts import IMAGE_MIMES, sniff_image
 from ...conversation import events, inbox, status
 from ...conversation.context import occupancy
 from ..deps import get_app
@@ -183,18 +185,60 @@ async def list_inbox(conversation_id: str, app=Depends(get_app)) -> list[dict[st
 
 
 class Message(BaseModel):
-    content: str
+    content: str = ""
+    images: list[str] = Field(default_factory=list)  # image ids from POST …/images
 
 
 @router.post("/conversations/{conversation_id}/messages", status_code=202)
 async def send_message(conversation_id: str, body: Message, app=Depends(get_app)) -> dict[str, Any]:
     row = _row(app, conversation_id)
-    if not body.content.strip():
+    refs: list[dict[str, str]] = []
+    for image_id in body.images:
+        found = app.artifacts.find_image(conversation_id, image_id) if app.artifacts is not None else None
+        if found is None:
+            raise HTTPException(400, f"unknown image {image_id!r} for this conversation — upload it first")
+        refs.append({"id": image_id, "mime": found[1]})
+    if not body.content.strip() and not refs:
         raise HTTPException(400, "content is empty")
     if not app.has_model(row["role"]):
         raise HTTPException(409, "no model configured — open Settings › Models (or the Setup screen)")
-    inbox_id = conv_pkg.post(app, conversation_id, body.content, source="user")
+    inbox_id = conv_pkg.post(app, conversation_id, body.content, source="user", meta={"images": refs} if refs else None)
     return {"inbox_id": inbox_id, "conversation_id": conversation_id}
+
+
+@router.post("/conversations/{conversation_id}/images")
+async def upload_image(conversation_id: str, request: Request, app=Depends(get_app)) -> dict[str, Any]:
+    """Raw image bytes in the body (no multipart: one image, one request, no extra
+    dependency). The type is sniffed from the bytes, then the Content-Type header.
+    Returns `{id, mime, bytes}`; the id goes into `POST …/messages` `images`."""
+    _row(app, conversation_id)
+    if app.artifacts is None:
+        raise HTTPException(503, "artifact store unavailable")
+    cap = app.artifacts.image_cap_bytes()
+    body = bytearray()
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > cap:
+            raise HTTPException(413, f"image exceeds the {cap // (1024 * 1024)} MB cap (conversation.image_max_mb)")
+    declared = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+    mime = sniff_image(bytes(body)) or (declared if declared in IMAGE_MIMES else None)
+    if mime is None:
+        raise HTTPException(415, f"not a supported image (content-type {declared or 'missing'!r}; supported: {', '.join(sorted(IMAGE_MIMES))})")
+    try:
+        return app.artifacts.store_image(conversation_id, bytes(body), mime)
+    except ValueError as exc:
+        raise HTTPException(413 if "cap" in str(exc) else 415, str(exc))
+
+
+@router.get("/conversations/{conversation_id}/images/{image_id}")
+async def get_image(conversation_id: str, image_id: str, app=Depends(get_app)) -> Response:
+    """The stored bytes. Ids are ULID-minted and content is immutable, so caching is forever."""
+    _row(app, conversation_id)
+    got = app.artifacts.read_image(conversation_id, image_id) if app.artifacts is not None else None
+    if got is None:
+        raise HTTPException(404, "image not found")
+    data, mime = got
+    return Response(content=data, media_type=mime, headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
 @router.post("/conversations/{conversation_id}/cancel")

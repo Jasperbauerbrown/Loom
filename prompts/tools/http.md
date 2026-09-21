@@ -8,4 +8,4 @@ Arguments:
 - `timeout_s` (number, optional): seconds to wait; defaults to the configured HTTP timeout.
 - `follow_redirects` (boolean, optional, default true).
 
-Returns the status line, the headers worth seeing, and the body as text, with JSON pretty-printed. GET and HEAD run immediately; other methods change something on the other end and are judged first.
+Returns the status line, the headers worth seeing, and the body as text, with JSON pretty-printed. A response that is an image (png, jpeg, webp, gif, within the image size cap) comes back as the image itself. GET and HEAD run immediately; other methods change something on the other end and are judged first.

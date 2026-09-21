@@ -27,6 +27,7 @@ DEFAULT_TOOL_POLICIES: dict[str, str] = {
     "fs_edit": "allow",
     "shell": "classify",
     "http": "classify",
+    "screenshot": "allow",
     "knowledge_search": "allow",
     "knowledge_read": "allow",
     "knowledge_write": "allow",
