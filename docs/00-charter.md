@@ -607,3 +607,8 @@ sessions do not re-litigate.
   `prompts/templates/procedure-self-modification.md` on install), not Python — §5.9's
   "no bespoke framework" taken literally; code covers only isolation, promotion with
   rollback, and protected paths.
+- **2026-09-20** — Added `wsproto` as a runtime dependency: bare `uvicorn` cannot serve
+  the WebSocket the whole surface contract rides on (found on the first real browser
+  connection; in-process tests never upgrade). One small pure-Python package.
+- **2026-09-20** — `loom serve --fake` uses its own home (`~/.loom-fake` unless `--home`
+  is given) so a fake preset can never land in the real state.

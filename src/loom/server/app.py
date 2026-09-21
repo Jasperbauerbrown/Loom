@@ -199,6 +199,13 @@ def serve(
 
     from ..models.fake import FakeModelClient
 
+    if fake and not home:
+        # A fake-model instance must never write its fake preset/roles into the real
+        # APP_HOME (it did once, and the real first run then skipped Setup).
+        from ..config import app_home
+
+        real = app_home()
+        home = str(real.with_name(real.name + "-fake"))
     app = build_app(Path(home) if home else None, models=FakeModelClient() if fake else None)
     loom_log.setup(app.home, str(app.settings.get("system.log_level")))
     if fake:
@@ -218,7 +225,7 @@ def serve(
         return 1
 
     needs_setup = not app.has_model("desk")
-    print(f"Loom {app.version} on {url}" + ("  [fake model]" if fake else ""))
+    print(f"Loom {app.version} on {url}" + (f"  [fake model; home {app.home}]" if fake else ""))
     if needs_setup:
         print(f"No model configured yet — finish setup at {url}/setup")
     should_open = app.settings.get("general.open_browser") if open_browser is None else open_browser
