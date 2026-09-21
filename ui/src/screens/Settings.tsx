@@ -33,7 +33,10 @@ const TAB_ORDER = [
 
 const INTEGRATIONS_LABEL = "Integrations";
 
-export function Settings({ group }: { group: string }) {
+export function Settings({ group: param }: { group: string }) {
+  // `#/settings/models/presets`: the first segment picks the tab, the rest is the tab's
+  // own sub-tab, so a sub-tab is a link (and a screenshot target), not only a click.
+  const [group, sub = ""] = param.split("/", 2);
   const settings = useStore((s) => s.settings);
   const settingsStale = useStore((s) => s.settingsStale);
   const providers = useStore((s) => s.providers);
@@ -92,18 +95,18 @@ export function Settings({ group }: { group: string }) {
         ))}
       </nav>
       <div className="min-w-0 flex-1 overflow-y-auto p-4">
-        <SettingsTabBody group={activeGroup} settings={settings} />
+        <SettingsTabBody group={activeGroup} sub={sub} settings={settings} />
       </div>
     </div>
   );
 }
 
-function SettingsTabBody({ group, settings }: { group: string; settings: SettingsPayload }) {
+function SettingsTabBody({ group, sub, settings }: { group: string; sub: string; settings: SettingsPayload }) {
   switch (group) {
     case "general":
       return <GeneralTab settings={settings} />;
     case "models":
-      return <ModelsTab settings={settings} />;
+      return <ModelsTab settings={settings} sub={sub} />;
     case "conversation":
       return <ConversationTab settings={settings} />;
     case "knowledge":

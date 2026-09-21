@@ -34,11 +34,14 @@ function ImageStrip({
   images,
   size = 96,
   className,
+  frame = "border-neutral-200 bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900",
 }: {
   conversationId: string;
   images: ImageRef[];
   size?: number;
   className?: string;
+  /** border + letterbox colours, so a strip inside a filled bubble can match it */
+  frame?: string;
 }) {
   if (images.length === 0) return null;
   return (
@@ -52,7 +55,7 @@ function ImageStrip({
               alt={img.mime}
               loading="lazy"
               style={{ height: size }}
-              className="max-w-[320px] rounded-md border border-neutral-200 bg-neutral-100 object-contain dark:border-neutral-700 dark:bg-neutral-900"
+              className={cls("min-w-12 max-w-[320px] rounded-md border object-contain", frame)}
             />
           </a>
         );
@@ -195,16 +198,18 @@ function QueuedCard({ row, status }: { row: QueuedMessage; status: string }) {
         <div className="mb-0.5 text-right text-[10.5px] tracking-wide text-neutral-500 uppercase">
           {queuedCaption(row, status)}
         </div>
-        {row.content || images.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-sky-500/60 bg-sky-50/60 px-3 py-2 text-neutral-800 dark:bg-sky-950/30 dark:text-neutral-200">
-            {row.content ? (
-              <Markdown source={row.content} className="md" />
-            ) : (
-              <span className="text-neutral-500">(message queued)</span>
-            )}
-          </div>
-        ) : null}
-        <ImageStrip conversationId={row.conversation_id} images={images} className="mt-1 justify-end opacity-80" />
+        <div className="rounded-lg border border-dashed border-sky-500/60 bg-sky-50/60 px-3 py-2 text-neutral-800 dark:bg-sky-950/30 dark:text-neutral-200">
+          {row.content ? (
+            <Markdown source={row.content} className="md" />
+          ) : images.length === 0 ? (
+            <span className="text-neutral-500">(message queued)</span>
+          ) : null}
+          <ImageStrip
+            conversationId={row.conversation_id}
+            images={images}
+            className={cls("justify-end opacity-80", row.content && "mt-1.5")}
+          />
+        </div>
       </div>
     </div>
   );
@@ -237,19 +242,28 @@ function EventView({
                 {sourceLabel(source, meta)}
               </div>
             ) : null}
-            {event.content || images.length === 0 ? (
-              <div
-                className={cls(
-                  "rounded-lg px-3 py-2 break-words",
-                  foreign
-                    ? "bg-neutral-200 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100"
-                    : "bg-sky-700 text-white dark:bg-sky-600",
-                )}
-              >
+            <div
+              className={cls(
+                "rounded-lg px-3 py-2 break-words",
+                foreign
+                  ? "bg-neutral-200 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100"
+                  : "bg-sky-700 text-white dark:bg-sky-600",
+              )}
+            >
+              {event.content ? (
                 <Markdown source={event.content} className={cls("md", !foreign && "[&_a]:text-white [&_code]:bg-sky-800/60")} />
-              </div>
-            ) : null}
-            <ImageStrip conversationId={event.conversation_id} images={images} className="mt-1 justify-end" />
+              ) : null}
+              <ImageStrip
+                conversationId={event.conversation_id}
+                images={images}
+                className={cls("justify-end", event.content && "mt-1.5")}
+                frame={
+                  foreign
+                    ? "border-neutral-300 bg-neutral-100 dark:border-neutral-600 dark:bg-neutral-900"
+                    : "border-white/40 bg-sky-800/40 dark:border-white/30 dark:bg-sky-700/40"
+                }
+              />
+            </div>
           </div>
         </div>
       );
@@ -314,7 +328,7 @@ function EventView({
     case "status":
       return (
         <div className="my-1.5 text-[11.5px] text-neutral-500" title={localTime(event.ts)}>
-          status · {truncate(event.content, 300)}
+          status · {event.content ? truncate(event.content, 300) : "updated"}
         </div>
       );
     case "system":

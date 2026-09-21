@@ -22,12 +22,17 @@ import {
   Tr,
 } from "../../components/ui";
 import { cls } from "../../lib/format";
+import { navigate } from "../../lib/router";
 import { ScalarFields } from "./SettingsField";
 
 type SubTab = "providers" | "presets" | "roles";
+const SUB_TABS: SubTab[] = ["providers", "presets", "roles"];
 
-export function ModelsTab({ settings }: { settings: SettingsPayload }) {
-  const [sub, setSub] = useState<SubTab>("providers");
+export function ModelsTab({ settings, sub: routed = "" }: { settings: SettingsPayload; sub?: string }) {
+  // The sub-tab lives in the URL (`#/settings/models/<sub>`); an unknown or empty
+  // segment means the first tab.
+  const sub: SubTab = (SUB_TABS as string[]).includes(routed) ? (routed as SubTab) : "providers";
+  const setSub = (t: SubTab) => navigate(`/settings/models/${t}`);
   const providers = useStore((s) => s.providers);
   const presets = useStore((s) => s.presets);
   const roles = useStore((s) => s.roles);
@@ -37,7 +42,7 @@ export function ModelsTab({ settings }: { settings: SettingsPayload }) {
   return (
     <div>
       <div className="mb-4 flex gap-1 border-b border-neutral-200 dark:border-neutral-800">
-        {(["providers", "presets", "roles"] as SubTab[]).map((t) => (
+        {SUB_TABS.map((t) => (
           <button
             key={t}
             onClick={() => setSub(t)}
