@@ -16,7 +16,17 @@ import {
   splitFrontmatter,
 } from "./frontmatter";
 
-export function NoteEditor({ note, onSaved }: { note: VaultNote; onSaved: () => void }) {
+export function NoteEditor({
+  note,
+  onSaved,
+  onDelete,
+  onOpenFolder,
+}: {
+  note: VaultNote;
+  onSaved: () => void;
+  onDelete: () => void;
+  onOpenFolder: () => void;
+}) {
   const [editing, setEditing] = useState(false);
   const [body, setBody] = useState("");
   const [fmRaw, setFmRaw] = useState<string | null>(null);
@@ -147,9 +157,17 @@ export function NoteEditor({ note, onSaved }: { note: VaultNote; onSaved: () => 
               </Button>
             </>
           ) : (
-            <Button size="sm" onClick={() => setEditing(true)}>
-              Edit
-            </Button>
+            <>
+              <Button size="sm" onClick={onOpenFolder} title="Open this note's folder in the OS file manager">
+                Open folder
+              </Button>
+              <Button size="sm" variant="danger" onClick={onDelete}>
+                Delete
+              </Button>
+              <Button size="sm" onClick={() => setEditing(true)}>
+                Edit
+              </Button>
+            </>
           )}
         </div>
       </div>

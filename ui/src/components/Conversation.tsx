@@ -6,7 +6,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { parseToolCalls, store, useStore } from "../lib/store";
 import type { ConvEvent, ToolCall } from "../lib/types";
-import { argsSummary, cls, localTime, truncate } from "../lib/format";
+import { argsSummary, cls, compactionLabel, localTime, truncate } from "../lib/format";
 import { Badge, Button, Collapsible, JsonBlock, Spinner } from "./ui";
 import { Markdown } from "./Markdown";
 import { ArtifactDrawer } from "./ArtifactDrawer";
@@ -185,7 +185,7 @@ function EventView({
       return (
         <div className="my-4 flex items-center gap-2 text-[11px] text-neutral-500">
           <span className="h-px flex-1 bg-neutral-200 dark:bg-neutral-800" />
-          context compacted
+          {compactionLabel(event.meta, event.content)}
           <span className="h-px flex-1 bg-neutral-200 dark:bg-neutral-800" />
         </div>
       );

@@ -1,11 +1,12 @@
 // Conversation header: occupancy meter, queue indicator, the preset actually in use,
 // and the connection dot. Shared by the desk and thread views.
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { api } from "../lib/api";
 import { store, useStore } from "../lib/store";
 import { cls } from "../lib/format";
 import { href } from "../lib/router";
-import { Badge } from "./ui";
+import { Badge, Button, Confirm } from "./ui";
 
 function OccupancyMeter({ id }: { id: string }) {
   const occupancy = useStore((s) => s.occupancy[id], Object.is);
@@ -45,6 +46,16 @@ export function ConversationHeader({ id, children }: { id: string; children?: Re
   const conversation = useStore((s) => s.conversations[id], Object.is);
   const roles = useStore((s) => s.roles, Object.is);
   const queue = useStore((s) => s.queue, Object.is);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const busy = conversation?.status === "running" || conversation?.status === "waiting_approval";
+
+  async function clearContext() {
+    // 409 (a turn started in the meantime) arrives as its `detail` in a toast.
+    const row = await store.guard(() => api.clearConversation(id));
+    if (!row) return;
+    store.toast("info", "Context cleared", "The transcript stays below the divider.");
+    void store.loadOccupancy(id);
+  }
 
   useEffect(() => {
     if (roles.length === 0) void store.loadModels();
@@ -70,6 +81,28 @@ export function ConversationHeader({ id, children }: { id: string; children?: Re
       </div>
       <div className="flex-1" />
       {children}
+      <Button
+        size="sm"
+        onClick={() => setConfirmClear(true)}
+        disabled={busy}
+        title={
+          busy
+            ? `The conversation is ${conversation?.status}; cancel or answer it first.`
+            : "Start the model's context fresh; the transcript stays."
+        }
+      >
+        Clear context
+      </Button>
+      {confirmClear ? (
+        <Confirm
+          title="Clear context"
+          body="Start fresh? Everything before now stays in the transcript below a divider and stays searchable, but the model will no longer see it."
+          confirmLabel="Clear context"
+          danger
+          onConfirm={() => void clearContext()}
+          onClose={() => setConfirmClear(false)}
+        />
+      ) : null}
       <OccupancyMeter id={id} />
       {queue.depth > 0 || (queue.running?.length ?? 0) > 0 ? (
         <Badge tone="sky" title="Model queue: running / queued">

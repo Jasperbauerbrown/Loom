@@ -167,7 +167,7 @@ async def fold(app, conv: dict[str, Any], priority: int = PRIORITY_MAINTENANCE) 
         conv["id"],
         "compaction",
         f"folded {len(folded)} events into summary",
-        {"kind": "fold", "folded_through": folded_through, "kept_from": folded_through + 1, "summary_chars": len(summary)},
+        {"kind": "fold", "folded_through": folded_through, "kept_from": folded_through + 1, "folded_count": len(folded), "summary_chars": len(summary)},
     )
     app.bus.emit("event.appended", events.get(app, ev_id), conv["id"])
     app.bus.emit("conversation.updated", events.public_row(app, conv["id"]), conv["id"])

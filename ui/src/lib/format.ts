@@ -63,3 +63,24 @@ export function pretty(value: unknown): string {
     return String(value);
   }
 }
+
+/** Divider label for a `compaction` event, by `meta.kind` (conversation/compaction.py:
+ *  `evict`, `fold`, `clear`). The fold count is not in `meta`, so it is read from the
+ *  event's own line ("folded 12 events into summary") when it is there. */
+export function compactionLabel(meta: Record<string, unknown> | undefined, content?: string): string {
+  const kind = typeof meta?.kind === "string" ? meta.kind : "";
+  switch (kind) {
+    case "clear":
+      return "context cleared";
+    case "evict":
+      return "old tool output stubbed";
+    case "fold": {
+      const fromMeta = typeof meta?.folded_count === "number" ? meta.folded_count : null;
+      const match = /(\d+)\s+events?/.exec(content ?? "");
+      const n = fromMeta ?? (match ? Number(match[1]) : null);
+      return n === null ? "context compacted" : `context compacted (${n} events summarised)`;
+    }
+    default:
+      return "context compacted";
+  }
+}

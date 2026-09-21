@@ -311,7 +311,10 @@ export interface VaultNoteRef {
 export interface VaultTreeNode {
   path: string;
   title: string;
+  /** the top-level group this node sits under (the vault's first-level folder) */
   type: string;
+  /** what the node itself is, as `vault.tree()` reports it */
+  kind?: "dir" | "note";
   children?: VaultTreeNode[];
 }
 

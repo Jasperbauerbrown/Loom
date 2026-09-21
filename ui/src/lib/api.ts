@@ -150,6 +150,8 @@ export const api = {
   sendMessage: (id: string, content: string) =>
     post<unknown>(`/conversations/${id}/messages`, { content }),
   cancel: (id: string) => post<unknown>(`/conversations/${id}/cancel`),
+  /** Cut the replayed context; the transcript stays. 409 while a turn runs or waits. */
+  clearConversation: (id: string) => post<Conversation>(`/conversations/${id}/clear`),
   archive: (id: string) => post<Conversation>(`/conversations/${id}/archive`),
   occupancy: (id: string) => get<Occupancy>(`/conversations/${id}/occupancy`),
   conversationArtifacts: (id: string) => get<Artifact[]>(`/conversations/${id}/artifacts`),
@@ -178,6 +180,7 @@ export const api = {
       path: node.path ?? "",
       title: node.title ?? node.name ?? node.path ?? "",
       type: node.type === "dir" || node.type === "note" ? type : (node.type ?? type),
+      kind: node.type === "dir" || node.type === "note" ? node.type : undefined,
       children: (node.children ?? []).map((child: any) => walk(child, type)),
     });
     return roots.map((node) => walk(node, node.name ?? node.type ?? "other"));
@@ -198,7 +201,9 @@ export const api = {
     };
   },
   saveNote: (path: string, content: string) => put<VaultNote>("/vault/note", { path, content }),
-  deleteNote: (path: string) => del<unknown>("/vault/note", { path }),
+  deleteNote: (path: string) => del<{ path: string; deleted: boolean }>("/vault/note", { path }),
+  /** One revertible commit for the whole folder; 400 with `detail` for core/ and the root. */
+  deleteFolder: (path: string) => del<{ path: string; deleted: string[] }>("/vault/folder", { path }),
   vaultSearch: (q: string, type?: string) => get<VaultSearchHit[]>("/vault/search", { q, type }),
   vaultHistory: (path: string) => get<VaultChange[]>("/vault/history", { path }),
   recentChanges: (n = 30) => get<VaultChange[]>("/vault/recent-changes", { n }),
@@ -321,6 +326,8 @@ export const api = {
   restart: () => post<unknown>("/system/restart"),
   supervisor: () => get<SupervisorStatus>("/system/supervisor"),
   reindex: () => post<unknown>("/system/reindex"),
+  /** Show a folder (or a file's folder) in the OS file manager; vault-relative is fine. */
+  openPath: (path: string) => post<{ opened: string }>("/system/open", { path }),
   snapshots: () => get<Snapshot[]>("/system/snapshots"),
 
   // -- maintenance (03 §8.6) -------------------------------------------------
