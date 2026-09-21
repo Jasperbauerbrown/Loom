@@ -244,6 +244,7 @@ export function indexToolCalls(
           ok: meta.ok !== false,
           preview: e.content,
           artifact_id: meta.artifact_id ?? null,
+          images: Array.isArray(meta.images) ? meta.images : undefined,
           ts: e.ts,
         },
       };
@@ -457,7 +458,12 @@ export function reduce(state: State, event: BusEvent): State {
         conversation_id: cid,
         kind: "tool_result",
         content: data.preview ?? "",
-        meta: { call_id: data.call_id, ok: data.ok, artifact_id: data.artifact_id ?? null },
+        meta: {
+          call_id: data.call_id,
+          ok: data.ok,
+          artifact_id: data.artifact_id ?? null,
+          ...(Array.isArray(data.images) ? { images: data.images } : {}),
+        },
         ts: event.ts,
       };
       const prev = state.toolCalls[data.call_id];
@@ -482,6 +488,7 @@ export function reduce(state: State, event: BusEvent): State {
               ok: data.ok !== false,
               preview: data.preview ?? "",
               artifact_id: data.artifact_id ?? null,
+              images: Array.isArray(data.images) ? data.images : prev?.result?.images,
               ts: event.ts,
             },
           },

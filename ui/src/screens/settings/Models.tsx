@@ -296,7 +296,14 @@ function PresetsPanel({
               <Tr key={p.name}>
                 <Td className="font-medium">{p.name}</Td>
                 <Td>{p.provider}</Td>
-                <Td className="font-mono text-[12px]">{p.model}</Td>
+                <Td className="font-mono text-[12px]">
+                  {p.model}
+                  {p.params?.multimodal ? (
+                    <Badge className="ml-1.5 font-sans" title="Multimodal: images are sent as image parts">
+                      img
+                    </Badge>
+                  ) : null}
+                </Td>
                 <Td>
                   {referenced ? (
                     <Badge tone="sky" title={`${usage.roles} role(s), ${usage.conversations} conversation(s)`}>
@@ -408,6 +415,8 @@ function PresetDialog({
   const initReasoning = parseReasoning(p.reasoning);
   const [reasoningMode, setReasoningMode] = useState(initReasoning.mode);
   const [reasoningBudget, setReasoningBudget] = useState(initReasoning.budget);
+  const [multimodal, setMultimodal] = useState(Boolean(p.multimodal));
+  const [imageTokens, setImageTokens] = useState(String(p.image_tokens ?? ""));
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [probedModels, setProbedModels] = useState<string[] | null>(null);
@@ -454,6 +463,8 @@ function PresetDialog({
       keep_alive: keepAlive || undefined,
       timeout_s: num(timeoutS),
       reasoning,
+      multimodal,
+      image_tokens: num(imageTokens),
     };
     setSaving(true);
     const body = { name, provider, model, notes, enabled, params };
@@ -555,6 +566,15 @@ function PresetDialog({
               />
             )}
           </div>
+        </FieldRow>
+        <FieldRow
+          label="Multimodal (vision input)"
+          help="Send images to this model as image parts. Text-only models get a placeholder line instead."
+        >
+          <Toggle checked={multimodal} onChange={setMultimodal} label="Multimodal" />
+        </FieldRow>
+        <FieldRow label="Image tokens" help="Estimated prompt tokens per image, for occupancy and compaction.">
+          <Input type="number" value={imageTokens} onChange={(e) => setImageTokens(e.target.value)} placeholder="1000" />
         </FieldRow>
         {preset?.params?.token_factor_seed !== undefined && (
           <FieldRow label="Token factor seed" help="Calibrated automatically; read-only.">

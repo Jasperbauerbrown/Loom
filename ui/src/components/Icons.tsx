@@ -105,3 +105,9 @@ export const IconFolder = ({ className }: P) => (
     <path d="M2.5 4.5h4l1.2 1.5h5.8v7h-11z" />
   </svg>
 );
+
+export const IconPaperclip = ({ className }: P) => (
+  <svg {...base(className)}>
+    <path d="M10.5 5.5 6.2 9.8a1.4 1.4 0 0 0 2 2l5-5a2.8 2.8 0 0 0-4-4L4.1 7.9a4.2 4.2 0 0 0 6 6l3.4-3.4" />
+  </svg>
+);

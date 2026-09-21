@@ -46,11 +46,19 @@ export type EventKind =
   | "compaction"
   | "status";
 
+/** A stored image (03 §4.4): `img_<ulid>` beside the conversation's spill artifacts,
+ *  served by GET /conversations/{id}/images/{image_id}. Rows carry refs, never bytes. */
+export interface ImageRef {
+  id: string;
+  mime: string;
+}
+
 export interface ConvEvent {
   id: number;
   conversation_id: string;
   kind: EventKind;
   content: string;
+  /** `images?: ImageRef[]` on user and tool_result rows; `inbox_id`/`source` on user rows */
   meta: Record<string, unknown>;
   ts: string;
   /** client-side only: set while an assistant/thinking event is still streaming */
@@ -82,6 +90,8 @@ export interface ToolResult {
   ok: boolean;
   preview: string;
   artifact_id?: string | null;
+  /** images the tool returned, stored by the dispatcher (03 §4.4) */
+  images?: ImageRef[];
   ts?: string;
 }
 
@@ -108,6 +118,7 @@ export interface QueuedMessage {
   conversation_id: string;
   source: string;
   content: string;
+  /** `images?: ImageRef[]` when the message was posted with attachments */
   meta: Record<string, unknown>;
   created_at: string;
 }

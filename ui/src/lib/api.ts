@@ -58,6 +58,13 @@ export function token(): string | null {
   }
 }
 
+/** The GET url of a stored image, usable as `<img src>` and as an href. An `<img>` cannot
+ *  send a header, so the LAN token rides the query string, the way `/ws` takes it. */
+export function imageUrl(conversationId: string, imageId: string): string {
+  const t = token();
+  return `/api/conversations/${conversationId}/images/${imageId}${t ? `?token=${encodeURIComponent(t)}` : ""}`;
+}
+
 export function setToken(value: string | null) {
   try {
     if (value) localStorage.setItem("loom_token", value);
@@ -149,8 +156,41 @@ export const api = {
   }) => post<Conversation>("/conversations", body),
   events: (id: string, params?: { after?: number; before?: number; limit?: number; kinds?: string }) =>
     get<ConvEvent[]>(`/conversations/${id}/events`, params),
-  sendMessage: (id: string, content: string) =>
-    post<unknown>(`/conversations/${id}/messages`, { content }),
+  sendMessage: (id: string, content: string, images?: string[]) =>
+    post<unknown>(`/conversations/${id}/messages`, images && images.length ? { content, images } : { content }),
+  /** Raw-body upload (03 §12.1: no multipart, no extra dependency). The reply names the
+   *  stored image; `sendMessage` then carries the id. 415 non-image, 413 over the cap. */
+  uploadImage: async (id: string, file: File): Promise<{ id: string; mime: string; bytes: number }> => {
+    const headers: Record<string, string> = {
+      "Content-Type": file.type || "application/octet-stream",
+      "X-Filename": encodeURIComponent(file.name || "image"),
+    };
+    const t = token();
+    if (t) headers["Authorization"] = `Bearer ${t}`;
+    let res: Response;
+    try {
+      res = await fetch(`/api/conversations/${id}/images`, { method: "POST", headers, body: file });
+    } catch (e) {
+      throw new ApiError(0, `network error: ${(e as Error).message}`);
+    }
+    const text = await res.text();
+    let parsed: any = undefined;
+    try {
+      parsed = text ? JSON.parse(text) : undefined;
+    } catch {
+      parsed = text;
+    }
+    if (!res.ok) {
+      const detail =
+        parsed && typeof parsed === "object" && "detail" in parsed
+          ? String(parsed.detail)
+          : typeof parsed === "string" && parsed
+            ? parsed
+            : `${res.status} ${res.statusText}`;
+      throw new ApiError(res.status, detail);
+    }
+    return parsed as { id: string; mime: string; bytes: number };
+  },
   /** Inbox rows not yet in the transcript: what the next step boundary will deliver. */
   inbox: (id: string) => get<QueuedMessage[]>(`/conversations/${id}/inbox`),
   cancel: (id: string) => post<unknown>(`/conversations/${id}/cancel`),

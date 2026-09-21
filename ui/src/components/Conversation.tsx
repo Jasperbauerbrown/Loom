@@ -3,13 +3,14 @@
 // one component, no special cases (charter §2.1).
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { api } from "../lib/api";
+import { api, imageUrl } from "../lib/api";
 import { parseToolCalls, store, useStore } from "../lib/store";
-import type { ConvEvent, QueuedMessage, ToolCall } from "../lib/types";
+import type { ConvEvent, ImageRef, QueuedMessage, ToolCall } from "../lib/types";
 import { argsSummary, cls, compactionLabel, localTime, truncate } from "../lib/format";
 import { Badge, Button, Collapsible, JsonBlock, Spinner } from "./ui";
 import { Markdown } from "./Markdown";
 import { ArtifactDrawer } from "./ArtifactDrawer";
+import { IconPaperclip } from "./Icons";
 
 const PAGE = 100;
 
@@ -18,6 +19,46 @@ function policyTone(policy?: string) {
   if (policy === "ask") return "amber" as const;
   if (policy === "classify") return "violet" as const;
   return "neutral" as const;
+}
+
+/** `meta.images` as typed refs; anything malformed is simply no images. */
+function imageRefs(meta: Record<string, unknown> | undefined): ImageRef[] {
+  const raw = meta?.images;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((r): r is ImageRef => !!r && typeof (r as ImageRef).id === "string");
+}
+
+/** Thumbnails of stored images (03 §4.4); each opens the full image in a new tab. */
+function ImageStrip({
+  conversationId,
+  images,
+  size = 96,
+  className,
+}: {
+  conversationId: string;
+  images: ImageRef[];
+  size?: number;
+  className?: string;
+}) {
+  if (images.length === 0) return null;
+  return (
+    <div className={cls("flex flex-wrap gap-1.5", className)}>
+      {images.map((img) => {
+        const url = imageUrl(conversationId, img.id);
+        return (
+          <a key={img.id} href={url} target="_blank" rel="noreferrer" title={`${img.mime} — open full size`} className="block">
+            <img
+              src={url}
+              alt={img.mime}
+              loading="lazy"
+              style={{ height: size }}
+              className="max-w-[320px] rounded-md border border-neutral-200 bg-neutral-100 object-contain dark:border-neutral-700 dark:bg-neutral-900"
+            />
+          </a>
+        );
+      })}
+    </div>
+  );
 }
 
 function ToolRow({ call, onArtifact, awaiting }: { call: ToolCall; onArtifact: (id: string) => void; awaiting?: boolean }) {
@@ -52,6 +93,9 @@ function ToolRow({ call, onArtifact, awaiting }: { call: ToolCall; onArtifact: (
       ) : null}
       {result ? (
         <div className="mt-1">
+          {result.images && result.images.length > 0 ? (
+            <ImageStrip conversationId={call.conversation_id} images={result.images} className="mb-1.5" />
+          ) : null}
           <pre className="max-h-48 overflow-auto rounded border border-neutral-200 bg-white p-2 font-mono text-[11.5px] leading-4 whitespace-pre-wrap dark:border-neutral-800 dark:bg-neutral-950">
             {truncate(result.preview ?? "", 4000)}
           </pre>
@@ -144,19 +188,23 @@ function queuedCaption(row: QueuedMessage, status: string): string {
 /** A message that is posted but not yet in the transcript: it looks like the user
  *  bubble it will become, drawn hollow so nobody mistakes it for a delivered one. */
 function QueuedCard({ row, status }: { row: QueuedMessage; status: string }) {
+  const images = imageRefs(row.meta as Record<string, unknown>);
   return (
     <div className="my-3 flex justify-end" title={localTime(row.created_at)}>
       <div className="max-w-[80%]">
         <div className="mb-0.5 text-right text-[10.5px] tracking-wide text-neutral-500 uppercase">
           {queuedCaption(row, status)}
         </div>
-        <div className="rounded-lg border border-dashed border-sky-500/60 bg-sky-50/60 px-3 py-2 text-neutral-800 dark:bg-sky-950/30 dark:text-neutral-200">
-          {row.content ? (
-            <Markdown source={row.content} className="md" />
-          ) : (
-            <span className="text-neutral-500">(message queued)</span>
-          )}
-        </div>
+        {row.content || images.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-sky-500/60 bg-sky-50/60 px-3 py-2 text-neutral-800 dark:bg-sky-950/30 dark:text-neutral-200">
+            {row.content ? (
+              <Markdown source={row.content} className="md" />
+            ) : (
+              <span className="text-neutral-500">(message queued)</span>
+            )}
+          </div>
+        ) : null}
+        <ImageStrip conversationId={row.conversation_id} images={images} className="mt-1 justify-end opacity-80" />
       </div>
     </div>
   );
@@ -180,6 +228,7 @@ function EventView({
       // were not typed by the person: same side, hollow tone, a caption saying so.
       const source = typeof meta.source === "string" ? meta.source : "user";
       const foreign = source !== "user";
+      const images = imageRefs(meta);
       return (
         <div className="my-3 flex justify-end">
           <div className="min-w-0 max-w-[80%]">
@@ -188,16 +237,19 @@ function EventView({
                 {sourceLabel(source, meta)}
               </div>
             ) : null}
-            <div
-              className={cls(
-                "rounded-lg px-3 py-2 break-words",
-                foreign
-                  ? "bg-neutral-200 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100"
-                  : "bg-sky-700 text-white dark:bg-sky-600",
-              )}
-            >
-              <Markdown source={event.content} className={cls("md", !foreign && "[&_a]:text-white [&_code]:bg-sky-800/60")} />
-            </div>
+            {event.content || images.length === 0 ? (
+              <div
+                className={cls(
+                  "rounded-lg px-3 py-2 break-words",
+                  foreign
+                    ? "bg-neutral-200 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100"
+                    : "bg-sky-700 text-white dark:bg-sky-600",
+                )}
+              >
+                <Markdown source={event.content} className={cls("md", !foreign && "[&_a]:text-white [&_code]:bg-sky-800/60")} />
+              </div>
+            ) : null}
+            <ImageStrip conversationId={event.conversation_id} images={images} className="mt-1 justify-end" />
           </div>
         </div>
       );
@@ -325,6 +377,39 @@ export function Conversation({ id }: { id: string }) {
   const scroller = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
   const composer = useRef<HTMLTextAreaElement>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+  // Image attachments: uploaded eagerly so a send carries only ids (03 §12.1). Kept per
+  // conversation in component state, not in the persisted draft — a stored image with
+  // no message is a bounded orphan that dies with the conversation's artifacts.
+  const [attachmentsById, setAttachmentsById] = useState<Record<string, Attachment[]>>({});
+  const attachments = attachmentsById[id] ?? EMPTY_ATTACHMENTS;
+  const attachSeq = useRef(0);
+
+  const updateAttachments = (fn: (list: Attachment[]) => Attachment[]) =>
+    setAttachmentsById((all) => ({ ...all, [id]: fn(all[id] ?? []) }));
+
+  const attachFiles = (files: File[]) => {
+    const images = files.filter((f) => f.type.startsWith("image/"));
+    if (images.length === 0) return;
+    for (const file of images) {
+      const key = `a${++attachSeq.current}`;
+      updateAttachments((list) => [...list, { key, name: file.name, status: "uploading" }]);
+      void (async () => {
+        try {
+          const res = await api.uploadImage(id, file);
+          updateAttachments((list) =>
+            list.map((a) => (a.key === key ? { ...a, status: "ready", id: res.id, mime: res.mime } : a)),
+          );
+        } catch (e) {
+          store.error(e);
+          updateAttachments((list) => list.filter((a) => a.key !== key));
+        }
+      })();
+    }
+  };
+  const removeAttachment = (key: string) => updateAttachments((list) => list.filter((a) => a.key !== key));
+  const uploading = attachments.some((a) => a.status === "uploading");
+  const readyImages = attachments.filter((a) => a.status === "ready" && a.id).map((a) => a.id!);
 
   useEffect(() => {
     if (!id) return;
@@ -373,14 +458,17 @@ export function Conversation({ id }: { id: string }) {
   const status = conversation?.status ?? "idle";
   const running = status === "running";
 
+  const canSend = (draft.trim().length > 0 || readyImages.length > 0) && !uploading && !sending;
+
   const send = async () => {
     const content = draft.trim();
-    if (!content || sending) return;
+    if (!canSend) return;
     setSending(true);
-    const ok = await store.guard(() => api.sendMessage(id, content));
+    const ok = await store.guard(() => api.sendMessage(id, content, readyImages));
     setSending(false);
     if (ok !== undefined) {
       setDraft("");
+      updateAttachments(() => []);
       atBottom.current = true;
     }
   };
@@ -441,11 +529,78 @@ export function Conversation({ id }: { id: string }) {
             </Button>
           ) : null}
         </div>
-        <div className="flex items-end gap-2">
+        {attachments.length > 0 ? (
+          <div className="mb-1.5 flex flex-wrap gap-1.5">
+            {attachments.map((a) => (
+              <div
+                key={a.key}
+                className="relative flex h-12 items-center gap-1.5 rounded-md border border-neutral-300 bg-neutral-50 px-1.5 dark:border-neutral-700 dark:bg-neutral-900"
+                title={a.name}
+              >
+                {a.status === "ready" && a.id ? (
+                  <img src={imageUrl(id, a.id)} alt={a.name} className="h-9 max-w-[120px] rounded object-contain" />
+                ) : (
+                  <span className="flex items-center gap-1 px-1 text-[11.5px] text-neutral-500">
+                    <Spinner /> uploading…
+                  </span>
+                )}
+                <button
+                  type="button"
+                  aria-label={`Remove ${a.name}`}
+                  onClick={() => removeAttachment(a.key)}
+                  className="rounded px-1 text-[13px] leading-none text-neutral-500 hover:bg-neutral-200 hover:text-neutral-900 dark:hover:bg-neutral-700 dark:hover:text-neutral-100"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        <div
+          className="flex items-end gap-2"
+          onDragOver={(e) => {
+            if (Array.from(e.dataTransfer.types).includes("Files")) e.preventDefault();
+          }}
+          onDrop={(e) => {
+            const files = Array.from(e.dataTransfer.files ?? []);
+            if (files.length === 0) return;
+            e.preventDefault();
+            attachFiles(files);
+          }}
+        >
+          <input
+            ref={fileInput}
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              if (e.target.files) attachFiles(Array.from(e.target.files));
+              e.target.value = ""; // re-attaching the same file must fire again
+            }}
+          />
+          <Button
+            variant="ghost"
+            className="shrink-0"
+            title="Attach an image (or paste / drop one)"
+            aria-label="Attach image"
+            onClick={() => fileInput.current?.click()}
+          >
+            <IconPaperclip />
+          </Button>
           <textarea
             ref={composer}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
+            onPaste={(e) => {
+              const files = Array.from(e.clipboardData?.items ?? [])
+                .filter((it) => it.kind === "file" && it.type.startsWith("image/"))
+                .map((it) => it.getAsFile())
+                .filter((f): f is File => f !== null);
+              if (files.length === 0) return;
+              e.preventDefault();
+              attachFiles(files);
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
@@ -462,7 +617,7 @@ export function Conversation({ id }: { id: string }) {
               "w-full resize-none rounded-md border border-neutral-300 bg-white px-3 py-2 text-[13px] focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 dark:border-neutral-700 dark:bg-neutral-900",
             )}
           />
-          <Button variant="primary" onClick={() => void send()} disabled={!draft.trim() || sending}>
+          <Button variant="primary" onClick={() => void send()} disabled={!canSend}>
             Send
           </Button>
         </div>
@@ -473,5 +628,14 @@ export function Conversation({ id }: { id: string }) {
   );
 }
 
+interface Attachment {
+  key: string;
+  name: string;
+  status: "uploading" | "ready";
+  id?: string;
+  mime?: string;
+}
+
 const EMPTY: ConvEvent[] = [];
 const EMPTY_QUEUED: QueuedMessage[] = [];
+const EMPTY_ATTACHMENTS: Attachment[] = [];

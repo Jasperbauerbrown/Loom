@@ -330,3 +330,28 @@ describe("drafts storage", () => {
     expect(() => saveDrafts({ a: "x" }, throwing)).not.toThrow();
   });
 });
+
+describe("tool result images", () => {
+  const img = { id: "img_01ARZ3NDEKTSV4RRFFQ69G5FAV", mime: "image/png" };
+
+  it("carries images from tool.result into the event meta and the indexed result", () => {
+    const state = feed([
+      ev("tool.call", { call_id: "c1", name: "screenshot", args: {}, event_id: 10 }),
+      ev("tool.result", { call_id: "c1", name: "screenshot", ok: true, preview: "1440x900 png", event_id: 11, images: [img] }),
+    ]);
+    expect(state.toolCalls.c1.result?.images).toEqual([img]);
+    const result = state.events[CID].find((e) => e.kind === "tool_result");
+    expect(result?.meta.images).toEqual([img]);
+  });
+
+  it("reads images off persisted tool_result rows so history matches live", () => {
+    const state = feed([
+      ev("event.appended", { id: 11, conversation_id: CID, kind: "tool_result", content: "x", meta: { call_id: "c1", ok: true, images: [img] }, ts: "t" }),
+    ]);
+    expect(state.toolCalls.c1.result?.images).toEqual([img]);
+    const none = feed([
+      ev("event.appended", { id: 12, conversation_id: CID, kind: "tool_result", content: "x", meta: { call_id: "c2", ok: true }, ts: "t" }),
+    ]);
+    expect(none.toolCalls.c2.result?.images).toBeUndefined();
+  });
+});
