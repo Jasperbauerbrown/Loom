@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { initialState, reduce, type State } from "./store";
+import { DRAFTS_KEY, initialState, loadDrafts, reduce, saveDrafts, type KeyValueStorage, type State } from "./store";
 import type { BusEvent } from "./types";
 
 const CID = "01J000000000000000000DESK";
@@ -253,5 +253,80 @@ describe("system events", () => {
     expect(reduce(initialState, ev("conversation.updated", null))).toBe(initialState);
     expect(reduce(initialState, ev("approval.requested", {}))).toBe(initialState);
     expect(reduce(initialState, ev("tool.call", { name: "x" }))).toBe(initialState);
+  });
+});
+
+describe("queued messages", () => {
+  const posted = (id: number, content: string, source = "user") =>
+    ev("inbox.posted", { id, source, content, created_at: "2026-09-21T19:00:00Z", meta: {} });
+  const delivered = (eventId: number, inboxId: number) =>
+    ev("event.appended", { id: eventId, conversation_id: CID, kind: "user", content: "x", meta: { inbox_id: inboxId, source: "user" }, ts: "t" });
+
+  it("adds a queued row on inbox.posted, sorted by id and deduped", () => {
+    const state = feed([posted(12, "second"), posted(11, "first"), posted(12, "second again")]);
+    expect(state.queued[CID].map((q) => [q.id, q.content])).toEqual([
+      [11, "first"],
+      [12, "second"],
+    ]);
+    expect(state.queued[CID][0]).toMatchObject({ conversation_id: CID, source: "user", created_at: "2026-09-21T19:00:00Z" });
+  });
+
+  it("removes the row when its user event lands in the transcript", () => {
+    const state = feed([posted(11, "a"), posted(12, "b"), delivered(40, 11)]);
+    expect(state.queued[CID].map((q) => q.id)).toEqual([12]);
+    expect(state.events[CID].map((e) => e.id)).toEqual([40]);
+  });
+
+  it("ignores user events for other inbox rows and non-user events", () => {
+    const before = feed([posted(11, "a")]);
+    const other = reduce(before, delivered(41, 99));
+    expect(other.queued).toBe(before.queued);
+    const assistant = reduce(
+      before,
+      ev("event.appended", { id: 42, conversation_id: CID, kind: "assistant", content: "hi", meta: { inbox_id: 11 }, ts: "t" }),
+    );
+    expect(assistant.queued[CID].map((q) => q.id)).toEqual([11]);
+  });
+
+  it("ignores malformed inbox.posted payloads", () => {
+    expect(reduce(initialState, ev("inbox.posted", { source: "user" }))).toBe(initialState);
+    expect(reduce(initialState, ev("inbox.posted", { id: 3 }, null))).toBe(initialState);
+  });
+});
+
+describe("drafts storage", () => {
+  function memoryStorage(initial: Record<string, string> = {}): KeyValueStorage & { data: Record<string, string> } {
+    const data = { ...initial };
+    return {
+      data,
+      getItem: (k) => (k in data ? data[k] : null),
+      setItem: (k, v) => {
+        data[k] = v;
+      },
+    };
+  }
+
+  it("round-trips drafts through storage", () => {
+    const storage = memoryStorage();
+    saveDrafts({ a: "hello", b: "world" }, storage);
+    expect(JSON.parse(storage.data[DRAFTS_KEY])).toEqual({ a: "hello", b: "world" });
+    expect(loadDrafts(storage)).toEqual({ a: "hello", b: "world" });
+  });
+
+  it("treats missing, malformed or blocked storage as no drafts", () => {
+    expect(loadDrafts(null)).toEqual({});
+    expect(loadDrafts(memoryStorage({ [DRAFTS_KEY]: "not json" }))).toEqual({});
+    expect(loadDrafts(memoryStorage({ [DRAFTS_KEY]: JSON.stringify([1, 2]) }))).toEqual({});
+    expect(loadDrafts(memoryStorage({ [DRAFTS_KEY]: JSON.stringify({ a: 1, b: "", c: "keep" }) }))).toEqual({ c: "keep" });
+    const throwing: KeyValueStorage = {
+      getItem: () => {
+        throw new Error("blocked");
+      },
+      setItem: () => {
+        throw new Error("blocked");
+      },
+    };
+    expect(loadDrafts(throwing)).toEqual({});
+    expect(() => saveDrafts({ a: "x" }, throwing)).not.toThrow();
   });
 });

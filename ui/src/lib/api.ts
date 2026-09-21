@@ -22,6 +22,7 @@ import type {
   PromotePlan,
   ProtectedPath,
   Provider,
+  QueuedMessage,
   QueueState,
   Root,
   Schedule,
@@ -149,6 +150,8 @@ export const api = {
     get<ConvEvent[]>(`/conversations/${id}/events`, params),
   sendMessage: (id: string, content: string) =>
     post<unknown>(`/conversations/${id}/messages`, { content }),
+  /** Inbox rows not yet in the transcript: what the next step boundary will deliver. */
+  inbox: (id: string) => get<QueuedMessage[]>(`/conversations/${id}/inbox`),
   cancel: (id: string) => post<unknown>(`/conversations/${id}/cancel`),
   /** Cut the replayed context; the transcript stays. 409 while a turn runs or waits. */
   clearConversation: (id: string) => post<Conversation>(`/conversations/${id}/clear`),

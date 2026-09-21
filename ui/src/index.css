@@ -1,7 +1,14 @@
 @import "tailwindcss";
 
-/* Theme follows the system unless `general.theme` overrides it: App sets/removes the
-   `dark` class on <html>, so the variant keys on the class rather than the media query. */
+/* Appearance has two axes, both settings (03 §13.2).
+   - `general.theme` (system | light | dark): App sets/removes the `dark` class on <html>,
+     so the variant keys on the class rather than the media query.
+   - `general.palette`: App sets `data-palette` on <html>. Every component is built from
+     three ramps, `neutral-*` (surfaces, text, borders), `sky-*` (accent: buttons, links,
+     badges, focus rings) and `white`; Tailwind v4 utilities read those ramps through
+     `var(--color-*)`, so a palette is nothing more than a block of variable overrides
+     below, and no component knows palettes exist. Each ramp keeps Tailwind's ordering
+     (50 lightest → 950 darkest) because the `dark:` variants lean on the 800–950 end. */
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
@@ -24,6 +31,143 @@ body {
   @apply bg-white text-neutral-900 antialiased dark:bg-neutral-950 dark:text-neutral-100;
   font-family: var(--font-sans);
   font-size: 14px;
+}
+
+/* --- palettes (general.palette) ------------------------------------------------ */
+
+/* slate: cool blue-greys, indigo accent. */
+:root[data-palette="slate"] {
+  --color-neutral-50: #f8fafc;
+  --color-neutral-100: #f1f5f9;
+  --color-neutral-200: #e2e8f0;
+  --color-neutral-300: #cbd5e1;
+  --color-neutral-400: #94a3b8;
+  --color-neutral-500: #64748b;
+  --color-neutral-600: #475569;
+  --color-neutral-700: #334155;
+  --color-neutral-800: #1e293b;
+  --color-neutral-900: #0f172a;
+  --color-neutral-950: #020617;
+  --color-sky-50: #eef2ff;
+  --color-sky-100: #e0e7ff;
+  --color-sky-200: #c7d2fe;
+  --color-sky-300: #a5b4fc;
+  --color-sky-400: #818cf8;
+  --color-sky-500: #6366f1;
+  --color-sky-600: #4f46e5;
+  --color-sky-700: #4338ca;
+  --color-sky-800: #3730a3;
+  --color-sky-900: #312e81;
+  --color-sky-950: #1e1b4b;
+}
+
+/* warm: stone greys on a paper-tinted white, amber accent. */
+:root[data-palette="warm"] {
+  --color-white: #fffcf7;
+  --color-neutral-50: #fafaf9;
+  --color-neutral-100: #f5f5f4;
+  --color-neutral-200: #e7e5e4;
+  --color-neutral-300: #d6d3d1;
+  --color-neutral-400: #a8a29e;
+  --color-neutral-500: #78716c;
+  --color-neutral-600: #57534e;
+  --color-neutral-700: #44403c;
+  --color-neutral-800: #292524;
+  --color-neutral-900: #1c1917;
+  --color-neutral-950: #0c0a09;
+  --color-sky-50: #fffbeb;
+  --color-sky-100: #fef3c7;
+  --color-sky-200: #fde68a;
+  --color-sky-300: #fcd34d;
+  --color-sky-400: #fbbf24;
+  --color-sky-500: #f59e0b;
+  --color-sky-600: #d97706;
+  --color-sky-700: #b45309;
+  --color-sky-800: #92400e;
+  --color-sky-900: #78350f;
+  --color-sky-950: #451a03;
+}
+
+/* forest: green-tinted greys, emerald accent. */
+:root[data-palette="forest"] {
+  --color-white: #fbfdfb;
+  --color-neutral-50: #f4f7f4;
+  --color-neutral-100: #e8eee9;
+  --color-neutral-200: #d3ddd5;
+  --color-neutral-300: #b3c3b7;
+  --color-neutral-400: #86a08d;
+  --color-neutral-500: #62806a;
+  --color-neutral-600: #4a6452;
+  --color-neutral-700: #3b4f41;
+  --color-neutral-800: #2b3a30;
+  --color-neutral-900: #1c2720;
+  --color-neutral-950: #0d130f;
+  --color-sky-50: #ecfdf5;
+  --color-sky-100: #d1fae5;
+  --color-sky-200: #a7f3d0;
+  --color-sky-300: #6ee7b7;
+  --color-sky-400: #34d399;
+  --color-sky-500: #10b981;
+  --color-sky-600: #059669;
+  --color-sky-700: #047857;
+  --color-sky-800: #065f46;
+  --color-sky-900: #064e3b;
+  --color-sky-950: #022c22;
+}
+
+/* nord: Snow Storm for the light stops, Polar Night for the dark ones, Frost accent. */
+:root[data-palette="nord"] {
+  --color-white: #f8f9fb;
+  --color-neutral-50: #eceff4;
+  --color-neutral-100: #e5e9f0;
+  --color-neutral-200: #d8dee9;
+  --color-neutral-300: #bfc7d5;
+  --color-neutral-400: #a3adbf;
+  --color-neutral-500: #7b869a;
+  --color-neutral-600: #616e85;
+  --color-neutral-700: #4c566a;
+  --color-neutral-800: #434c5e;
+  --color-neutral-900: #3b4252;
+  --color-neutral-950: #2e3440;
+  --color-sky-50: #eef5f8;
+  --color-sky-100: #dcecf1;
+  --color-sky-200: #bfdfe8;
+  --color-sky-300: #a3d1de;
+  --color-sky-400: #88c0d0;
+  --color-sky-500: #81a1c1;
+  --color-sky-600: #5e81ac;
+  --color-sky-700: #4d6b91;
+  --color-sky-800: #3f5877;
+  --color-sky-900: #33465e;
+  --color-sky-950: #232f40;
+}
+
+/* mono: zinc greys and a grey accent. Primary buttons keep `text-white`, so the accent
+   stops they use stay dark enough in both themes: 700 (light mode) is near-black and
+   600 (dark mode) a mid grey, while 300–400 (dark-mode links) stay light. */
+:root[data-palette="mono"] {
+  --color-neutral-50: #fafafa;
+  --color-neutral-100: #f4f4f5;
+  --color-neutral-200: #e4e4e7;
+  --color-neutral-300: #d4d4d8;
+  --color-neutral-400: #a1a1aa;
+  --color-neutral-500: #71717a;
+  --color-neutral-600: #52525b;
+  --color-neutral-700: #3f3f46;
+  --color-neutral-800: #27272a;
+  --color-neutral-900: #18181b;
+  --color-neutral-950: #09090b;
+  --color-sky-50: #fafafa;
+  --color-sky-100: #e4e4e7;
+  --color-sky-200: #d4d4d8;
+  --color-sky-300: #c8c8cd;
+  --color-sky-400: #b4b4bb;
+  --color-sky-500: #71717a;
+  --color-sky-600: #52525b;
+  --color-sky-700: #27272a;
+  --color-sky-800: #18181b;
+  --color-sky-900: #101012;
+  --color-sky-950: #09090b;
 }
 
 /* Rendered Markdown. Dense but readable; no prose plugin (dependency-light). */

@@ -30,6 +30,7 @@ export function VaultSearch() {
     <div className="mb-2">
       <div className="flex gap-1.5">
         <Input
+          className="min-w-0 flex-1"
           placeholder="Search vault…"
           value={q}
           onChange={(e) => {

@@ -5,7 +5,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { parseToolCalls, store, useStore } from "../lib/store";
-import type { ConvEvent, ToolCall } from "../lib/types";
+import type { ConvEvent, QueuedMessage, ToolCall } from "../lib/types";
 import { argsSummary, cls, compactionLabel, localTime, truncate } from "../lib/format";
 import { Badge, Button, Collapsible, JsonBlock, Spinner } from "./ui";
 import { Markdown } from "./Markdown";
@@ -69,13 +69,17 @@ function ToolRow({ call, onArtifact }: { call: ToolCall; onArtifact: (id: string
 
 function ApprovalCard({ id }: { id: string }) {
   const approval = useStore((s) => s.approvals[id], Object.is);
-  const [addRoot, setAddRoot] = useState(true);
+  // Widening the roots is a deliberate, second click: unchecked by default (2026-09-21).
+  const [addRoot, setAddRoot] = useState(false);
   const [busy, setBusy] = useState(false);
   if (!approval || approval.status !== "pending") return null;
   const root = approval.options?.add_root;
   const decide = async (decision: "allow" | "deny" | "allow_always") => {
     setBusy(true);
-    await store.guard(() => api.decideApproval(approval.id, decision, root ? addRoot : undefined));
+    // The backend widens the roots only on allow_always; the other decisions ignore it.
+    await store.guard(() =>
+      api.decideApproval(approval.id, decision, decision === "allow_always" && root ? addRoot : undefined),
+    );
     setBusy(false);
   };
   return (
@@ -94,7 +98,7 @@ function ApprovalCard({ id }: { id: string }) {
         <label className="mt-2 flex items-center gap-2 text-[12px]">
           <input type="checkbox" checked={addRoot} onChange={(e) => setAddRoot(e.target.checked)} />
           <span>
-            also allow this root: <span className="font-mono">{String(root)}</span>
+            Also allow this root with &ldquo;Allow always&rdquo;: <span className="font-mono">{String(root)}</span>
           </span>
         </label>
       ) : null}
@@ -108,6 +112,48 @@ function ApprovalCard({ id }: { id: string }) {
         <Button size="sm" variant="danger" disabled={busy} onClick={() => void decide("deny")}>
           Deny
         </Button>
+      </div>
+    </div>
+  );
+}
+
+/** Caption for a queued row: where it came from and when the runner will render it. */
+function queuedCaption(row: QueuedMessage, status: string): string {
+  const source = row.source || "user";
+  const origin = source.startsWith("conversation:")
+    ? `from ${String((row.meta as Record<string, unknown>).kind ?? "thread")}`
+    : source.startsWith("schedule:")
+      ? "from schedule"
+      : source.startsWith("connector:")
+        ? `from ${source.slice("connector:".length)}`
+        : source === "system"
+          ? "from system"
+          : "";
+  const when =
+    status === "running"
+      ? "delivered at the next step"
+      : status === "waiting_approval"
+        ? "delivered when the approval is answered"
+        : "";
+  return [origin, "queued", when].filter(Boolean).join(" · ");
+}
+
+/** A message that is posted but not yet in the transcript: it looks like the user
+ *  bubble it will become, drawn hollow so nobody mistakes it for a delivered one. */
+function QueuedCard({ row, status }: { row: QueuedMessage; status: string }) {
+  return (
+    <div className="my-3 flex justify-end" title={localTime(row.created_at)}>
+      <div className="max-w-[80%]">
+        <div className="mb-0.5 text-right text-[10.5px] tracking-wide text-neutral-500 uppercase">
+          {queuedCaption(row, status)}
+        </div>
+        <div className="rounded-lg border border-dashed border-sky-500/60 bg-sky-50/60 px-3 py-2 text-neutral-800 dark:bg-sky-950/30 dark:text-neutral-200">
+          {row.content ? (
+            <Markdown source={row.content} className="md" />
+          ) : (
+            <span className="text-neutral-500">(message queued)</span>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -243,8 +289,13 @@ export function Conversation({ id }: { id: string }) {
     Object.is,
   );
   const historyComplete = useStore((s) => s.historyComplete[id] ?? false, Object.is);
+  const queued = useStore((s) => s.queued[id] ?? EMPTY_QUEUED, Object.is);
+  const connection = useStore((s) => s.connection, Object.is);
+  // The draft lives in the store (per conversation, persisted per tab), so leaving for
+  // the vault and coming back, or switching threads, never loses what was typed.
+  const draft = useStore((s) => s.drafts[id] ?? "", Object.is);
+  const setDraft = (text: string) => store.setDraft(id, text);
 
-  const [draft, setDraft] = useState("");
   const [artifact, setArtifact] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
@@ -257,11 +308,18 @@ export function Conversation({ id }: { id: string }) {
     void store.loadConversation(id);
   }, [id]);
 
+  // Queued rows: on open and after every (re)connect, since a dropped socket may have
+  // missed `inbox.posted` or the delivery that removed one.
+  useEffect(() => {
+    if (!id || connection !== "open") return;
+    void store.loadQueued(id);
+  }, [id, connection]);
+
   // Follow the stream unless the reader has scrolled up.
   useLayoutEffect(() => {
     const el = scroller.current;
     if (el && atBottom.current) el.scrollTop = el.scrollHeight;
-  }, [events, streaming]);
+  }, [events, streaming, queued]);
 
   const onScroll = () => {
     const el = scroller.current;
@@ -328,6 +386,10 @@ export function Conversation({ id }: { id: string }) {
           </div>
         ) : null}
 
+        {queued.map((row) => (
+          <QueuedCard key={row.id} row={row} status={status} />
+        ))}
+
         {approvalIds.map((approvalId) => (
           <ApprovalCard key={approvalId} id={approvalId} />
         ))}
@@ -358,7 +420,11 @@ export function Conversation({ id }: { id: string }) {
               }
             }}
             rows={Math.min(8, Math.max(2, draft.split("\n").length))}
-            placeholder="Message Loom — Enter sends, Shift+Enter for a newline"
+            placeholder={
+              running
+                ? "Message Loom — queued until the next step (Enter sends)"
+                : "Message Loom — Enter sends, Shift+Enter for a newline"
+            }
             className={cls(
               "w-full resize-none rounded-md border border-neutral-300 bg-white px-3 py-2 text-[13px] focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 dark:border-neutral-700 dark:bg-neutral-900",
             )}
@@ -375,3 +441,4 @@ export function Conversation({ id }: { id: string }) {
 }
 
 const EMPTY: ConvEvent[] = [];
+const EMPTY_QUEUED: QueuedMessage[] = [];

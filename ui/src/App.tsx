@@ -26,18 +26,68 @@ import { Setup } from "./screens/Setup";
 
 const ws = new WsClient(store);
 
+// --- appearance -----------------------------------------------------------------
+// Two axes, both settings: `general.theme` (system | light | dark) sets the `dark`
+// class; `general.palette` sets `data-palette`, which index.css maps onto the colour
+// ramps every component is built from. The last applied pair is remembered per browser
+// so a reload paints the right look before the settings have loaded.
+
+interface Appearance {
+  theme: string;
+  palette: string;
+}
+
+const APPEARANCE_KEY = "loom.appearance";
+const DEFAULT_APPEARANCE: Appearance = { theme: "system", palette: "default" };
+
+function applyAppearance({ theme, palette }: Appearance) {
+  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const dark = theme === "dark" || (theme === "system" && prefersDark);
+  const root = document.documentElement;
+  root.classList.toggle("dark", dark);
+  if (palette && palette !== "default") root.dataset.palette = palette;
+  else delete root.dataset.palette;
+}
+
+function rememberAppearance(appearance: Appearance) {
+  try {
+    localStorage.setItem(APPEARANCE_KEY, JSON.stringify(appearance));
+  } catch {
+    /* blocked storage: the next load simply starts from the default look */
+  }
+}
+
+function recallAppearance(): Appearance | null {
+  try {
+    const raw = localStorage.getItem(APPEARANCE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<Appearance>;
+    if (typeof parsed?.theme !== "string" || typeof parsed?.palette !== "string") return null;
+    return { theme: parsed.theme, palette: parsed.palette };
+  } catch {
+    return null;
+  }
+}
+
+// Before first paint: the remembered look (or the system default), so a reload never
+// flashes the default palette or the wrong theme.
+const remembered = typeof window !== "undefined" ? recallAppearance() : null;
+if (typeof window !== "undefined") applyAppearance(remembered ?? DEFAULT_APPEARANCE);
+
 function useTheme() {
+  const loaded = useStore((s) => s.settings !== null, Object.is);
   const theme = useStore((s) => (s.settings?.values["general.theme"] as string) ?? "system", Object.is);
+  const palette = useStore((s) => (s.settings?.values["general.palette"] as string) ?? "default", Object.is);
   useEffect(() => {
+    // Until the settings arrive the remembered look stands; then the settings are truth.
+    const appearance: Appearance = loaded ? { theme, palette } : (remembered ?? DEFAULT_APPEARANCE);
     const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const apply = () => {
-      const dark = theme === "dark" || (theme === "system" && media.matches);
-      document.documentElement.classList.toggle("dark", dark);
-    };
+    const apply = () => applyAppearance(appearance);
     apply();
+    if (loaded) rememberAppearance(appearance);
     media.addEventListener("change", apply);
     return () => media.removeEventListener("change", apply);
-  }, [theme]);
+  }, [loaded, theme, palette]);
 }
 
 function NavLink({

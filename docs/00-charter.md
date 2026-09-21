@@ -420,6 +420,12 @@ per-tool permission mode, allowed roots and protected paths.
 - Connectors: hot-load individually, or always via promotion + restart? Lean: restart
   only, until it hurts.
 - The `classify` policy text: what counts as in-scope for a thread vs. the desk?
+- Projects vs. tasks (raised 2026-09-21): every thread scopes to a note under
+  `projects/`, so a one-off investigation (find the printers on the LAN) leaves a dead
+  project note and a walkthrough folder behind while its real output is a device note.
+  Candidate mechanisms: optional scope note (a task is a thread without one; status
+  lives in the transcript's `status` events); scope to any entity note; a `tasks/`
+  type with its own retention; retention by shape. Undecided.
 - Pre-load token budget and compaction thresholds (tuning, not design).
 - Companion doc: `03-technical-design.md` carries implementation-level detail.
 
@@ -620,3 +626,29 @@ sessions do not re-litigate.
   (`permissions.classifier_timeout_s`, default 45 s, one retry on a busy provider) and
   fails closed to `ask` with the reason on the card. A hosted 9B judge stalled ten
   minutes behind OpenRouter's 429s; a verdict that late is worth nothing.
+- **2026-09-21** — `reasoning: off` is sent to OpenAI-compatible providers as
+  `{"reasoning": {"effort": "none"}}` rather than omitted: OpenRouter leaves a Qwen
+  judge thinking by default, and with `max_tokens: 200` every classification and the
+  maintenance consolidation came back "length limit with no output".
+- **2026-09-21** — `knowledge_write` folds a frontmatter block found at the top of
+  `content` into the note's frontmatter instead of nesting it (the explicit argument
+  still wins). The model copies the shape it reads back; two live notes carried two
+  blocks. Same rule for every op; no special case for the model.
+- **2026-09-21** — Path normalisation reads MSYS/Cygwin drive spellings (`/c/Users/…`)
+  as `C:/Users/…` on Windows. The shell is Git Bash, so the model sees and reuses those
+  paths; `abspath` had turned one into a real `C:/c/Users/…` tree. File tools that
+  miss on a relative path now name the root it was resolved against.
+- **2026-09-21** — A thread's default title is the goal's first sentence cut at a word
+  boundary (≤ 80 chars, ellipsis), not `goal[:80]`; it names walkthrough notes and
+  notifications. The tool prompt now says so, so the desk can pass a better one.
+- **2026-09-21** — Queued input is visible: `inbox.posted` carries the posted content,
+  `GET /conversations/{id}/inbox` lists rows not yet in the transcript, and the UI shows
+  them as *queued* cards until the runner's `user` event replaces them. A clean turn
+  that ends with text now re-wakes itself when rows arrived during its last model call
+  (they used to wait for the next message or a restart).
+- **2026-09-21** — Appearance = theme (light/dark axis) × palette (`general.palette`:
+  default, slate, warm, forest, nord, mono), implemented as CSS-variable overrides of
+  the colour ramps the components already use — six looks, zero component changes.
+- **2026-09-21** — The "also add this root" checkbox on approval cards defaults to
+  unchecked and pairs with `allow always` on every surface (the backend only applies it
+  there). Widening roots is a deliberate act, not the default click.

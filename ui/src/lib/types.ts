@@ -100,6 +100,18 @@ export interface Approval {
   created_at: string;
 }
 
+/** An inbox row posted to a conversation and not yet rendered into its transcript:
+ *  what the next step boundary will deliver. `GET /conversations/{id}/inbox` and the
+ *  `inbox.posted` bus event carry this shape. */
+export interface QueuedMessage {
+  id: number;
+  conversation_id: string;
+  source: string;
+  content: string;
+  meta: Record<string, unknown>;
+  created_at: string;
+}
+
 export interface Item {
   id: string;
   kind: "notification" | "setup" | "thread_event" | "schedule_result" | "knowledge" | string;

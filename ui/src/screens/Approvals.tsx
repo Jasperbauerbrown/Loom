@@ -11,7 +11,8 @@ import { Button, Card, Collapsible, Empty, JsonBlock } from "../components/ui";
 
 function ApprovalCard({ approval }: { approval: Approval }) {
   const conversation = useStore((s) => s.conversations[approval.conversation_id], Object.is);
-  const [addRoot, setAddRoot] = useState(true);
+  // Widening the roots is a deliberate, second click: unchecked by default (2026-09-21).
+  const [addRoot, setAddRoot] = useState(false);
   const [busy, setBusy] = useState<"allow" | "deny" | "allow_always" | null>(null);
   const rootToAdd = approval.options?.add_root;
 
@@ -67,7 +68,9 @@ function ApprovalCard({ approval }: { approval: Approval }) {
             onChange={(e) => setAddRoot(e.target.checked)}
             className="h-3.5 w-3.5"
           />
-          Also add <span className="font-mono">{rootToAdd}</span> as a root
+          <span>
+            Also allow this root with &ldquo;Allow always&rdquo;: <span className="font-mono">{rootToAdd}</span>
+          </span>
         </label>
       ) : null}
 

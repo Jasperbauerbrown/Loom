@@ -24,6 +24,7 @@ import type {
   Preset,
   PromoteLogEntry,
   Provider,
+  QueuedMessage,
   QueueState,
   Root,
   Schedule,
@@ -74,6 +75,10 @@ export interface State {
   approvals: Record<string, Approval>;
   items: Record<string, Item>;
   occupancy: Record<string, Occupancy>;
+  /** inbox rows posted but not yet rendered into the transcript, per conversation */
+  queued: Record<string, QueuedMessage[]>;
+  /** composer text per conversation; survives navigation (and reloads via sessionStorage) */
+  drafts: Record<string, string>;
 
   settings: SettingsPayload | null;
   settingsStale: boolean;
@@ -121,6 +126,8 @@ export const initialState: State = {
   approvals: {},
   items: {},
   occupancy: {},
+  queued: {},
+  drafts: {},
   settings: null,
   settingsStale: false,
   providers: [],
@@ -245,6 +252,63 @@ export function indexToolCalls(
   return out;
 }
 
+/** Drop the queued row a persisted `user` event came from (by `meta.inbox_id`). */
+export function dequeue(
+  queued: Record<string, QueuedMessage[]>,
+  conversationId: string,
+  event: ConvEvent,
+): Record<string, QueuedMessage[]> {
+  if (event.kind !== "user") return queued;
+  const inboxId = (event.meta as Record<string, unknown> | undefined)?.inbox_id;
+  if (typeof inboxId !== "number") return queued;
+  const list = queued[conversationId];
+  if (!list || !list.some((q) => q.id === inboxId)) return queued;
+  return { ...queued, [conversationId]: list.filter((q) => q.id !== inboxId) };
+}
+
+/** A key/value store with the Web Storage shape; injectable so tests need no DOM. */
+export interface KeyValueStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+export const DRAFTS_KEY = "loom.drafts";
+
+function sessionStore(): KeyValueStorage | null {
+  try {
+    return typeof sessionStorage === "undefined" ? null : sessionStorage;
+  } catch {
+    return null; // access itself can throw (blocked storage)
+  }
+}
+
+/** Drafts saved by an earlier page in this tab; anything unreadable is "no drafts". */
+export function loadDrafts(storage: KeyValueStorage | null = sessionStore()): Record<string, string> {
+  if (!storage) return {};
+  try {
+    const raw = storage.getItem(DRAFTS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === "string" && v) out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function saveDrafts(drafts: Record<string, string>, storage: KeyValueStorage | null = sessionStore()): void {
+  if (!storage) return;
+  try {
+    storage.setItem(DRAFTS_KEY, JSON.stringify(drafts));
+  } catch {
+    /* quota or blocked storage: the draft still lives in memory for this page */
+  }
+}
+
 function countUnseen(items: Record<string, Item>): number {
   let n = 0;
   for (const it of Object.values(items)) if (!it.seen_at && !it.dismissed_at) n++;
@@ -298,7 +362,26 @@ export function reduce(state: State, event: BusEvent): State {
         ...state,
         events: { ...state.events, [id]: upsertEvent(list, { ...row, conversation_id: id }) },
         toolCalls: indexToolCalls(state.toolCalls, id, [row]),
+        queued: dequeue(state.queued, id, row),
       };
+    }
+
+    case "inbox.posted": {
+      // A message is queued the moment it is posted; the runner renders it into the
+      // transcript at the next step boundary (a `user` event with meta.inbox_id).
+      if (!cid || typeof data.id !== "number") return state;
+      const list = state.queued[cid] ?? [];
+      if (list.some((q) => q.id === data.id)) return state;
+      const row: QueuedMessage = {
+        id: data.id,
+        conversation_id: cid,
+        source: typeof data.source === "string" ? data.source : "user",
+        content: typeof data.content === "string" ? data.content : "",
+        meta: data.meta && typeof data.meta === "object" ? data.meta : {},
+        created_at: typeof data.created_at === "string" ? data.created_at : event.ts,
+      };
+      const next = [...list, row].sort((a, b) => a.id - b.id);
+      return { ...state, queued: { ...state.queued, [cid]: next } };
     }
 
     case "message.end": {
@@ -523,7 +606,7 @@ export function reduce(state: State, event: BusEvent): State {
 type Listener = () => void;
 
 export class Store {
-  state: State = initialState;
+  state: State = { ...initialState, drafts: loadDrafts() };
   private listeners = new Set<Listener>();
 
   subscribe = (fn: Listener) => {
@@ -589,6 +672,19 @@ export class Store {
     this.set((s) => (s.connection === connection ? s : { ...s, connection }));
   }
 
+  // -- drafts ---------------------------------------------------------------
+  /** The composer text for one conversation. Empty text forgets the draft. */
+  setDraft(id: string, text: string) {
+    this.set((s) => {
+      if ((s.drafts[id] ?? "") === text) return s;
+      const drafts = { ...s.drafts };
+      if (text) drafts[id] = text;
+      else delete drafts[id];
+      saveDrafts(drafts);
+      return { ...s, drafts };
+    });
+  }
+
   // -- loaders --------------------------------------------------------------
   async loadConversations() {
     const rows = await this.guard(() => api.conversations());
@@ -640,6 +736,16 @@ export class Store {
       for (const row of rows) items[row.id] = row;
       return { ...s, items, unseenCount: countUnseen(items) };
     });
+  }
+
+  /** Inbox rows not yet in the transcript. REST is the truth here: a reconnect may have
+   * missed `inbox.posted`, or the row may already have been rendered. A 404 means an
+   * older backend without the endpoint — then nothing is shown as queued. */
+  async loadQueued(id: string) {
+    const rows = await this.guardOptional(() => api.inbox(id));
+    if (!rows) return;
+    const sorted = [...rows].sort((a, b) => a.id - b.id);
+    this.set((s) => ({ ...s, queued: { ...s.queued, [id]: sorted } }));
   }
 
   async loadOccupancy(id: string) {

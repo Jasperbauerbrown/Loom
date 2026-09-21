@@ -905,6 +905,7 @@ GET  /conversations/{id}/events?after&before&limit&kinds
 POST /conversations/{id}/messages {content}  → 202 {inbox_id}; 409 when no model is configured
 POST /conversations/{id}/cancel         POST /conversations/{id}/archive     POST /conversations/{id}/clear (409 while running)
 GET  /conversations/{id}/occupancy      GET  /conversations/{id}/artifacts     GET /artifacts/{id}?offset&limit
+GET  /conversations/{id}/inbox          rows posted but not yet in the transcript (surfaces render them as *queued*)
 GET  /approvals?status                  GET  /approvals/{id}   POST /approvals/{id} {decision: allow|deny|allow_always, add_root?}
 GET  /items?unseen&include_dismissed    GET  /items/{id}   POST /items/{id}/seen   POST /items/{id}/dismiss
 GET  /vault/tree                        GET  /vault/note?path   PUT /vault/note {path, content}   DELETE /vault/note?path   DELETE /vault/folder?path (core/ refused)
@@ -950,7 +951,9 @@ event.appended                      data: event row  — every persisted event (
 tool.call                           data: {call_id, name, args(redacted), event_id}
 tool.result                         data: {call_id, name, ok, preview, artifact_id?, event_id,
                                            policy, decision, reason}
-inbox.posted                        data: {id, source}
+inbox.posted                        data: {id, source, content, created_at, meta} — fired the moment a
+                                    message is posted; a surface drops the row from its *queued* list
+                                    when the `user` event carrying `meta.inbox_id` is appended
 models.changed                      data: {kind: provider|preset|role, name}
 approval.requested|resolved         data: approval row
 schedule.created|updated|deleted    data: schedule row
@@ -978,15 +981,25 @@ channel may bind to a thread) and renders `message.end`, `approval.requested`,
 
 React + Vite + TypeScript + Tailwind; no component library; state via a small store
 over the WS stream (one reducer per event type) with REST for initial loads. Built into
-`ui-dist/` and served by the backend at `/`. Dark/light follow the system.
+`ui-dist/` and served by the backend at `/`. Appearance is two settings: `general.theme`
+(system / light / dark → the `dark` class on `<html>`) and `general.palette` (default,
+slate, warm, forest, nord, mono → `data-palette` on `<html>`). A palette only overrides
+the Tailwind colour variables the components already use (`neutral-*` surfaces, `sky-*`
+accent, `white`), so no component knows palettes exist; the last applied pair is
+remembered in `localStorage` so a reload does not flash the default look.
 
 ### 13.1 Screens
 - **Setup** (first run only, §3.3).
 - **Desk** (default). Left: conversation area with streaming content, collapsible
   reasoning, tool call rows (name, args, policy badge, result preview, artifact link),
-  inline approval cards. Right rail: **Now board** (items grouped: needs you / running
-  threads / queued), each item actionable. Header: occupancy meter (used/limit,
-  colour by proximity to compaction), queue indicator, model role in use.
+  inline approval cards. Messages typed while a turn runs (or waits for an approval)
+  show as **queued** cards at the foot of the transcript — `inbox.posted` puts them
+  there, the `user` event with the matching `meta.inbox_id` replaces them — so the
+  person sees that the text landed and when it will be read. The composer draft is kept
+  per conversation (sessionStorage) and survives navigating away and back. Right rail:
+  **Now board** (items grouped: needs you / running threads / queued), each item
+  actionable. Header: occupancy meter (used/limit, colour by proximity to compaction),
+  queue indicator, model role in use.
 - **Threads**. List (status, goal, last update, depth tree). Thread view = same
   conversation component + a **Status/plan panel** rendering the status block as an
   editable form (edits write through `PUT /vault/note`), links to walkthroughs and
@@ -998,7 +1011,9 @@ over the WS stream (one reducer per event type) with REST for initial loads. Bui
   optional graph view (`/vault/graph`) rendered with inline SVG — start focused, expand
   on demand, no physics simulation.
 - **Approvals** badge + list (pending across all conversations), each with the
-  classifier reason if any and the `allow always` option.
+  classifier reason if any and the `allow always` option; when the guard suggested a
+  root, adding it is an opt-in checkbox (unchecked by default) that pairs with
+  `allow always` — the same on the inline card and the Approvals screen.
 - **Settings** — every knob (§13.2), rendered from schema.
 - **System**. Version and release pointer, supervisor status, promote/rollback with
   progress (a ref → the plan from `GET /system/promote/plan`, with the protected files
@@ -1010,7 +1025,8 @@ over the WS stream (one reducer per event type) with REST for initial loads. Bui
   *run maintenance now* button (`POST /maintenance/run`, live via `maintenance.progress`).
 
 ### 13.2 Settings inventory (all UI-visible; groups map to `config.py` dataclasses)
-- **General**: display name, timezone, bind address, LAN token, projects root, theme.
+- **General**: display name, timezone, bind address, LAN token, projects root, theme
+  (system/light/dark), palette (default/slate/warm/forest/nord/mono).
 - **Models**: three tabs. *Providers* (CRUD: name, kind, base URL, credential from the
   secret picker, default params, concurrency, enabled; probe button lists live
   models). *Presets* (CRUD: name, provider, model picked from the probe list or typed,

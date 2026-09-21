@@ -31,19 +31,25 @@ export function Button({ variant = "default", size = "md", className, ...rest }:
 // --- inputs ----------------------------------------------------------------
 
 const inputBase =
-  "w-full rounded-md border border-neutral-300 bg-white px-2 py-1.5 text-[13px] text-neutral-900 placeholder:text-neutral-400 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-60 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100";
+  "rounded-md border border-neutral-300 bg-white px-2 py-1.5 text-[13px] text-neutral-900 placeholder:text-neutral-400 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-60 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100";
+
+/** Inputs fill their container unless the caller sets a width of its own: two `w-*`
+ *  utilities on one element compete on stylesheet order, not on who wrote them. */
+function widthOf(className?: string): string {
+  return /(^|\s)w-\S+/.test(className ?? "") ? "" : "w-full";
+}
 
 export function Input({ className, ...rest }: React.InputHTMLAttributes<HTMLInputElement>) {
-  return <input className={cls(inputBase, className)} {...rest} />;
+  return <input className={cls(inputBase, widthOf(className), className)} {...rest} />;
 }
 
 export function Textarea({ className, ...rest }: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return <textarea className={cls(inputBase, "resize-y", className)} {...rest} />;
+  return <textarea className={cls(inputBase, widthOf(className), "resize-y", className)} {...rest} />;
 }
 
 export function Select({ className, children, ...rest }: React.SelectHTMLAttributes<HTMLSelectElement>) {
   return (
-    <select className={cls(inputBase, "pr-6", className)} {...rest}>
+    <select className={cls(inputBase, widthOf(className), "pr-6", className)} {...rest}>
       {children}
     </select>
   );
