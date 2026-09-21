@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import secrets as _secrets
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -206,6 +208,15 @@ def serve(
     listen_port = int(port if port is not None else app.settings.get("general.port"))
     url = f"http://{'127.0.0.1' if bind in ('0.0.0.0', '::') else bind}:{listen_port}"
 
+    busy = _port_in_use(bind, listen_port)
+    if busy:
+        print(
+            f"cannot start: {bind}:{listen_port} is already in use{busy}. "
+            f"Stop that process or pass --port N.",
+            file=sys.stderr,
+        )
+        return 1
+
     needs_setup = not app.has_model("desk")
     print(f"Loom {app.version} on {url}" + ("  [fake model]" if fake else ""))
     if needs_setup:
@@ -219,6 +230,45 @@ def serve(
     server = uvicorn.Server(config)
     server.run()
     return 0
+
+
+def _port_in_use(host: str, port: int) -> str | None:
+    """Returns "" (busy) or " (pid N: name)" when the port cannot be bound, else None.
+    Checked before printing the URL or opening the browser so a collision is one clear
+    line, not a startup that looks fine and then dies inside uvicorn."""
+    import socket
+
+    with socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind((host, port))
+        except OSError:
+            return _port_owner(port)
+    return None
+
+
+def _port_owner(port: int) -> str:
+    """Best effort " (pid N: name)" for the listener on `port`; "" when unknown."""
+    import subprocess
+
+    try:
+        if os.name == "nt":
+            out = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, timeout=5).stdout
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) >= 5 and parts[1].endswith(f":{port}") and parts[3] == "LISTENING":
+                    pid = parts[4]
+                    name = subprocess.run(
+                        ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=5
+                    ).stdout.strip().split(",")[0].strip('"')
+                    return f" (pid {pid}: {name or 'unknown'})"
+        else:
+            out = subprocess.run(["lsof", "-t", f"-iTCP:{port}", "-sTCP:LISTEN"], capture_output=True, text=True, timeout=5).stdout
+            pid = out.strip().splitlines()[0] if out.strip() else ""
+            return f" (pid {pid})" if pid else ""
+    except Exception:
+        pass
+    return ""
 
 
 def _open_browser(url: str) -> None:

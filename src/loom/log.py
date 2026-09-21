@@ -88,6 +88,12 @@ def setup(home: Path, level: str = "INFO") -> RingHandler:
     except OSError:
         # A log file we cannot open is not a reason to refuse to run.
         pass
+    # Windows consoles default to a legacy code page; log lines carry "—" and paths with
+    # non-ASCII characters. Prefer UTF-8, never let an encoding error break a log call.
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    except Exception:
+        pass
     stderr = logging.StreamHandler(sys.stderr)
     stderr.setFormatter(formatter)
     new.append(stderr)
