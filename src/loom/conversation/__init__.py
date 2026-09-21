@@ -35,7 +35,11 @@ def post(app, conversation_id: str, content: str, source: str = "user", meta: di
         # done/failed/archived conversations reopen on a new message (03 §6.1)
         app.db.execute("UPDATE conversations SET status='idle', archived_at=NULL, updated_at=? WHERE id=?", (now, conversation_id))
         app.bus.emit("conversation.updated", app.conversation(conversation_id), conversation_id)
-    app.bus.emit("inbox.posted", {"id": inbox_id, "source": source}, conversation_id)
+    app.bus.emit(
+        "inbox.posted",
+        {"id": inbox_id, "source": source, "content": content, "created_at": now, "meta": meta or {}},
+        conversation_id,
+    )
     wake(app, conversation_id)
     return inbox_id
 

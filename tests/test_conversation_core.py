@@ -307,3 +307,48 @@ async def test_messages_endpoint_runs_turn(client, fake):
     fake.script(Scripted(content="starting"))
     r = await client.get(f"/api/conversations/{desk}/occupancy")
     assert r.status_code == 200 and "limit_tokens" in r.json()
+
+
+# -- titles and queued input --------------------------------------------------------------
+
+def test_default_thread_title_is_a_label_not_a_truncated_paragraph():
+    from loom.conversation.tools import default_title
+
+    assert default_title("Add play-random to the music bot.") == "Add play-random to the music bot"
+    assert default_title("Check the printer. Then report back.") == "Check the printer"
+    assert default_title("  \nsecond line is first\n") == "second line is first"
+    goal = (
+        "Scan the local 10.0.0.0/24 network to find three 3D printers: an Elegoo Centauri Carbon (DHCP), "
+        "an Elegoo Neptune 4 Max (DHCP), and an Ender 3 running Klipper/Moonraker (static IP)."
+    )
+    title = default_title(goal)
+    assert title.endswith("…") and len(title) <= 81
+    assert goal.startswith(title[:-1] + " ")  # cut on a word boundary, never mid-word
+
+
+async def test_message_posted_during_the_last_model_call_is_queued_then_answered(app, fake):
+    """`inbox.posted` carries the content, the row is listable while the turn runs, and
+    a clean turn re-wakes for rows it had no step boundary left to claim."""
+    desk = app.desk_id()
+    seen = _collect(app)
+    fake.script(Scripted(content="first answer", delay_s=0.3), Scripted(content="second answer"))
+    conversation.post(app, desk, "first")
+    await asyncio.sleep(0.05)  # the turn has claimed "first" and is inside the model call
+    second = conversation.post(app, desk, "second message")
+
+    posted = [e for e in seen if e["type"] == "inbox.posted"][-1]
+    assert posted["conversation_id"] == desk
+    assert posted["data"]["id"] == second and posted["data"]["source"] == "user"
+    assert posted["data"]["content"] == "second message" and posted["data"]["created_at"] and posted["data"]["meta"] == {}
+    pending = inbox.pending_rows(app, desk)
+    assert [r["id"] for r in pending] == [second]
+    assert set(pending[0]) == {"id", "conversation_id", "source", "content", "meta", "created_at"}
+
+    await _run(app, desk)
+    await asyncio.sleep(0.01)  # the re-wake is scheduled with call_soon
+    await _settle(app)
+    assert inbox.pending_rows(app, desk) == []
+    users = [e["content"] for e in _events(app, desk, ["user"])]
+    answers = [e["content"] for e in _events(app, desk, ["assistant"])]
+    assert users[-2:] == ["first", "second message"] and answers[-2:] == ["first answer", "second answer"]
+    assert app.conversation(desk)["status"] == "idle"

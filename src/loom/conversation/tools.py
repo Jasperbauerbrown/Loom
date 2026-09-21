@@ -6,6 +6,7 @@ model, so the desk spawns and talks to threads the same way a surface does.
 from __future__ import annotations
 
 import datetime as _dt
+import re
 import zoneinfo
 from typing import Any
 
@@ -59,7 +60,7 @@ def create_thread(  # type: ignore[no-untyped-def]
     roots = [_norm(r) for r in (roots or []) if r]
     cid = ulid()
     now = db.now_iso()
-    title = (title or goal.splitlines()[0][:80]).strip()
+    title = (title or "").strip() or default_title(goal)
     with db.transaction(app.db):
         app.db.execute(
             "INSERT INTO conversations(id, kind, parent_id, title, goal, scope_note, roots, depth, role, preset, status, created_at, updated_at) "
@@ -81,9 +82,25 @@ def create_thread(  # type: ignore[no-untyped-def]
 
 
 def _norm(p: str) -> str:
-    from pathlib import Path
+    from ..tools import fs_guard
 
-    return str(Path(p).expanduser()).replace("\\", "/")
+    return fs_guard.normalise(p)
+
+
+TITLE_MAX = 80
+
+
+def default_title(goal: str) -> str:
+    """A thread's default title: the goal's first sentence, cut at a word boundary. It is
+    a label — it lands on the now board, in notifications and in walkthrough note names —
+    so it must not end mid-word ("…an Elegoo Centauri", 2026-09-21)."""
+    first = next((line.strip() for line in goal.splitlines() if line.strip()), "")
+    match = re.match(r"(.+?[.!?])(?=\s|$)", first)
+    sentence = (match.group(1) if match else first).strip()
+    if len(sentence) <= TITLE_MAX:
+        return sentence.rstrip(".").strip() or first[:TITLE_MAX]
+    cut = sentence[: TITLE_MAX + 1].rsplit(" ", 1)[0].rstrip(" ,;:-—")
+    return (cut or sentence[:TITLE_MAX]) + "…"
 
 
 def render_transcript(app, conv: dict[str, Any], limit: int = 30, before: int | None = None) -> str:  # type: ignore[no-untyped-def]

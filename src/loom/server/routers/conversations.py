@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from ... import conversation as conv_pkg
 from ... import db
-from ...conversation import events
+from ...conversation import events, inbox
 from ...conversation.context import occupancy
 from ..deps import get_app
 
@@ -140,6 +140,14 @@ async def list_events(
         rows.reverse()
         return rows
     return events.list_events(app, conversation_id, after=after, limit=limit, kinds=kind_list)
+
+
+@router.get("/conversations/{conversation_id}/inbox")
+async def list_inbox(conversation_id: str, app=Depends(get_app)) -> list[dict[str, Any]]:
+    """Messages posted but not yet rendered into the transcript — what surfaces show as
+    *queued* while a turn runs or waits for an approval."""
+    _row(app, conversation_id)
+    return inbox.pending_rows(app, conversation_id)
 
 
 class Message(BaseModel):

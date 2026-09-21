@@ -85,6 +85,7 @@ async def run_turn(app, conversation_id: str) -> None:  # type: ignore[no-untype
     lock = app.lock_for(conversation_id)
     if lock.locked():
         return
+    state: TurnState | None = None
     async with lock:
         conv = app.conversation(conversation_id)
         if conv is None or conv["status"] == "archived":
@@ -99,6 +100,12 @@ async def run_turn(app, conversation_id: str) -> None:  # type: ignore[no-untype
             _finish_status(app, state)
         finally:
             app.cancel_flags.discard(conversation_id)
+    # Rows posted during this turn's last model call had no step boundary left to be
+    # claimed at (the mid-turn claim runs after tool dispatch only). A clean turn re-wakes
+    # for them; a paused or failed one leaves them for the approval / next message /
+    # restart, so a persistent failure cannot spin (2026-09-21).
+    if state is not None and not state.paused and state.failed is None and inbox.pending_count(app, conversation_id):
+        asyncio.get_running_loop().call_soon(wake, app, conversation_id)
 
 
 # -- the turn ----------------------------------------------------------------------------
@@ -111,6 +118,7 @@ async def _turn(app, state: TurnState) -> None:  # type: ignore[no-untyped-def]
     # 1 repair
     repaired = await _repair(app, state, paused_before)
     if repaired == "waiting":
+        state.paused = True
         return
 
     # 2 claim

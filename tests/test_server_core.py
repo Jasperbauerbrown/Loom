@@ -335,3 +335,19 @@ async def test_an_unbuilt_ui_explains_itself_instead_of_404ing(app, monkeypatch)
         assert response.status_code == 200
         assert "npm --prefix ui run build" in response.text
         assert (await http.get("/api/nothing-here")).status_code == 404
+
+
+# ---------------------------------------------------------------------------------
+# queued input
+# ---------------------------------------------------------------------------------
+async def test_inbox_endpoint_lists_rows_not_yet_in_the_transcript(client):
+    app = client.loom
+    desk = app.desk_id()
+    app.db.execute(
+        "INSERT INTO inbox(conversation_id, source, content, meta, created_at) VALUES (?, 'user', 'later', '{}', ?)",
+        (desk, db.now_iso()),
+    )
+    rows = (await client.get(f"/api/conversations/{desk}/inbox")).json()
+    assert [r["content"] for r in rows] == ["later"]
+    assert set(rows[0]) == {"id", "conversation_id", "source", "content", "meta", "created_at"}
+    assert (await client.get("/api/conversations/nope/inbox")).status_code == 404

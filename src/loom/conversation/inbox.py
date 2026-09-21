@@ -35,6 +35,18 @@ def claim(app, conversation_id: str, after_id: int = 0) -> list[dict[str, Any]]:
     return out  # type: ignore[return-value]
 
 
+def pending_rows(app, conversation_id: str) -> list[dict[str, Any]]:  # type: ignore[no-untyped-def]
+    """Rows posted but not yet in the transcript — what a surface shows as *queued*
+    while a turn runs or waits for an approval. Same query as `claim`, minus the rows an
+    unfinished turn already rendered."""
+    out = []
+    for r in claim(app, conversation_id):
+        if r.get("persisted_event_id"):
+            continue
+        out.append({k: r[k] for k in ("id", "conversation_id", "source", "content", "meta", "created_at")})
+    return out
+
+
 def mark_delivered(app, ids: list[int]) -> None:  # type: ignore[no-untyped-def]
     if not ids:
         return
