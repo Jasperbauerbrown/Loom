@@ -234,3 +234,25 @@ def calibrate(app, conv: dict[str, Any], prompt_tokens: int | None, prompt_chars
     except Exception:
         pass
     return new
+
+
+def clear(app, conversation_id: str, actor: str = "user") -> dict[str, Any]:  # type: ignore[no-untyped-def]
+    """Start the conversation's context fresh (decided 2026-09-21): the next turn replays
+    nothing before this point. Transcript rows are untouched — they stay visible in the
+    UI below a divider and searchable with transcript_search — so this is a cut, not a
+    delete: a `compaction` event of kind `clear` with an empty summary."""
+    conv = app.conversation(conversation_id)
+    if conv is None:
+        raise KeyError(conversation_id)
+    if conv["status"] in ("running", "waiting_approval"):
+        raise RuntimeError(f"conversation is {conv['status']}; cancel or answer it first")
+    last = events.max_id(app, conversation_id)
+    events.update(app, conversation_id, summary="", summary_cutoff=last)
+    ev = events.append(
+        app, conversation_id, "compaction", f"context cleared by {actor}",
+        {"kind": "clear", "folded_through": last, "kept_from": last + 1, "summary_chars": 0},
+    )
+    app.bus.emit("event.appended", events.get(app, ev), conversation_id)
+    row = events.public_row(app, conversation_id)
+    app.bus.emit("conversation.updated", row, conversation_id)
+    return row  # type: ignore[return-value]

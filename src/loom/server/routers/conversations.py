@@ -166,6 +166,20 @@ async def cancel(conversation_id: str, app=Depends(get_app)) -> dict[str, Any]:
     return {"cancelling": running, "status": row["status"]}
 
 
+@router.post("/conversations/{conversation_id}/clear")
+async def clear_context(conversation_id: str, app=Depends(get_app)) -> dict[str, Any]:
+    """Start the context fresh: nothing before now is replayed to the model. The
+    transcript is kept (visible below a divider, searchable); 409 while a turn runs."""
+    from ...conversation import compaction
+
+    _row(app, conversation_id)
+    try:
+        compaction.clear(app, conversation_id, actor="user")
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc))
+    return _row(app, conversation_id)
+
+
 @router.post("/conversations/{conversation_id}/archive")
 async def archive(conversation_id: str, app=Depends(get_app)) -> dict[str, Any]:
     row = _row(app, conversation_id)

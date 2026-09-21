@@ -77,6 +77,13 @@ async def delete_note(path: str, app: App = Depends(get_app)) -> dict[str, Any]:
     return {"path": _guard(app.vault.delete, path, "user"), "deleted": True}
 
 
+@router.delete("/vault/folder")
+async def delete_folder(path: str, app: App = Depends(get_app)) -> dict[str, Any]:
+    """Remove a folder and its notes in one revertible commit (core/ refused)."""
+    removed = _guard(app.vault.delete_folder, path, "user")
+    return {"path": path.strip("/"), "deleted": removed}
+
+
 @router.get("/vault/search")
 async def search(q: str, app: App = Depends(get_app), type: str | None = None, k: int = 8) -> list[dict[str, Any]]:
     return await app.index.search(q, type, max(1, min(50, int(k))))

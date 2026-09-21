@@ -459,7 +459,14 @@ When `occupancy ≥ limit` (between turns; forced mid-turn on overflow):
 3. **Fail loudly**: if two folds in a row did not reduce occupancy, end the turn with a
    visible error rather than thrash.
 Transcript rows are never mutated; eviction and folding are applied at read time
-(the replay builder consults `compaction` events). Anti-thrash and headroom math are
+(the replay builder consults `compaction` events).
+
+**Manual clear** (decided 2026-09-21). "Clear the desk" is the same cut: `POST
+/conversations/{id}/clear` writes a `compaction` event of kind `clear`, empties the
+summary and moves `summary_cutoff` to the last event. Nothing is deleted: the transcript
+stays visible below a divider and searchable with `transcript_search`. Refused (409)
+while a turn is running or waiting for approval. Available in the UI header and as
+`loom clear [--thread ID]`. Anti-thrash and headroom math are
 exactly Hydra's; they are proven on Ollama.
 
 ### 6.6 Calibration
@@ -896,11 +903,11 @@ GET  /conversations?kind&status&include_archived   POST /conversations {goal, sc
 GET  /conversations/{id}                PATCH /conversations/{id} {title?, preset?, step_budget?, clear_preset?}
 GET  /conversations/{id}/events?after&before&limit&kinds
 POST /conversations/{id}/messages {content}  → 202 {inbox_id}; 409 when no model is configured
-POST /conversations/{id}/cancel         POST /conversations/{id}/archive
+POST /conversations/{id}/cancel         POST /conversations/{id}/archive     POST /conversations/{id}/clear (409 while running)
 GET  /conversations/{id}/occupancy      GET  /conversations/{id}/artifacts     GET /artifacts/{id}?offset&limit
 GET  /approvals?status                  GET  /approvals/{id}   POST /approvals/{id} {decision: allow|deny|allow_always, add_root?}
 GET  /items?unseen&include_dismissed    GET  /items/{id}   POST /items/{id}/seen   POST /items/{id}/dismiss
-GET  /vault/tree                        GET  /vault/note?path   PUT /vault/note {path, content}   DELETE /vault/note?path
+GET  /vault/tree                        GET  /vault/note?path   PUT /vault/note {path, content}   DELETE /vault/note?path   DELETE /vault/folder?path (core/ refused)
 GET  /vault/search?q&type&k             GET  /vault/history?path   GET /vault/recent-changes?n   GET /vault/diff?sha&path
 POST /vault/revert {commit, path?}      GET  /vault/graph?center&depth   GET /vault/core   GET /vault/wanted
 GET  /vault/procedures                  POST /vault/procedures/{name}/approve
@@ -919,7 +926,7 @@ GET/POST /schedules  GET/PATCH/DELETE /schedules/{id}   POST /schedules/{id}/run
 GET  /maintenance    POST /maintenance/run
 GET  /system/health  /system/version  /system/queue  /system/logs?since&level&limit → {records}
 GET  /system/setup   POST /system/setup {provider?, model, embedding_model?, timezone, projects_root, openrouter?}
-POST /system/reindex
+POST /system/reindex                    POST /system/open {path}  (folder in the OS file manager; APP_HOME or allowed roots only)
 GET  /system/promote/plan?ref   POST /system/promote {ref, acknowledge_protected}   POST /system/rollback
 GET  /system/promote/log   GET /system/snapshots   GET /system/supervisor   POST /system/restart
 ```

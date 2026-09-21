@@ -375,6 +375,18 @@ def cmd_schedules(args: argparse.Namespace) -> int:
         api.close()
 
 
+def cmd_clear(args: argparse.Namespace) -> int:
+    """Start a conversation's context fresh (the transcript stays; see 03 §6.5)."""
+    api = Api(base_url(args), token_for(args))
+    try:
+        conversation_id = _target_conversation(api, args)
+        row = api.post(f"/conversations/{conversation_id}/clear")
+        print(f"cleared context of {row.get('title') or conversation_id} ({conversation_id}); the transcript is kept")
+        return 0
+    finally:
+        api.close()
+
+
 def cmd_promote(args: argparse.Namespace) -> int:
     api = Api(base_url(args), token_for(args), timeout=600.0)
     try:
@@ -464,6 +476,10 @@ def build_parser() -> argparse.ArgumentParser:
     vault.set_defaults(func=cmd_vault)
 
     sub.add_parser("schedules", help="list schedules").set_defaults(func=cmd_schedules)
+
+    clear = sub.add_parser("clear", help="start the desk's (or a thread's) context fresh; the transcript is kept")
+    clear.add_argument("--thread", help="thread id (default: the desk)")
+    clear.set_defaults(func=cmd_clear, new=None)
 
     promote = sub.add_parser("promote", help="promote a git ref (plan it first: GET /api/system/promote/plan)")
     promote.add_argument("ref")

@@ -357,6 +357,34 @@ class Vault:
         self.app.bus.emit("knowledge.changed", {"paths": [rel]})
         return rel
 
+    def delete_folder(self, path: str, actor: str = "user") -> list[str]:
+        """Remove a folder and everything under it, as one git commit (revertible from
+        Recent changes). `core/` is refused: those notes are always in context and the
+        bootstrap would only recreate them. Type folders may go; bootstrap recreates the
+        empty skeleton on the next start."""
+        import shutil
+
+        target = self.resolve(path)
+        rel = self.norm(path).strip("/")
+        if not rel or rel == ".":
+            raise VaultError("refusing to delete the vault root")
+        if rel == "core" or rel.startswith("core/"):
+            raise VaultError("core/ holds the always-in-context notes; edit them instead of deleting the folder")
+        if not target.is_dir():
+            raise VaultError(f"no such folder: {rel}")
+        removed = sorted(
+            self.rel(p) for p in target.rglob("*") if p.is_file() and ".git" not in p.parts
+        )
+        shutil.rmtree(target)
+        try:
+            self.git.commit(f"{actor}: delete folder {rel}/ ({len(removed)} files)", None)
+        except Exception as exc:
+            log.warning("vault: commit failed for %s/ (%s)", rel, exc)
+        if self.app.index is not None and removed:
+            self.app.index.update(removed)
+        self.app.bus.emit("knowledge.changed", {"paths": removed or [rel]})
+        return removed
+
     def _stamp(self, rel: str, fm: dict[str, Any], actor: str) -> None:
         """Harness-owned frontmatter: title, type, aliases, modified (03 §4.3)."""
         fm["title"] = str(fm.get("title") or notes.title_from_path(rel))

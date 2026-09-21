@@ -612,3 +612,7 @@ sessions do not re-litigate.
   connection; in-process tests never upgrade). One small pure-Python package.
 - **2026-09-20** — `loom serve --fake` uses its own home (`~/.loom-fake` unless `--home`
   is given) so a fake preset can never land in the real state.
+- **2026-09-21** — "Clear the desk" is a compaction cut (kind `clear`), not a delete:
+  transcripts stay append-only and searchable. Vault folders can be deleted from the UI
+  in one revertible commit (`core/` refused); "open in file manager" is bounded to
+  APP_HOME and the allowed roots.
