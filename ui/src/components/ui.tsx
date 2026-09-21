@@ -208,10 +208,11 @@ export function Spinner({ className }: { className?: string }) {
 // --- tables ----------------------------------------------------------------
 
 export function Table({ head, children }: { head: ReactNode[]; children: ReactNode }) {
+  const showHead = head.some((h) => h !== "" && h !== null && h !== undefined);
   return (
     <div className="overflow-x-auto rounded-lg border border-neutral-200 dark:border-neutral-800">
       <table className="w-full border-collapse text-[13px]">
-        <thead>
+        {showHead ? <thead>
           <tr className="border-b border-neutral-200 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900">
             {head.map((h, i) => (
               <th key={i} className="px-2.5 py-1.5 text-left text-[11.5px] font-semibold text-neutral-600 dark:text-neutral-400">
@@ -219,7 +220,7 @@ export function Table({ head, children }: { head: ReactNode[]; children: ReactNo
               </th>
             ))}
           </tr>
-        </thead>
+        </thead> : null}
         <tbody>{children}</tbody>
       </table>
     </div>

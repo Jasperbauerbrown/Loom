@@ -652,3 +652,12 @@ sessions do not re-litigate.
 - **2026-09-21** — The "also add this root" checkbox on approval cards defaults to
   unchecked and pairs with `allow always` on every surface (the backend only applies it
   there). Widening roots is a deliberate act, not the default click.
+- **2026-09-21** — First visual QA pass by screenshot (headless Chromium against a
+  `--fake` server, every screen, both themes, all palettes). Behavioural choices it
+  settled: inbox rows from threads, schedules and connectors render as grey bubbles
+  captioned with their source, not as the person's own words; a tool row whose call is
+  waiting on an approval says so instead of spinning; a thread's walkthrough list comes
+  from the vault tree by path (`projects/<name>/walkthrough-*`), not from a fuzzy
+  search; the Approvals screen orders its buttons like the inline card. Left open: the
+  now board's "Queued" group holds unseen items and now shares a word with queued
+  messages; the `mono` palette's dark badges and links are faint by construction.

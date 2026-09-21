@@ -135,7 +135,7 @@ function ConversationPicker() {
       aria-label="Conversation"
       value={current}
       onChange={(e) => navigate(`/c/${e.target.value}`)}
-      className="max-w-56 rounded-md border border-neutral-300 bg-white px-2 py-1 text-[12px] dark:border-neutral-700 dark:bg-neutral-900"
+      className="w-full min-w-0 rounded-md border border-neutral-300 bg-white px-2 py-1 text-[12px] dark:border-neutral-700 dark:bg-neutral-900"
     >
       {desk ? <option value={desk.id}>Desk</option> : null}
       {running.map((c) => (

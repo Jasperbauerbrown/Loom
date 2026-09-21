@@ -75,14 +75,14 @@ function ApprovalCard({ approval }: { approval: Approval }) {
       ) : null}
 
       <div className="flex justify-end gap-2">
-        <Button variant="danger" size="sm" disabled={busy !== null} onClick={() => void decide("deny")}>
-          Deny
-        </Button>
-        <Button size="sm" disabled={busy !== null} onClick={() => void decide("allow")}>
+        <Button variant="primary" size="sm" disabled={busy !== null} onClick={() => void decide("allow")}>
           Allow
         </Button>
-        <Button variant="primary" size="sm" disabled={busy !== null} onClick={() => void decide("allow_always")}>
+        <Button size="sm" disabled={busy !== null} onClick={() => void decide("allow_always")}>
           Allow always
+        </Button>
+        <Button variant="danger" size="sm" disabled={busy !== null} onClick={() => void decide("deny")}>
+          Deny
         </Button>
       </div>
     </Card>

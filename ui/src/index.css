@@ -81,8 +81,8 @@ body {
   --color-sky-300: #fcd34d;
   --color-sky-400: #fbbf24;
   --color-sky-500: #f59e0b;
-  --color-sky-600: #d97706;
-  --color-sky-700: #b45309;
+  --color-sky-600: #b45309; /* one stop darker than amber: white text stays >= 4:1 */
+  --color-sky-700: #92400e;
   --color-sky-800: #92400e;
   --color-sky-900: #78350f;
   --color-sky-950: #451a03;
@@ -108,8 +108,8 @@ body {
   --color-sky-300: #6ee7b7;
   --color-sky-400: #34d399;
   --color-sky-500: #10b981;
-  --color-sky-600: #059669;
-  --color-sky-700: #047857;
+  --color-sky-600: #047857; /* one stop darker than emerald: white text stays >= 4:1 */
+  --color-sky-700: #065f46;
   --color-sky-800: #065f46;
   --color-sky-900: #064e3b;
   --color-sky-950: #022c22;
@@ -173,6 +173,7 @@ body {
 /* Rendered Markdown. Dense but readable; no prose plugin (dependency-light). */
 .md {
   @apply text-[14px] leading-6;
+  overflow-wrap: anywhere; /* URLs and paths wrap inside bubbles and table cells */
 }
 .md > *:first-child {
   margin-top: 0;

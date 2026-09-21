@@ -2,10 +2,10 @@
 // Right: status/plan panel driven by the project note's status block, walkthrough
 // links, artifacts and lineage.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import { store, useStore } from "../lib/store";
-import type { Artifact, VaultSearchHit, VaultStatus } from "../lib/types";
+import type { Artifact, VaultStatus, VaultTreeNode } from "../lib/types";
 import { href, navigate, notePath } from "../lib/router";
 import { bytes, localTime, relativeTime } from "../lib/format";
 import { Badge, Button, Confirm, Empty, FieldRow, Section, Spinner, Textarea } from "../components/ui";
@@ -102,20 +102,35 @@ function StatusPanel({ scopeNote }: { scopeNote: string }) {
   );
 }
 
-function WalkthroughLinks({ scopeNote }: { scopeNote: string }) {
-  const [hits, setHits] = useState<VaultSearchHit[] | null>(null);
-  const prefix = scopeNote.replace(/\/[^/]*$/, "") + "/walkthrough-";
+/** Every note under these tree nodes, at any depth. */
+function collectNotes(nodes: VaultTreeNode[]): VaultTreeNode[] {
+  const out: VaultTreeNode[] = [];
+  for (const node of nodes) {
+    const isFolder = node.kind === "dir" || !!(node.children && node.children.length);
+    if (isFolder) out.push(...collectNotes(node.children ?? []));
+    else out.push(node);
+  }
+  return out;
+}
 
+function WalkthroughLinks({ scopeNote }: { scopeNote: string }) {
+  // Walkthroughs live at projects/<name>/walkthrough-YYYY-MM-DD.md (03 §6.7): list them
+  // from the vault tree by path, newest first. The tree is dropped on knowledge.changed,
+  // so a finish that writes one shows up here without a refresh.
+  const tree = useStore((s) => s.vaultTree);
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const rows = await store.guard(() => api.vaultSearch(prefix));
-      if (!cancelled) setHits(rows ?? []);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [prefix]);
+    if (tree === null) void store.loadVaultTree();
+  }, [tree]);
+  const prefix = scopeNote.replace(/\.md$/, "") + "/walkthrough-";
+  const hits = useMemo(
+    () =>
+      tree === null
+        ? null
+        : collectNotes(tree)
+            .filter((n) => n.path.startsWith(prefix))
+            .sort((a, b) => (a.path < b.path ? 1 : -1)),
+    [tree, prefix],
+  );
 
   if (hits === null) return <Spinner />;
   if (hits.length === 0) return <Empty>No walkthroughs yet.</Empty>;
@@ -131,6 +146,7 @@ function WalkthroughLinks({ scopeNote }: { scopeNote: string }) {
     </ul>
   );
 }
+
 
 function ArtifactsList({ id }: { id: string }) {
   const [artifacts, setArtifacts] = useState<Artifact[] | null>(null);

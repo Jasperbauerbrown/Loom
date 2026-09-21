@@ -141,12 +141,12 @@ export function NoteEditor({
 
   return (
     <div>
-      <div className="mb-2 flex items-center justify-between">
-        <div className="flex items-baseline gap-2">
-          <h1 className="text-[17px] font-semibold text-neutral-900 dark:text-neutral-100">{note.title || note.path}</h1>
-          <span className="text-[11.5px] text-neutral-500">{note.type}</span>
+      <div className="mb-2 flex items-start justify-between gap-3">
+        <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2">
+          <h1 className="min-w-0 text-[17px] font-semibold break-words text-neutral-900 dark:text-neutral-100">{note.title || note.path}</h1>
+          <span className="shrink-0 text-[11.5px] text-neutral-500">{note.type}</span>
         </div>
-        <div className="flex gap-2">
+        <div className="flex shrink-0 gap-2 whitespace-nowrap">
           {editing ? (
             <>
               <Button size="sm" onClick={() => setEditing(false)} disabled={saving}>

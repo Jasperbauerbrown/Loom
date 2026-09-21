@@ -36,7 +36,7 @@ function ApprovalLine({ approval }: { approval: Approval }) {
         <span className="truncate font-mono text-[12px]">{approval.tool}</span>
       </div>
       {approval.reason ? (
-        <p className="mt-1 text-[11.5px] text-neutral-500">{truncate(approval.reason, 140)}</p>
+        <p className="mt-1 text-[11.5px] text-neutral-500 [overflow-wrap:anywhere]">{truncate(approval.reason, 140)}</p>
       ) : null}
       <div className="mt-1.5 flex gap-1.5">
         <Button size="sm" variant="primary" onClick={() => void store.guard(() => api.decideApproval(approval.id, "allow"))}>

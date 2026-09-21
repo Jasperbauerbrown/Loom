@@ -20,7 +20,7 @@ function policyTone(policy?: string) {
   return "neutral" as const;
 }
 
-function ToolRow({ call, onArtifact }: { call: ToolCall; onArtifact: (id: string) => void }) {
+function ToolRow({ call, onArtifact, awaiting }: { call: ToolCall; onArtifact: (id: string) => void; awaiting?: boolean }) {
   const result = call.result;
   return (
     <div className="my-1.5 rounded-md border border-neutral-200 bg-neutral-50 px-2.5 py-1.5 dark:border-neutral-800 dark:bg-neutral-900/60">
@@ -34,6 +34,8 @@ function ToolRow({ call, onArtifact }: { call: ToolCall; onArtifact: (id: string
         ) : null}
         {result ? (
           <Badge tone={result.ok ? "neutral" : "red"}>{result.ok ? "ok" : "failed"}</Badge>
+        ) : awaiting ? (
+          <Badge tone="amber">awaiting approval</Badge>
         ) : (
           <span className="flex items-center gap-1 text-[11.5px] text-neutral-500">
             <Spinner /> running
@@ -117,18 +119,19 @@ function ApprovalCard({ id }: { id: string }) {
   );
 }
 
+/** Where a message came from, for anything that was not typed by the person. */
+function sourceLabel(source: string, meta: Record<string, unknown>): string {
+  if (source.startsWith("conversation:")) return `from ${String(meta.kind ?? "thread")}`;
+  if (source.startsWith("schedule:")) return "from schedule";
+  if (source.startsWith("connector:")) return `from ${source.slice("connector:".length)}`;
+  if (source === "system") return "from system";
+  return "";
+}
+
 /** Caption for a queued row: where it came from and when the runner will render it. */
 function queuedCaption(row: QueuedMessage, status: string): string {
   const source = row.source || "user";
-  const origin = source.startsWith("conversation:")
-    ? `from ${String((row.meta as Record<string, unknown>).kind ?? "thread")}`
-    : source.startsWith("schedule:")
-      ? "from schedule"
-      : source.startsWith("connector:")
-        ? `from ${source.slice("connector:".length)}`
-        : source === "system"
-          ? "from system"
-          : "";
+  const origin = sourceLabel(source, (row.meta ?? {}) as Record<string, unknown>);
   const when =
     status === "running"
       ? "delivered at the next step"
@@ -163,21 +166,42 @@ function EventView({
   event,
   toolCalls,
   onArtifact,
+  pendingCalls,
 }: {
   event: ConvEvent;
   toolCalls: Record<string, ToolCall>;
   onArtifact: (id: string) => void;
+  pendingCalls: Set<string>;
 }) {
   const meta = (event.meta ?? {}) as Record<string, any>;
   switch (event.kind) {
-    case "user":
+    case "user": {
+      // Rows from threads, schedules and connectors are user-role for the model but
+      // were not typed by the person: same side, hollow tone, a caption saying so.
+      const source = typeof meta.source === "string" ? meta.source : "user";
+      const foreign = source !== "user";
       return (
         <div className="my-3 flex justify-end">
-          <div className="max-w-[80%] rounded-lg bg-sky-700 px-3 py-2 text-white dark:bg-sky-600">
-            <Markdown source={event.content} className="md [&_a]:text-white [&_code]:bg-sky-800/60" />
+          <div className="min-w-0 max-w-[80%]">
+            {foreign ? (
+              <div className="mb-0.5 text-right text-[10.5px] tracking-wide text-neutral-500 uppercase">
+                {sourceLabel(source, meta)}
+              </div>
+            ) : null}
+            <div
+              className={cls(
+                "rounded-lg px-3 py-2 break-words",
+                foreign
+                  ? "bg-neutral-200 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100"
+                  : "bg-sky-700 text-white dark:bg-sky-600",
+              )}
+            >
+              <Markdown source={event.content} className={cls("md", !foreign && "[&_a]:text-white [&_code]:bg-sky-800/60")} />
+            </div>
           </div>
         </div>
       );
+    }
     case "assistant":
       return (
         <div className="my-3">
@@ -214,7 +238,7 @@ function EventView({
               decision: meta.decision,
               ts: event.ts,
             };
-            return <ToolRow key={spec.id} call={call} onArtifact={onArtifact} />;
+            return <ToolRow key={spec.id} call={call} onArtifact={onArtifact} awaiting={pendingCalls.has(spec.id)} />;
           })}
         </>
       );
@@ -337,6 +361,15 @@ export function Conversation({ id }: { id: string }) {
   };
 
   const approvalIds = useMemo(() => (approvals ? approvals.split(",") : []), [approvals]);
+  const pendingCallKey = useStore(
+    (s) =>
+      Object.values(s.approvals)
+        .filter((a) => a.conversation_id === id && a.status === "pending")
+        .map((a) => a.call_id)
+        .join(","),
+    Object.is,
+  );
+  const pendingCalls = useMemo(() => new Set(pendingCallKey ? pendingCallKey.split(",") : []), [pendingCallKey]);
   const status = conversation?.status ?? "idle";
   const running = status === "running";
 
@@ -364,7 +397,7 @@ export function Conversation({ id }: { id: string }) {
           </div>
         ) : null}
         {events.map((event) => (
-          <EventView key={event.id} event={event} toolCalls={toolCalls} onArtifact={setArtifact} />
+          <EventView key={event.id} event={event} toolCalls={toolCalls} onArtifact={setArtifact} pendingCalls={pendingCalls} />
         ))}
 
         {streaming ? (

@@ -199,6 +199,7 @@ export const api = {
       title: raw.title ?? (raw.frontmatter?.title as string) ?? path,
       type: raw.type ?? "",
       content: raw.raw ?? raw.content ?? raw.body ?? "",
+      modified: raw.modified ?? (raw.frontmatter?.modified as string | undefined) ?? null,
       links: (raw.links ?? []).map(ref),
       backlinks: (raw.backlinks ?? []).map(ref),
     };

@@ -90,6 +90,16 @@ function Node({
   );
 }
 
+/** Notes under these nodes, at any depth (folders themselves do not count). */
+function countNotes(nodes: VaultTreeNode[]): number {
+  let n = 0;
+  for (const node of nodes) {
+    const isFolder = node.kind === "dir" || !!(node.children && node.children.length);
+    n += isFolder ? countNotes(node.children ?? []) : 1;
+  }
+  return n;
+}
+
 export function VaultTree({
   tree,
   currentPath,
@@ -118,7 +128,7 @@ export function VaultTree({
   return (
     <div>
       {groups.map(([type, nodes]) => (
-        <GroupHeader key={type} type={type} count={nodes.length}>
+        <GroupHeader key={type} type={type} count={countNotes(nodes)}>
           {nodes.map((n) => (
             <Node key={`${n.path}:${n.title}`} node={n} depth={0} currentPath={currentPath} actions={actions} />
           ))}

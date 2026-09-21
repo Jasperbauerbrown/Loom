@@ -280,7 +280,7 @@ export function Threads() {
               className="flex w-full items-center gap-3 border-b border-neutral-100 px-3 py-2 text-left last:border-0 hover:bg-neutral-50 dark:border-neutral-800/70 dark:hover:bg-neutral-800/50"
               style={{ paddingLeft: `${12 + indent * 20}px` }}
             >
-              <Badge tone={statusTone(row.status)}>{row.status}</Badge>
+              <Badge tone={statusTone(row.status)}>{row.status.replace("_", " ")}</Badge>
               <div className="min-w-0 flex-1">
                 <div className="truncate text-[13px] font-medium text-neutral-900 dark:text-neutral-100">
                   {row.title || row.goal || row.id}
