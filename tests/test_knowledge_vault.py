@@ -296,3 +296,20 @@ async def test_transcript_search_tool(app):
     result = await app.tools.get("transcript_search").handler(ctx, {"query": "nozzle", "neighbours": True})
     assert "nozzle" in result.content and result.meta["count"] == 1
     assert (await app.tools.get("transcript_search").handler(ctx, {"query": "zzzz"})).meta["count"] == 0
+
+
+def test_write_folds_a_frontmatter_block_found_in_the_body(app):
+    """The model copies the shape it reads back; a leading block in `content` merges into
+    the frontmatter instead of nesting (two live notes had two blocks, 2026-09-21)."""
+    text = "---\ntitle: 3D Printers\naliases: [3d printers]\nmodified: '2026-01-01T00:00:00Z'\n---\n\n# 3D Printers\n\nBody."
+    note = app.vault.write("devices/printers.md", text, op="create", frontmatter={"tags": ["lan"]})
+    assert note.body.strip().startswith("# 3D Printers") and "---" not in note.body
+    assert note.title == "3D Printers" and note.aliases == ["3d printers"] and note.frontmatter["tags"] == ["lan"]
+    assert note.frontmatter["modified"] != "2026-01-01T00:00:00Z"
+    assert note.raw.count("\n---\n") == 1  # one closing fence, i.e. one block
+
+    # the explicit argument wins over the embedded block; rethink folds the same way
+    note = app.vault.write(
+        "devices/printers.md", "---\ntitle: Printers\n---\n# Printers\n", op="rethink", reason="shape", frontmatter={"title": "All printers"}
+    )
+    assert note.title == "All printers" and note.body.strip() == "# Printers"

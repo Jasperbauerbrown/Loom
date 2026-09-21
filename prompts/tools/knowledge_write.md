@@ -13,7 +13,9 @@ Arguments:
     the note verbatim, with enough surrounding text to be unique.
   - `rethink` — replace the whole body. Requires `reason`, and is recorded on the user's
     now board. Use it when the note's shape is wrong, not to fix a line.
-- `content` (required): the markdown to write. Link other notes with `[[wikilinks]].`
+- `content` (required): the markdown body to write — no frontmatter block; that goes in
+  the `frontmatter` argument (a leading `---` block here is folded into the frontmatter,
+  never nested). Link other notes with `[[wikilinks]].`
   Dates must be absolute (`2026-09-20`), never "yesterday" or "next week" — a note
   outlives the conversation that wrote it.
 - `old` (required for `replace`): the exact existing text to swap out.

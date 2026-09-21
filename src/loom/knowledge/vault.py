@@ -273,6 +273,14 @@ class Vault:
         target = self.resolve(path)
         rel = self.norm(path)
         content = content or ""
+        # A body that opens with its own frontmatter block — the model copying the shape
+        # it reads back — is folded in rather than nested: its keys merge beneath the
+        # explicit `frontmatter` argument and the body starts after it (2026-09-21, two
+        # live notes ended up with two blocks).
+        embedded = notes.parse(content)
+        if embedded.frontmatter and not embedded.error:
+            content = embedded.body.lstrip("\n")
+            frontmatter = {**{k: v for k, v in embedded.frontmatter.items() if k != "modified"}, **(frontmatter or {})}
         exists = target.is_file()
 
         if op == "create" and exists:
