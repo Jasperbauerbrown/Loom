@@ -17,7 +17,9 @@ export interface Conversation {
   parent_id: string | null;
   title: string;
   goal: string;
-  scope_note: string | null;
+  /** Vault notes shown in the model's context every turn (03 §6.7): pinned by the
+   *  thread (`knowledge_read(pin=true)`), by the spawner (`notes` at create) or here. */
+  pinned_notes: string[];
   roots: string[];
   depth: number;
   role: string;
@@ -32,7 +34,9 @@ export interface Conversation {
   updated_at: string;
   finished_at: string | null;
   archived_at: string | null;
-  /** optional: doing-line from the thread's status block, when the API provides it */
+  /** The daily-log note holding the thread's walkthrough section, set by finish. */
+  walkthrough: string | null;
+  /** optional: doing-line from the thread's status, when the API provides it */
   status_line?: string | null;
 }
 
@@ -370,26 +374,23 @@ export interface VaultChange {
   paths: string[];
 }
 
-export interface VaultStatus {
-  fields: {
-    state?: string;
-    goal?: string;
-    done?: string;
-    doing?: string;
-    next?: string;
-    blockers?: string;
-    updated?: string;
-    [k: string]: string | undefined;
-  };
-  owner?: string | null;
+export interface StatusFields {
+  state?: string;
+  goal?: string;
+  done?: string;
+  doing?: string;
+  next?: string;
+  blockers?: string;
+  updated?: string;
+  [k: string]: string | undefined;
 }
 
-/** `GET`/`PUT /conversations/{id}/status`: a thread's status wherever it lives — the
- *  scope note's block (`note`) or, for a task, `status` events in its transcript. */
+/** `GET`/`PUT /conversations/{id}/status`: a thread's status, kept as `status` events in
+ *  its own transcript (`transcript`); the desk has none (`none`). */
 export interface ThreadStatus {
-  fields: VaultStatus["fields"] | null;
+  fields: StatusFields | null;
   owner: string | null;
-  source: "note" | "transcript" | "none";
+  source: "transcript" | "none";
 }
 
 export interface CoreMeter {
@@ -421,7 +422,6 @@ export interface SetupState {
   needed: boolean;
   providers?: { name: string; kind: string; base_url: string; models?: string[] }[];
   timezone?: string;
-  projects_root?: string;
   embedding_model?: string | null;
   models?: string[];
   [k: string]: unknown;

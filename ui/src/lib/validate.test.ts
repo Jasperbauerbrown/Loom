@@ -81,7 +81,7 @@ describe("controlKind", () => {
     { field: field({ key: "knowledge.maintenance_enabled", type: "bool", ui: "toggle" }), kind: "toggle" },
     { field: field({ key: "general.theme", type: "enum", ui: "select", choices: ["system", "light", "dark"] }), kind: "select" },
     { field: field({ key: "triggers.notification_targets", type: "list", ui: "list" }), kind: "list" },
-    { field: field({ key: "general.projects_root", type: "str", ui: "path" }), kind: "path" },
+    { field: field({ key: "example.folder", type: "str", ui: "path" }), kind: "path" },
     { field: field({ key: "knowledge.maintenance_nightly_at", type: "str", ui: "time" }), kind: "time" },
     { field: field({ key: "general.lan_token", type: "str", ui: "secret" }), kind: "secret" },
   ];

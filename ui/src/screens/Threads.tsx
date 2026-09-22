@@ -4,11 +4,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import { conversationList, store, useStore } from "../lib/store";
-import type { Conversation, ConversationStatus, VaultSearchHit } from "../lib/types";
+import type { Conversation, ConversationStatus } from "../lib/types";
 import { navigate } from "../lib/router";
 import { cls, relativeTime, statusLabel, statusTitle } from "../lib/format";
 import { Badge, Button, Dialog, Empty, FieldRow, Input, Select, Textarea } from "../components/ui";
 import { IconPlus } from "../components/Icons";
+import { NotePicker } from "../components/NotePicker";
 
 type Filter = "all" | "running" | "waiting" | "done" | "failed" | "archived";
 
@@ -65,9 +66,7 @@ function orderTree(threads: Conversation[]): { row: Conversation; indent: number
 function NewThreadDialog({ onClose }: { onClose: () => void }) {
   const presets = useStore((s) => s.presets, (a, b) => a.length === b.length);
   const [goal, setGoal] = useState("");
-  const [scopeQuery, setScopeQuery] = useState("");
-  const [scopeNote, setScopeNote] = useState<string | null>(null);
-  const [hits, setHits] = useState<VaultSearchHit[]>([]);
+  const [notes, setNotes] = useState<string[]>([]);
   const [roots, setRoots] = useState<string[]>([]);
   const [newRoot, setNewRoot] = useState("");
   const [preset, setPreset] = useState("");
@@ -76,22 +75,6 @@ function NewThreadDialog({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     void store.loadModels();
   }, []);
-
-  useEffect(() => {
-    if (!scopeQuery.trim()) {
-      setHits([]);
-      return;
-    }
-    let cancelled = false;
-    const t = setTimeout(async () => {
-      const rows = await store.guard(() => api.vaultSearch(scopeQuery, "project"));
-      if (!cancelled) setHits(rows ?? []);
-    }, 200);
-    return () => {
-      cancelled = true;
-      clearTimeout(t);
-    };
-  }, [scopeQuery]);
 
   function addRoot() {
     const p = newRoot.trim();
@@ -107,7 +90,7 @@ function NewThreadDialog({ onClose }: { onClose: () => void }) {
       api.createConversation({
         kind: "thread",
         goal: goal.trim(),
-        scope_note: scopeNote ?? undefined,
+        notes: notes.length ? notes : undefined,
         roots: roots.length ? roots : undefined,
         preset: preset || undefined,
       }),
@@ -117,8 +100,6 @@ function NewThreadDialog({ onClose }: { onClose: () => void }) {
     onClose();
     navigate(`/c/${created.id}`);
   }
-
-  const slug = scopeQuery.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 
   return (
     <Dialog
@@ -149,47 +130,10 @@ function NewThreadDialog({ onClose }: { onClose: () => void }) {
       </FieldRow>
 
       <FieldRow
-        label="Scope note (optional)"
-        help="Leave empty for a one-off task: its status stays in its transcript and its walkthrough goes to the daily log. Give a project note when the work has a filesystem root, produces files, or you will come back to it."
+        label="Notes to pin (optional)"
+        help="Vault notes the thread keeps in its context every turn: a project, a device, a procedure. Its status stays in its transcript and its walkthrough goes to the daily log either way."
       >
-        <Input
-          value={scopeNote ?? scopeQuery}
-          onChange={(e) => {
-            setScopeNote(null);
-            setScopeQuery(e.target.value);
-          }}
-          placeholder="Search project notes, or leave empty for a task…"
-        />
-        {!scopeNote && (hits.length > 0 || slug) ? (
-          <div className="mt-1 max-h-40 overflow-y-auto rounded-md border border-neutral-200 dark:border-neutral-800">
-            {hits.map((h) => (
-              <button
-                key={h.path}
-                type="button"
-                className="block w-full truncate px-2 py-1 text-left text-[12.5px] hover:bg-neutral-100 dark:hover:bg-neutral-800"
-                onClick={() => {
-                  setScopeNote(h.path);
-                  setScopeQuery(h.title || h.path);
-                }}
-              >
-                {h.title || h.path} <span className="text-neutral-500">{h.path}</span>
-              </button>
-            ))}
-            {slug ? (
-              <button
-                type="button"
-                className="block w-full truncate px-2 py-1 text-left text-[12.5px] text-sky-700 hover:bg-neutral-100 dark:text-sky-400 dark:hover:bg-neutral-800"
-                onClick={() => {
-                  const path = `projects/${slug}/note.md`;
-                  setScopeNote(path);
-                  setScopeQuery(path);
-                }}
-              >
-                Create new project note "{scopeQuery}" → projects/{slug}/note.md
-              </button>
-            ) : null}
-          </div>
-        ) : null}
+        <NotePicker value={notes} onChange={setNotes} />
       </FieldRow>
 
       <FieldRow label="Roots" help="Filesystem paths this thread may work in.">

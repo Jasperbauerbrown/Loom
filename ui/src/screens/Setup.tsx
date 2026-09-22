@@ -45,7 +45,6 @@ export function Setup({ onDone }: { onDone: () => void }) {
   const [embeddingModel, setEmbeddingModel] = useState<string | null>(null);
 
   const [timezone, setTimezone] = useState(detectedTimezone());
-  const [projectsRoot, setProjectsRoot] = useState("");
 
   // -- initial load -----------------------------------------------------------
   useEffect(() => {
@@ -59,7 +58,6 @@ export function Setup({ onDone }: { onDone: () => void }) {
         const ollama = providers.find((p) => p.kind === "ollama") ?? providers[0];
         if (ollama) setProviderName(ollama.name);
         if (s?.timezone) setTimezone(s.timezone);
-        if (s?.projects_root) setProjectsRoot(s.projects_root);
         const initialModels = modelsFrom(ollama?.models ?? s?.models);
         if (initialModels.length) {
           setModelList(initialModels);
@@ -111,7 +109,6 @@ export function Setup({ onDone }: { onDone: () => void }) {
         model,
         embedding_model: embeddingModel ?? undefined,
         timezone,
-        projects_root: projectsRoot,
         ...(showOpenRouter && orApiKey
           ? { openrouter: { base_url: orBaseUrl, api_key: orApiKey } }
           : {}),
@@ -227,14 +224,6 @@ export function Setup({ onDone }: { onDone: () => void }) {
 
         <FieldRow label="Timezone">
           <Input value={timezone} onChange={(e) => setTimezone(e.target.value)} />
-        </FieldRow>
-
-        <FieldRow label="Projects root" help="Where the assistant looks for project folders.">
-          <Input
-            value={projectsRoot}
-            onChange={(e) => setProjectsRoot(e.target.value)}
-            placeholder="~/Projects"
-          />
         </FieldRow>
 
         <div className="mt-4 flex justify-end">

@@ -100,3 +100,12 @@ export function compactionLabel(meta: Record<string, unknown> | undefined, conte
       return "context compacted";
   }
 }
+
+/** A vault path as typed by the person for pinning: trimmed, forward slashes, no
+ *  leading slash, `.md` added when missing. Empty in → empty out. */
+export function normaliseNotePath(raw: string): string {
+  let p = raw.trim().replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!p) return "";
+  if (!p.toLowerCase().endsWith(".md")) p = `${p}.md`;
+  return p;
+}

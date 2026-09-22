@@ -36,7 +36,6 @@ import type {
   VaultChange,
   VaultNote,
   VaultSearchHit,
-  VaultStatus,
   VaultTreeNode,
   VersionInfo,
 } from "./types";
@@ -148,12 +147,20 @@ export const api = {
   createConversation: (body: {
     kind: "thread";
     goal: string;
-    scope_note?: string;
+    title?: string;
+    excerpt?: string;
+    /** vault notes to pin into the thread's context from its first turn */
+    notes?: string[];
     roots?: string[];
     preset?: string;
     role?: string;
     parent_id?: string;
   }) => post<Conversation>("/conversations", body),
+  /** Title, preset, step budget or the pinned-notes list; a missing note is a 400. */
+  updateConversation: (
+    id: string,
+    body: { title?: string; preset?: string; clear_preset?: boolean; step_budget?: number; pinned_notes?: string[] },
+  ) => patch<Conversation>(`/conversations/${id}`, body),
   events: (id: string, params?: { after?: number; before?: number; limit?: number; kinds?: string; tail?: boolean }) =>
     get<ConvEvent[]>(`/conversations/${id}/events`, params),
   sendMessage: (id: string, content: string, images?: string[]) =>
@@ -262,10 +269,7 @@ export const api = {
       edges: (raw?.edges ?? []).map((e: any) => ({ src: e.src, dst: e.dst })),
     };
   },
-  vaultStatus: (path: string) => get<VaultStatus>("/vault/status", { path }),
-  saveVaultStatus: (path: string, fields: Record<string, string>) =>
-    put<VaultStatus>("/vault/status", { path, fields }),
-  /** A thread's status from whichever sink holds it (note block or transcript). */
+  /** A thread's status: the `status` events in its transcript. */
   conversationStatus: (id: string) => get<ThreadStatus>(`/conversations/${id}/status`),
   saveConversationStatus: (id: string, fields: Record<string, string>) =>
     put<ThreadStatus>(`/conversations/${id}/status`, { fields }),
@@ -392,7 +396,6 @@ export const api = {
     model: string;
     embedding_model?: string;
     timezone: string;
-    projects_root: string;
     openrouter?: { base_url: string; api_key: string };
   }) => post<unknown>("/system/setup", body),
 };

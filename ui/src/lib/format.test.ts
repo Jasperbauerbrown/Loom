@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactionLabel, statusLabel, statusTitle } from "./format";
+import { compactionLabel, normaliseNotePath, statusLabel, statusTitle } from "./format";
 
 describe("statusLabel", () => {
   it("shows a thread that ended its turn without finishing as stopped, with a gloss", () => {
@@ -32,5 +32,15 @@ describe("compactionLabel", () => {
   it("falls back for an unknown or missing kind", () => {
     expect(compactionLabel(undefined)).toBe("context compacted");
     expect(compactionLabel({ kind: "future" }, "")).toBe("context compacted");
+  });
+});
+
+describe("normaliseNotePath", () => {
+  it("adds .md, forward-slashes and strips a leading slash", () => {
+    expect(normaliseNotePath("  projects\\music-bot ")).toBe("projects/music-bot.md");
+    expect(normaliseNotePath("/devices/ender-3.md")).toBe("devices/ender-3.md");
+  });
+  it("is empty for empty input", () => {
+    expect(normaliseNotePath("   ")).toBe("");
   });
 });

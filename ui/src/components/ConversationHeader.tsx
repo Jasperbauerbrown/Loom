@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { store, useStore } from "../lib/store";
 import { cls } from "../lib/format";
-import { href } from "../lib/router";
+import { notePath } from "../lib/router";
 import { Badge, Button, Confirm } from "./ui";
 
 function OccupancyMeter({ id }: { id: string }) {
@@ -70,13 +70,19 @@ export function ConversationHeader({ id, children }: { id: string; children?: Re
         <div className="truncate text-[14px] font-semibold">
           {conversation?.kind === "desk" ? "Desk" : conversation?.title || conversation?.goal || id}
         </div>
-        {conversation?.kind === "thread" && conversation.scope_note ? (
-          <a
-            href={href(`/vault/${conversation.scope_note}`)}
-            className="text-[11.5px] text-sky-700 hover:underline dark:text-sky-400"
-          >
-            {conversation.scope_note}
-          </a>
+        {conversation?.pinned_notes?.length ? (
+          <div className="flex flex-wrap gap-1" title="Pinned notes: in the model's context every turn">
+            {conversation.pinned_notes.map((p) => (
+              <a
+                key={p}
+                href={notePath(p)}
+                title={p}
+                className="max-w-[22rem] truncate rounded bg-neutral-100 px-1.5 py-0.5 text-[11px] text-sky-700 hover:underline dark:bg-neutral-800 dark:text-sky-400"
+              >
+                {p}
+              </a>
+            ))}
+          </div>
         ) : null}
       </div>
       <div className="flex-1" />

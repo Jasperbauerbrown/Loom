@@ -8,8 +8,10 @@ import { navigate } from "../../lib/router";
 
 const TEMPLATES: Record<string, (title: string) => string> = {
   device: (title) => `---\ntitle: ${title}\naliases: []\ntype: device\ntags: []\n---\n`,
+  // Mirrors prompts/templates/project.md: a project is ordinary knowledge, no status
+  // block (threads keep status in their transcript, 2026-09-22).
   project: (title) =>
-    `---\ntitle: ${title}\naliases: []\ntype: project\ntags: []\nroot: \n---\n\n## Status\n<!-- status:begin -->\nstate: planning\ngoal: \ndone: \ndoing: \nnext: \nblockers: \n<!-- status:end -->\n`,
+    `---\ntitle: ${title}\naliases: []\ntype: project\nroot: \ntags: []\n---\nWhat it is, and what "done" looks like.\n\n## Where it lives\nThe folder (also \`root:\` above), the stack, how to run it, how to check it.\n\n## Decisions\nDated, with the reason.\n\n## Walkthroughs\nLinks to the \`log/\` sections that touched it, e.g. [[log/2026-09-22#Title]].\n`,
   person: (title) => `---\ntitle: ${title}\naliases: []\ntype: people\ntags: []\n---\n`,
   connector: (title) => `---\ntitle: ${title}\naliases: []\ntype: connector\ntags: []\n---\n`,
   topic: (title) => `---\ntitle: ${title}\naliases: []\ntype: topic\ntags: []\n---\n`,

@@ -158,9 +158,11 @@ export function NowBoard() {
         )}
       </Group>
 
-      <Group title="Running threads" count={threads.length}>
+      {/* Running, paused on an approval, or stopped without finishing: "running" was
+          wrong for the last of those once the badge started saying "stopped" (2026-09-22). */}
+      <Group title="Threads" count={threads.length}>
         {threads.length === 0 ? (
-          <Empty>No threads running.</Empty>
+          <Empty>No active threads.</Empty>
         ) : (
           threads.slice(0, maxThreads).map((c) => <ThreadLine key={c.id} conversation={c} />)
         )}
