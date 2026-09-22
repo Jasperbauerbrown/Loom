@@ -1,10 +1,10 @@
 // A ~40-line hash router. Routes are `#/c/<id>`, `#/threads`, `#/vault/<path>`,
-// `#/approvals`, `#/settings/<group>`, `#/system`, `#/setup`; the desk is `#/`.
+// `#/approvals`, `#/settings/<group>`, `#/system`; the desk is `#/`.
 
 import { useSyncExternalStore } from "react";
 
 export interface Route {
-  name: "desk" | "conversation" | "threads" | "vault" | "approvals" | "settings" | "system" | "setup";
+  name: "desk" | "conversation" | "threads" | "vault" | "approvals" | "settings" | "system";
   param: string;
 }
 
@@ -28,8 +28,6 @@ function parse(hash: string): Route {
       return { name: "settings", param: param || "general" };
     case "system":
       return { name: "system", param: "" };
-    case "setup":
-      return { name: "setup", param: "" };
     default:
       return { name: "desk", param: "" };
   }

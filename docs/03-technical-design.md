@@ -107,24 +107,27 @@ loom/
 
 ### 3.3 First run (decided)
 Simplicity ethos: from install to a working desk in under a minute, one required
-choice. On `loom serve` with no `state.db`:
+choice. There is no setup screen and no wizard — nothing gates the app (decided
+2026-09-22). On `loom serve` with no `state.db`:
 1. Create `APP_HOME`, migrate, insert the desk row, `git init` the vault and write the
    `core/` templates, write default settings, tool policies and protected paths.
 2. Probe providers: local Ollama at `http://127.0.0.1:11434` (and `OLLAMA_HOST` if
-   set); list models. Detect timezone from the OS.
-3. Print the URL and open the browser to the **Setup** screen — shown only while no
-   `desk` role is configured. One page: provider (detected Ollama pre-selected; "add
-   OpenRouter key" expands to a base URL + key field), **model** (the one required
-   choice; picked from the probed list; saved as a preset with sensible defaults and
-   assigned to the desk, worker and maintenance roles), embedding
-   model (auto-selected if `nomic-embed-text` is present, otherwise the exact `ollama
-   pull` command is shown and embeddings stay off until it appears), timezone (confirm).
-   Finish → the Desk, with a first item on the now board:
-   "Tell me about yourself, or point me at something to learn."
-4. The CLI works the moment a model is set; before that, `loom send` returns a clear
-   "no model configured — open <url>" error.
-Everything on the Setup screen is an ordinary setting and can be changed later in
-Settings; the screen never reappears unless the desk role is cleared.
+   set); list models, and when `nomic-embed-text` is among them write its preset and
+   take the embedding role. Detect timezone from the OS. A machine with no Ollama is an
+   ordinary case: the provider list simply starts empty.
+3. Print the URL and open the browser to the Desk. The one required choice — a model —
+   is an ordinary unconfigured setting, so it is said the way every other thing needing
+   the person is said (charter §"Setup that needs the user"): one *setup* item on the
+   now board, "Choose a model", pointing at Settings › Models. It is de-duplicated per
+   source like every setup item, so restarting never stacks it up, and dismissing it is
+   an answer — Loom does not ask again until the person asks for it back.
+4. Settings › Models is the whole of configuration, first run and after: Providers
+   (including an OpenRouter base URL + a key from the secrets store), Presets, and the
+   five roles. Timezone, like everything else, is an ordinary setting under General.
+5. Before a model is set every surface says the same thing rather than blocking: the
+   terminal prints "no model configured — choose one at <url>/settings/models", `loom
+   send` and `POST /conversations/{id}/messages` return 409 "no model configured — open
+   Settings › Models", and the now board carries the item.
 
 ## 4. Storage
 
@@ -1068,7 +1071,6 @@ GET  /connectors  GET/PATCH /connectors/{name} {enabled?, config?}   POST /conne
 GET/POST /schedules  GET/PATCH/DELETE /schedules/{id}   POST /schedules/{id}/run
 GET  /maintenance    POST /maintenance/run
 GET  /system/health  /system/version  /system/queue  /system/logs?since&level&limit → {records}
-GET  /system/setup   POST /system/setup {provider?, model, embedding_model?, timezone, openrouter?}
 POST /system/reindex                    POST /system/open {path}  (folder in the OS file manager; APP_HOME or allowed roots only)
 GET  /system/promote/plan?ref   POST /system/promote {ref, acknowledge_protected}   POST /system/rollback
 GET  /system/promote/log   GET /system/snapshots   GET /system/supervisor   POST /system/restart
@@ -1083,7 +1085,11 @@ One multiplexed socket; client sends `{subscribe: {conversations: [...] | "all"}
 Server events:
 ```
 {type, ts, conversation_id?, data}
-conversation.created|updated        data: row (status carries idle/busy)
+conversation.created|updated        data: the public row — json columns (`pinned_notes`,
+                                    `roots`) decoded, exactly what GET /conversations/{id}
+                                    serves. `events.announce` is the only emitter of
+                                    `conversation.updated`; `events.set_status` is the only
+                                    status transition and announces for itself
 message.start                       data: {role: assistant, step}
 message.delta                       data: {channel: content|reasoning, text}
 message.end                         data: {event_id, event}          (event = the persisted row)
@@ -1131,8 +1137,13 @@ the Tailwind colour variables the components already use (`neutral-*` surfaces, 
 accent, `white`), so no component knows palettes exist; the last applied pair is
 remembered in `localStorage` so a reload does not flash the default look.
 
+A render error is an expected input, not the end of the session: one `ErrorBoundary`
+component wraps the routed screen (keyed on the route, so navigating away clears it) and
+the shell itself. The failure costs the screen it broke — the error and its stack, a
+Retry and a Reload — while the nav, the socket and every other screen keep working. It
+is the last line, not a licence: the shapes crossing the bus are one shape (§12.2).
+
 ### 13.1 Screens
-- **Setup** (first run only, §3.3).
 - **Desk** (default). Left: conversation area with streaming content, collapsible
   reasoning, tool call rows (name, args, policy badge, result preview, artifact link),
   inline approval cards. Messages typed while a turn runs (or waits for an approval)

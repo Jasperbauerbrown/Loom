@@ -30,7 +30,6 @@ import type {
   Schedule,
   SecretsInfo,
   SettingsPayload,
-  SetupState,
   Snapshot,
   SupervisorStatus,
   ThreadStatus,
@@ -397,17 +396,6 @@ export const api = {
   maintenance: () => get<MaintenanceStatus>("/maintenance"),
   /** 202 with the fresh status; 409 when a pass is already in flight. */
   runMaintenance: () => post<{ started: boolean } & MaintenanceStatus>("/maintenance/run"),
-  setupState: async (): Promise<SetupState> => {
-    const raw = await get<any>("/system/setup");
-    return { ...raw, providers: raw?.providers ?? raw?.providers_detected ?? [] };
-  },
-  finishSetup: (body: {
-    provider: string;
-    model: string;
-    embedding_model?: string;
-    timezone: string;
-    openrouter?: { base_url: string; api_key: string };
-  }) => post<unknown>("/system/setup", body),
 };
 
 export type Api = typeof api;

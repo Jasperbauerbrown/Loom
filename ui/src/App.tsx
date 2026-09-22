@@ -1,12 +1,12 @@
-// App shell: nav, routing, theme, the WS lifecycle and the setup gate.
+// App shell: nav, routing, theme and the WS lifecycle.
 
-import { useEffect, useState } from "react";
-import { api } from "./lib/api";
+import { useEffect } from "react";
 import { deskId, store, useStore } from "./lib/store";
 import { WsClient } from "./lib/ws";
 import { href, navigate, useRoute } from "./lib/router";
 import { cls } from "./lib/format";
 import { Toasts } from "./components/Toasts";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import {
   IconApprovals,
   IconDesk,
@@ -22,7 +22,6 @@ import { Vault } from "./screens/Vault";
 import { Approvals } from "./screens/Approvals";
 import { Settings } from "./screens/Settings";
 import { System } from "./screens/System";
-import { Setup } from "./screens/Setup";
 
 const ws = new WsClient(store);
 
@@ -164,7 +163,6 @@ function ConnectionDot() {
 
 export default function App() {
   const route = useRoute();
-  const [setupNeeded, setSetupNeeded] = useState<boolean | null>(null);
   const connection = useStore((s) => s.connection, Object.is);
   const pending = useStore((s) => Object.values(s.approvals).filter((a) => a.status === "pending").length, Object.is);
   const unseen = useStore((s) => s.unseenCount, Object.is);
@@ -173,24 +171,13 @@ export default function App() {
   const desk = useStore(deskId, Object.is);
   useTheme();
 
-  // Boot: setup gate, first loads, socket.
+  // Boot: first loads, socket. Nothing gates the app — a missing model is an ordinary
+  // unconfigured setting, said once on the now board (decided 2026-09-22).
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const state = await api.setupState();
-        if (!cancelled) setSetupNeeded(Boolean(state?.needed));
-      } catch {
-        if (!cancelled) setSetupNeeded(false); // backend older/unreachable: show the app
-      }
-    })();
     void store.loadSettings();
     void store.refreshAll();
     ws.start();
-    return () => {
-      cancelled = true;
-      ws.stop();
-    };
+    return () => ws.stop();
   }, []);
 
   // settings.changed / models.changed → refetch, so every surface agrees.
@@ -200,25 +187,6 @@ export default function App() {
   useEffect(() => {
     if (modelsStale) void store.loadModels();
   }, [modelsStale]);
-
-  // The setup screen owns the app until it is finished.
-  if (setupNeeded === null) {
-    return <div className="flex h-full items-center justify-center text-[13px] text-neutral-500">Loading…</div>;
-  }
-  if (setupNeeded || route.name === "setup") {
-    return (
-      <>
-        <Setup
-          onDone={() => {
-            setSetupNeeded(false);
-            void store.refreshAll();
-            navigate("/");
-          }}
-        />
-        <Toasts />
-      </>
-    );
-  }
 
   const conversationId = route.name === "conversation" ? route.param : desk;
 
@@ -260,25 +228,28 @@ export default function App() {
             {connection === "connecting" ? "Connecting to Loom…" : "Connection lost — retrying…"}
           </div>
         ) : null}
-        <div className="min-h-0 flex-1">
-          {route.name === "threads" ? (
-            <Threads />
-          ) : route.name === "vault" ? (
-            <Vault path={route.param} />
-          ) : route.name === "approvals" ? (
-            <Approvals />
-          ) : route.name === "settings" ? (
-            <Settings group={route.param} />
-          ) : route.name === "system" ? (
-            <System />
-          ) : conversationId ? (
-            <ConversationRoute id={conversationId} />
-          ) : (
-            <div className="flex h-full items-center justify-center text-[13px] text-neutral-500">
-              No conversation yet.
-            </div>
-          )}
-        </div>
+        {/* Keyed on the route: navigating away from a screen that failed clears it. */}
+        <ErrorBoundary key={`${route.name}/${route.param}`} what="This screen">
+          <div className="min-h-0 flex-1">
+            {route.name === "threads" ? (
+              <Threads />
+            ) : route.name === "vault" ? (
+              <Vault path={route.param} />
+            ) : route.name === "approvals" ? (
+              <Approvals />
+            ) : route.name === "settings" ? (
+              <Settings group={route.param} />
+            ) : route.name === "system" ? (
+              <System />
+            ) : conversationId ? (
+              <ConversationRoute id={conversationId} />
+            ) : (
+              <div className="flex h-full items-center justify-center text-[13px] text-neutral-500">
+                No conversation yet.
+              </div>
+            )}
+          </div>
+        </ErrorBoundary>
       </main>
       <Toasts />
     </div>

@@ -121,7 +121,12 @@ async def test_a_path_outside_the_roots_becomes_an_approval(app, ctx, tmp_path, 
     assert row["event_id"] == 11
     assert app.conversation(app.desk_id())["status"] == "waiting_approval"
     assert any(e["type"] == "approval.requested" for e in bus_events)
-    assert any(e["type"] == "conversation.updated" for e in bus_events)
+    updated = [e for e in bus_events if e["type"] == "conversation.updated"]
+    assert updated
+    # The public row, not the raw one: a surface that got `pinned_notes` as the json
+    # string "[]" rendered it as a list and died (the web UI blanked, 2026-09-22).
+    assert isinstance(updated[-1]["data"]["pinned_notes"], list)
+    assert isinstance(updated[-1]["data"]["roots"], list)
 
 
 async def test_a_protected_path_becomes_an_approval_with_no_add_root_option(app, ctx):

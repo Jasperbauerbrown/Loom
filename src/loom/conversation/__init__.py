@@ -18,6 +18,7 @@ import logging
 from typing import Any
 
 from .. import db
+from . import events
 from .runner import run_turn, wake  # noqa: F401  (re-exported)
 from .status import read as status_fields  # noqa: F401
 from .status import write as status_write  # noqa: F401
@@ -38,8 +39,7 @@ def post(app, conversation_id: str, content: str, source: str = "user", meta: di
     inbox_id = int(cur.lastrowid)
     if conv["status"] == "archived":
         # done/failed/archived conversations reopen on a new message (03 §6.1)
-        app.db.execute("UPDATE conversations SET status='idle', archived_at=NULL, updated_at=? WHERE id=?", (now, conversation_id))
-        app.bus.emit("conversation.updated", app.conversation(conversation_id), conversation_id)
+        events.set_status(app, conversation_id, "idle", archived_at=None)
     app.bus.emit(
         "inbox.posted",
         {"id": inbox_id, "source": source, "content": content, "created_at": now, "meta": meta or {}},

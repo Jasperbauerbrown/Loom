@@ -744,8 +744,8 @@ async def stop(app) -> None:  # type: ignore[no-untyped-def]
 
 async def probe_local_ollama(app) -> dict[str, Any]:  # type: ignore[no-untyped-def]
     """First run (03 §3.3 step 2): if nothing is configured, look for a local Ollama and
-    write what we find. Never raises — a machine without Ollama is an ordinary case, the
-    Setup screen just shows an empty provider list."""
+    write what we find. Never raises — a machine without Ollama is an ordinary case, and
+    Settings › Models simply starts with an empty provider list."""
     found: dict[str, Any] = {"provider": None, "models": [], "embedding": None}
     try:
         if app.db.execute("SELECT COUNT(*) FROM providers").fetchone()[0] > 0:

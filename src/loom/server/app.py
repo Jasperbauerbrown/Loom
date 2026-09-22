@@ -225,13 +225,13 @@ def serve(
         )
         return 1
 
-    needs_setup = not app.has_model("desk")
     print(f"Loom {app.version} on {url}" + (f"  [fake model; home {app.home}]" if fake else ""))
-    if needs_setup:
-        print(f"No model configured yet — finish setup at {url}/setup")
+    if not app.has_model("desk"):
+        print(f"No model configured yet — choose one at {url}/settings/models")
+        _post_choose_a_model(app)
     should_open = app.settings.get("general.open_browser") if open_browser is None else open_browser
-    if should_open and needs_setup:
-        _open_browser(f"{url}/setup")
+    if should_open:
+        _open_browser(url)
 
     api = create_app(app)
     config = uvicorn.Config(api, host=bind, port=listen_port, log_config=None, access_log=False)
@@ -277,6 +277,28 @@ def _port_owner(port: int) -> str:
     except Exception:
         pass
     return ""
+
+
+def _post_choose_a_model(app: App) -> None:
+    """No desk model: say so on the now board rather than in a screen that blocks the
+    app (decided 2026-09-22). One undismissed item per source, so restarting with the
+    model still unset never stacks them up, and dismissing it is the person's answer."""
+    from .. import items
+
+    existing = app.db.execute(
+        "SELECT 1 FROM items WHERE kind='setup' AND source='setup' AND dismissed_at IS NULL LIMIT 1"
+    ).fetchone()
+    if existing is not None:
+        return
+    items.post(
+        app,
+        "setup",
+        "Choose a model",
+        "Loom has no model yet. Settings › Models: add a preset, then give it the desk "
+        "role — the only required choice. Everything else already has a default. Once "
+        "that is done, tell me about yourself, or point me at something to learn.",
+        source="setup",
+    )
 
 
 def _open_browser(url: str) -> None:

@@ -73,7 +73,8 @@ def _decode(row: dict[str, Any] | None) -> dict[str, Any] | None:
 # -- conversation row helpers ---------------------------------------------------
 
 def set_status(app, conversation_id: str, status: str, **fields: Any) -> dict[str, Any]:  # type: ignore[no-untyped-def]
-    """Update status (+ optional columns), emit `conversation.updated`, return the row."""
+    """Update status (+ optional columns), announce the row, return it. The one status
+    transition: everything that moves a conversation goes through here (03 §6.1)."""
     cols = ["status=?", "updated_at=?"]
     params: list[Any] = [status, db.now_iso()]
     for k, v in fields.items():
@@ -81,9 +82,18 @@ def set_status(app, conversation_id: str, status: str, **fields: Any) -> dict[st
         params.append(db.dumps(v) if isinstance(v, (list, dict)) else v)
     params.append(conversation_id)
     app.db.execute(f"UPDATE conversations SET {', '.join(cols)} WHERE id=?", params)
+    return announce(app, conversation_id)  # type: ignore[return-value]
+
+
+def announce(app, conversation_id: str) -> dict[str, Any] | None:  # type: ignore[no-untyped-def]
+    """The only emitter of `conversation.updated`. One shape on the bus — the public row,
+    identical to `GET /conversations/{id}` — because a surface that receives the raw row
+    gets json strings where it expects lists (the web UI blanked on `pinned_notes`
+    arriving as "[]", 2026-09-22)."""
     row = public_row(app, conversation_id)
-    app.bus.emit("conversation.updated", row, conversation_id)
-    return row  # type: ignore[return-value]
+    if row is not None:
+        app.bus.emit("conversation.updated", row, conversation_id)
+    return row
 
 
 def update(app, conversation_id: str, **fields: Any) -> None:  # type: ignore[no-untyped-def]

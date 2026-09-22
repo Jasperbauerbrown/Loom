@@ -330,7 +330,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"loom {health.get('version')} — {'ok' if health.get('ok') else 'stopping'}, "
               f"up {health.get('uptime_s')}s, {health.get('ws_clients')} surface(s)")
         if not health.get("model_configured"):
-            print(f"no model configured — open {base_url(args)}/setup")
+            print(f"no model configured — open {base_url(args)}/settings/models")
         print(f"queue: depth {queue.get('depth')}")
         for entry in queue.get("running") or []:
             print(f"  running {entry.get('model')} on {entry.get('provider')} "

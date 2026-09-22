@@ -1,4 +1,4 @@
-"""Surface API core: auth, health, settings, providers/presets/roles, first-run setup.
+"""Surface API core: auth, health, settings, providers/presets/roles, the first-run item.
 
 Everything runs in-process over ASGI; no socket is opened and no model is called."""
 
@@ -190,85 +190,43 @@ async def test_preset_test_endpoint(client, fake):
 
 
 # ---------------------------------------------------------------------------------
-# first run (03 §3.3)
+# first run (03 §3.3): no screen, one now-board item
 # ---------------------------------------------------------------------------------
-async def test_setup_state_reports_detected_providers(client):
-    body = (await client.get("/api/system/setup")).json()
-    assert body["needed"] is False  # the fixture already configured a desk role
-    assert body["providers_detected"][0]["name"] == "local-ollama"
-    assert "nomic-embed-text" in body["providers_detected"][0]["models"]
-    assert body["embedding_available"] is True
-    assert "projects_root" not in body  # the setting is gone (2026-09-22)
+async def test_an_unconfigured_desk_role_posts_one_setup_item_however_often_we_start(app):
+    """The Setup screen is gone (2026-09-22); a missing model is said on the now board
+    and never blocks. Restarting must not stack the item up."""
+    from loom.server.app import _post_choose_a_model
 
-
-async def test_setup_creates_preset_roles_settings_and_the_first_item(client):
-    app = client.loom
     app.db.execute("UPDATE model_roles SET preset=NULL")
-    app.db.execute("DELETE FROM presets")
-    events: list[dict] = []
-    app.bus.listen(lambda e: events.append(e))
+    assert not app.has_model("desk")
 
-    response = await client.post(
-        "/api/system/setup",
-        json={
-            "provider": "local-ollama",
-            "model": "qwen3.6:35b",
-            "embedding_model": "nomic-embed-text:latest",
-            "timezone": "America/Denver",
-        },
-    )
-    assert response.status_code == 200
-    body = response.json()
-    assert body["preset"] == "qwen3.6-35b"
-    assert body["roles"]["desk"] == body["roles"]["worker"] == body["roles"]["maintenance"] == "qwen3.6-35b"
-    assert body["roles"]["embedding"] == "nomic-embed-text"
-
-    preset = app.db.execute("SELECT * FROM presets WHERE name='qwen3.6-35b'").fetchone()
-    params = db.loads(preset["params"], {})
-    assert params["max_tokens"] == 4096 and params["num_ctx"] == 32768 and params["reasoning"] == "on"
-    assert app.settings.get("general.timezone") == "America/Denver"
-    assert app.has_model("desk")
-
-    kinds = [e["type"] for e in events]
-    assert "item.created" in kinds and "settings.changed" in kinds and "models.changed" in kinds
-    item = app.db.execute("SELECT title, body FROM items ORDER BY created_at DESC LIMIT 1").fetchone()
-    assert item["title"] == "Welcome" and "Tell me about yourself" in item["body"]
-
-    assert (await client.get("/api/system/setup")).json()["needed"] is False
+    _post_choose_a_model(app)
+    _post_choose_a_model(app)
+    rows = app.db.execute("SELECT title, body FROM items WHERE kind='setup' AND source='setup'").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["title"] == "Choose a model" and "Settings" in rows[0]["body"]
 
 
-async def test_setup_rejects_an_unknown_provider_and_a_missing_secrets_store(client):
-    assert (await client.post("/api/system/setup", json={"provider": "ghost", "model": "m"})).status_code == 404
-    client.loom.secrets = None
-    blocked = await client.post(
-        "/api/system/setup",
-        json={"model": "m", "openrouter": {"base_url": "https://openrouter.ai/api", "api_key": "sk-x"}},
-    )
-    assert blocked.status_code == 503 and "secrets" in blocked.json()["detail"]
+async def test_the_setup_item_returns_once_the_person_dismisses_it_and_still_has_no_model(app):
+    from loom import items
+    from loom.server.app import _post_choose_a_model
+
+    app.db.execute("UPDATE model_roles SET preset=NULL")
+    _post_choose_a_model(app)
+    row = app.db.execute("SELECT id FROM items WHERE kind='setup' AND source='setup'").fetchone()
+    items.dismiss(app, row["id"])
+
+    _post_choose_a_model(app)  # dismissed: the person answered, but the model is still unset
+    assert app.db.execute(
+        "SELECT COUNT(*) FROM items WHERE kind='setup' AND source='setup'"
+    ).fetchone()[0] == 2
 
 
-async def test_setup_stores_an_openrouter_key_when_secrets_exist(client):
-    stored: dict[str, str] = {}
-
-    class Secrets:
-        def set(self, name: str, value: str) -> None:
-            stored[name] = value
-
-        def get(self, name: str) -> str:
-            return stored.get(name, "")
-
-    client.loom.secrets = Secrets()
-    response = await client.post(
-        "/api/system/setup",
-        json={
-            "model": "anthropic/claude",
-            "openrouter": {"base_url": "https://openrouter.ai/api", "api_key": "sk-or-x"},
-        },
-    )
-    assert response.status_code == 200 and response.json()["provider"] == "openrouter"
-    assert stored["openrouter_api_key"] == "sk-or-x"
-    row = client.loom.db.execute("SELECT kind, api_key_ref FROM providers WHERE name='openrouter'").fetchone()
-    assert row["kind"] == "openai_compatible" and row["api_key_ref"] == "openrouter_api_key"
+async def test_the_setup_endpoints_are_gone(client):
+    # GET falls to the SPA catch-all, which 404s anything under /api/; because that
+    # catch-all owns GET on every path, the vanished POST reads as 405.
+    assert (await client.get("/api/system/setup")).status_code == 404
+    assert (await client.post("/api/system/setup", json={"model": "m"})).status_code == 405
 
 
 # ---------------------------------------------------------------------------------

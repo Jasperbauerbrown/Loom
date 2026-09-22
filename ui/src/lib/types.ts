@@ -418,15 +418,6 @@ export interface SecretsInfo {
   warning?: string | null;
 }
 
-export interface SetupState {
-  needed: boolean;
-  providers?: { name: string; kind: string; base_url: string; models?: string[] }[];
-  timezone?: string;
-  embedding_model?: string | null;
-  models?: string[];
-  [k: string]: unknown;
-}
-
 /** WS envelope (03 §12.2). */
 export interface BusEvent {
   type: string;

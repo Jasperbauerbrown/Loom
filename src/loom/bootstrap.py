@@ -119,7 +119,7 @@ def ensure(app) -> None:  # type: ignore[no-untyped-def]
         if conn.execute("SELECT COUNT(*) FROM protected_paths").fetchone()[0] == 0:
             for p in default_protected_paths(repo_root(), app.home):
                 conn.execute("INSERT OR IGNORE INTO protected_paths(path) VALUES (?)", (p,))
-        # Timezone: detect once; the user confirms on the Setup screen.
+        # Timezone: detected once; an ordinary setting the person can change later.
         if conn.execute("SELECT 1 FROM settings WHERE key='general.timezone'").fetchone() is None:
             app.settings.set(conn, "general.timezone", detect_timezone())
     for d in (app.vault_dir, app.artifacts_dir, app.logs_dir):

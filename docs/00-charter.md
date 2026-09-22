@@ -795,6 +795,21 @@ sessions do not re-litigate.
   it is a rule, not a fact, and the block had been repeating it every turn. Because the
   description is composed once at registration, `permissions.shell_flavour` is now
   restart-required, so the setting and `resolve_shell` can never disagree.
+- **2026-09-22** — The first-run Setup screen is gone. It was the one screen that owned
+  the app: the UI asked `GET /api/system/setup` before rendering anything and showed the
+  wizard while no desk role was set, so a person who wanted to look around, read the
+  vault or change a setting first had to satisfy it — and a blank model list (no Ollama
+  on the machine) left nothing to satisfy it with. It also duplicated Settings › Models:
+  a second way to write a provider, a preset and three roles, with its own endpoints and
+  its own preset defaults that Settings did not know about. Two ways to do one thing, one
+  of them modal. Now a missing model is what it always was — an unconfigured setting —
+  and is said the way this charter already says such things are said: one *setup* item on
+  the now board, de-duplicated per source, dismissible. `GET`/`POST /api/system/setup`,
+  `screens/Setup.tsx` and the `#/setup` route are deleted; the browser opens on the Desk;
+  the terminal line and the 409 from a send both name Settings › Models. What is lost is
+  named: the wizard's one-click "preset with sensible defaults wired to desk, worker and
+  maintenance", so a first model now takes a preset and a role assignment in Settings.
+  That is the cost of having one place where models are configured rather than two.
 - **2026-09-22** — The desk hands over open-ended work before its first step. Asked to
   "get familiar with this machine", the desk surveyed it inline: 11 model steps and 18
   tool calls across four approval segments, no note written, and reasoning that never
@@ -820,3 +835,15 @@ sessions do not re-litigate.
   derives the root from the `git` on PATH; a PATH `bash.exe` under System32 or
   WindowsApps is refused. Restart-required, as the flavour already was: the harness block
   and the process can no longer disagree about which shell this is.
+- **2026-09-22** — The web UI blanked whenever a tool asked for approval: the desk's
+  `conversation.updated` carried the raw conversation row, so `pinned_notes` arrived as
+  the json string `"[]"`, the header called `.map` on it, and React unmounted the whole
+  tree — a white page until a reload. Two rules, one per class of failure. One shape on
+  the bus: `events.announce` is the only emitter of `conversation.updated`, always the
+  public row (the same shape `GET /conversations/{id}` serves), and every status
+  transition goes through `events.set_status`, which announces; the three sites that had
+  hand-rolled an `UPDATE` plus an emit (approval requested, an internal approval applied,
+  an archived conversation reopened) lost their copy. And one defined behaviour for a
+  render error: an `ErrorBoundary` around the routed screen (keyed on the route, so
+  navigating away clears it) and a second around the shell, so a bad row costs the screen
+  it broke, never the app.

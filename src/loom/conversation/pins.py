@@ -51,8 +51,7 @@ def replace(app, conversation_id: str, paths: list[str] | None) -> list[str]:  #
     """Set the whole list (normalised) and announce the row. Returns the stored list."""
     pinned = normalise(app, paths)
     events.update(app, conversation_id, pinned_notes=pinned, updated_at=db.now_iso())
-    row = events.public_row(app, conversation_id)
-    app.bus.emit("conversation.updated", row, conversation_id)
+    events.announce(app, conversation_id)
     return pinned
 
 
@@ -73,6 +72,5 @@ def unpin(app, conv: dict[str, Any], path: str) -> list[str]:  # type: ignore[no
     if remaining == current:
         return current
     events.update(app, conv["id"], pinned_notes=remaining, updated_at=db.now_iso())
-    row = events.public_row(app, conv["id"])
-    app.bus.emit("conversation.updated", row, conv["id"])
+    events.announce(app, conv["id"])
     return remaining

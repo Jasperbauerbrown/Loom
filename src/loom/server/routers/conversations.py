@@ -127,7 +127,7 @@ async def patch_conversation(conversation_id: str, body: PatchConversation, app=
     if fields:
         fields["updated_at"] = db.now_iso()
         events.update(app, conversation_id, **fields)
-        app.bus.emit("conversation.updated", events.public_row(app, conversation_id), conversation_id)
+        events.announce(app, conversation_id)
     if body.pinned_notes is not None:
         try:
             pins.replace(app, conversation_id, body.pinned_notes)
@@ -211,7 +211,7 @@ async def send_message(conversation_id: str, body: Message, app=Depends(get_app)
     if not body.content.strip() and not refs:
         raise HTTPException(400, "content is empty")
     if not app.has_model(row["role"]):
-        raise HTTPException(409, "no model configured — open Settings › Models (or the Setup screen)")
+        raise HTTPException(409, "no model configured — open Settings › Models")
     inbox_id = conv_pkg.post(app, conversation_id, body.content, source="user", meta={"images": refs} if refs else None)
     return {"inbox_id": inbox_id, "conversation_id": conversation_id}
 

@@ -61,6 +61,8 @@ def create(
     options: dict[str, Any] | None = None,
 ) -> str:
     """Persist the question before anything else happens, then tell the surfaces."""
+    from ..conversation import events  # local: `loom.conversation` imports this package
+
     approval_id = ulid()
     conversation_id = ctx.conversation_id
     now = db.now_iso()
@@ -80,15 +82,9 @@ def create(
             now,
         ),
     )
-    app.db.execute(
-        "UPDATE conversations SET status='waiting_approval', updated_at=? WHERE id=?",
-        (now, conversation_id),
-    )
     row = _row(app, approval_id)
     app.bus.emit("approval.requested", row, conversation_id)
-    conversation = app.conversation(conversation_id)
-    if conversation is not None:
-        app.bus.emit("conversation.updated", conversation, conversation_id)
+    events.set_status(app, conversation_id, "waiting_approval")
     return approval_id
 
 
@@ -137,17 +133,18 @@ def decide(app: Any, approval_id: str, decision: str, add_root: bool = False) ->
 def _apply_internal(app: Any, row: dict[str, Any], status: str) -> None:
     """Internal (non-model) actions that use approvals as their gate. No turn is waiting,
     so nothing is woken; the conversation goes back to idle."""
+    from ..conversation import events
+
     if status == "allowed":
         path = str(row["args"].get("path") or "")
         if path:
             fs_guard.remove_protected(app, path)
-    app.db.execute(
+    cur = app.db.execute(
         "UPDATE conversations SET status='idle', updated_at=? WHERE id=? AND status='waiting_approval'",
         (db.now_iso(), row["conversation_id"]),
     )
-    conversation = app.conversation(row["conversation_id"])
-    if conversation is not None:
-        app.bus.emit("conversation.updated", conversation, row["conversation_id"])
+    if cur.rowcount:
+        events.announce(app, row["conversation_id"])
 
 
 def pending(app: Any, conversation_id: str | None = None) -> list[dict[str, Any]]:

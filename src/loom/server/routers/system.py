@@ -1,4 +1,4 @@
-"""System endpoints (03 §12.1): health, version, queue, logs, reindex, first-run setup."""
+"""System endpoints (03 §12.1): health, version, queue, logs, reindex, open a folder."""
 
 from __future__ import annotations
 
@@ -7,29 +7,14 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from ... import db, items
+from ... import db
 from ...app import App
-from ...config import detect_timezone
-from ...models import client as model_client
-from ...models.types import ModelError
 from ..deps import get_app
 
 log = logging.getLogger(__name__)
 router = APIRouter(tags=["system"])
-
-EMBEDDING_HINTS = ("embed", "bge", "gte", "minilm")
-
-# Sensible preset defaults for the one required choice on the Setup screen (03 §3.3).
-SETUP_PRESET_PARAMS: dict[str, Any] = {
-    "max_tokens": 4096,
-    "temperature": 0.3,
-    "effective_ctx": 32768,
-    "num_ctx": 32768,
-    "keep_alive": "30m",
-    "reasoning": "on",
-}
 
 
 @router.get("/system/health")
@@ -129,160 +114,9 @@ async def reindex(app: App = Depends(get_app)) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------------
-# first run (03 §3.3)
-# ---------------------------------------------------------------------------------
-class OpenRouter(BaseModel):
-    base_url: str = "https://openrouter.ai/api"
-    api_key: str
-
-
-class SetupRequest(BaseModel):
-    model: str = Field(min_length=1)
-    provider: str | None = None
-    embedding_model: str | None = None
-    timezone: str | None = None
-    openrouter: OpenRouter | None = None
-
-
-@router.get("/system/setup")
-async def setup_state(app: App = Depends(get_app)) -> dict[str, Any]:
-    detected = []
-    embedding_available = False
-    for row in app.db.execute("SELECT name, kind, base_url FROM providers WHERE enabled=1 ORDER BY name"):
-        entry = {"name": row["name"], "kind": row["kind"], "base_url": row["base_url"], "models": [], "error": None}
-        try:
-            entry["models"] = await app.models.list_models(row["name"])
-        except ModelError as exc:
-            entry["error"] = exc.message
-        except Exception as exc:  # a probe must never break the Setup screen
-            entry["error"] = str(exc)
-        if any(_looks_like_embedding(m) for m in entry["models"]):
-            embedding_available = True
-        detected.append(entry)
-    return {
-        "needed": not app.has_model("desk"),
-        "providers_detected": detected,
-        "timezone": app.settings.get("general.timezone") or detect_timezone(),
-        "embedding_available": embedding_available or bool(_role_preset(app, "embedding")),
-    }
-
-
-@router.post("/system/setup")
-async def run_setup(body: SetupRequest, app: App = Depends(get_app)) -> dict[str, Any]:
-    now = db.now_iso()
-    provider_name = body.provider or ""
-
-    if body.openrouter is not None:
-        if app.secrets is None:
-            raise HTTPException(
-                status_code=503,
-                detail="the secrets store is unavailable, so an OpenRouter key cannot be saved",
-            )
-        try:
-            app.secrets.set("openrouter_api_key", body.openrouter.api_key)
-        except Exception as exc:
-            raise HTTPException(status_code=503, detail=f"storing the OpenRouter key failed: {exc}") from exc
-        provider_name = provider_name or "openrouter"
-        _upsert_provider(
-            app,
-            provider_name,
-            kind="openai_compatible",
-            base_url=body.openrouter.base_url.rstrip("/"),
-            api_key_ref="openrouter_api_key",
-            now=now,
-        )
-    if not provider_name:
-        row = app.db.execute("SELECT name FROM providers WHERE enabled=1 ORDER BY created_at LIMIT 1").fetchone()
-        if row is None:
-            raise HTTPException(status_code=400, detail="no provider configured or detected; add one first")
-        provider_name = row["name"]
-    elif app.db.execute("SELECT 1 FROM providers WHERE name=?", (provider_name,)).fetchone() is None:
-        raise HTTPException(status_code=404, detail=f"unknown provider {provider_name!r}")
-
-    preset_name = _preset_name(body.model)
-    with db.transaction(app.db):
-        _write_preset(app, preset_name, provider_name, body.model, dict(SETUP_PRESET_PARAMS), now)
-        for role in ("desk", "worker", "maintenance"):
-            app.db.execute("UPDATE model_roles SET preset=? WHERE role=?", (preset_name, role))
-        if body.embedding_model:
-            embed_preset = _preset_name(body.embedding_model)
-            _write_preset(app, embed_preset, provider_name, body.embedding_model, {}, now)
-            app.db.execute("UPDATE model_roles SET preset=? WHERE role='embedding'", (embed_preset,))
-
-    changed: list[str] = []
-    try:
-        patch: dict[str, Any] = {}
-        if body.timezone:
-            patch["general.timezone"] = body.timezone
-        if body.embedding_model:
-            patch["models.embeddings_enabled"] = True
-        if patch:
-            changed = app.settings.update(app.db, patch)
-    except (ValueError, KeyError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    items.post(
-        app,
-        "notification",
-        "Welcome",
-        "Tell me about yourself, or point me at something to learn.",
-        source="setup",
-    )
-    if changed:
-        app.bus.emit("settings.changed", {"keys": changed})
-    app.bus.emit("models.changed", {"kind": "role", "name": "desk"})
-    return {
-        "ok": True,
-        "preset": preset_name,
-        "provider": provider_name,
-        "roles": _roles(app),
-        "values": app.settings.to_json(),
-    }
-
-
-# ---------------------------------------------------------------------------------
 def uptime_s(app: App) -> int:
     try:
         started = _dt.datetime.fromisoformat(app.started_at.replace("Z", "+00:00"))
     except (ValueError, AttributeError):
         return 0
     return max(0, int((_dt.datetime.now(_dt.timezone.utc) - started).total_seconds()))
-
-
-def _looks_like_embedding(model: str) -> bool:
-    lowered = model.lower()
-    return any(hint in lowered for hint in EMBEDDING_HINTS)
-
-
-def _role_preset(app: App, role: str) -> str | None:
-    row = app.db.execute("SELECT preset FROM model_roles WHERE role=?", (role,)).fetchone()
-    return (row["preset"] or None) if row else None
-
-
-def _roles(app: App) -> dict[str, str | None]:
-    return {r["role"]: r["preset"] for r in app.db.execute("SELECT role, preset FROM model_roles")}
-
-
-def _preset_name(model: str) -> str:
-    return model.replace(":latest", "").replace("/", "-").replace(":", "-")
-
-
-def _upsert_provider(app: App, name: str, *, kind: str, base_url: str, api_key_ref: str | None, now: str) -> None:
-    app.db.execute(
-        "INSERT INTO providers(name, kind, base_url, api_key_ref, params, enabled, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, '{}', 1, ?, ?) "
-        "ON CONFLICT(name) DO UPDATE SET kind=excluded.kind, base_url=excluded.base_url, "
-        "api_key_ref=excluded.api_key_ref, enabled=1, updated_at=excluded.updated_at",
-        (name, kind, base_url, api_key_ref, now, now),
-    )
-    app.bus.emit("models.changed", {"kind": "provider", "name": name})
-
-
-def _write_preset(app: App, name: str, provider: str, model: str, params: dict[str, Any], now: str) -> None:
-    app.db.execute(
-        "INSERT INTO presets(name, provider, model, params, enabled, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, 1, ?, ?) "
-        "ON CONFLICT(name) DO UPDATE SET provider=excluded.provider, model=excluded.model, "
-        "params=excluded.params, enabled=1, updated_at=excluded.updated_at",
-        (name, provider, model, db.dumps(params), now, now),
-    )

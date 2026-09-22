@@ -175,7 +175,7 @@ async def fold(app, conv: dict[str, Any], priority: int = PRIORITY_MAINTENANCE) 
         {"kind": "fold", "folded_through": folded_through, "kept_from": folded_through + 1, "folded_count": len(folded), "summary_chars": len(summary)},
     )
     app.bus.emit("event.appended", events.get(app, ev_id), conv["id"])
-    app.bus.emit("conversation.updated", events.public_row(app, conv["id"]), conv["id"])
+    events.announce(app, conv["id"])
     return True
 
 
@@ -258,6 +258,4 @@ def clear(app, conversation_id: str, actor: str = "user") -> dict[str, Any]:  # 
         {"kind": "clear", "folded_through": last, "kept_from": last + 1, "summary_chars": 0},
     )
     app.bus.emit("event.appended", events.get(app, ev), conversation_id)
-    row = events.public_row(app, conversation_id)
-    app.bus.emit("conversation.updated", row, conversation_id)
-    return row  # type: ignore[return-value]
+    return events.announce(app, conversation_id)  # type: ignore[return-value]
