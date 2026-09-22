@@ -216,7 +216,7 @@ export const api = {
       params,
     ),
 
-  // -- background processes (03 §9.4) -------------------------------------------
+  // -- background processes (03 §9.6) -------------------------------------------
   processes: (params?: { conversation_id?: string; status?: string }) =>
     get<{ processes: ProcessRow[] }>("/processes", params).then((r) => r.processes ?? []),
   process: (id: string) => get<ProcessRow>(`/processes/${id}`),

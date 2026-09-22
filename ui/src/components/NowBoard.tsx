@@ -125,7 +125,7 @@ export function NowBoard() {
     (s) => Number(s.settings?.values["conversation.now_board_max_threads"] ?? 10),
     Object.is,
   );
-  // Running processes of every owner, plus what the desk itself ran lately (03 §9.4).
+  // Running processes of every owner, plus what the desk itself ran lately (03 §9.6).
   const processes = useStore(
     (s) => sortProcesses(Object.values(s.processes)),
     (a, b) => a.length === b.length && a.every((x, i) => x === b[i]),

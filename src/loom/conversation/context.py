@@ -185,7 +185,7 @@ def now_board(app) -> str:  # type: ignore[no-untyped-def]
         lines.append(f'- thread "{label}" ({t["id"]}): {t["status"]}' + (f" — {doing[:120]}" if doing else ""))
     store = getattr(app, "processes", None)
     if store is not None:
-        # Background processes (03 §9.4): what is up, for how long, and whose it is.
+        # Background processes (03 §9.6): what is up, for how long, and whose it is.
         from .. import processes as _processes
 
         for p in store.list(status="running"):

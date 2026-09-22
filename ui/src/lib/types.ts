@@ -523,7 +523,7 @@ export interface SupervisorStatus {
   port?: number;
 }
 
-// -- background processes (03 §9.4, 2026-09-22) -------------------------------------
+// -- background processes (03 §9.6, 2026-09-22) -------------------------------------
 
 export type ProcessStatus = "starting" | "running" | "exited" | "stopped" | "failed" | "lost";
 
