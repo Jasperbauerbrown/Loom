@@ -7,3 +7,22 @@ ui/node_modules/
 ui/dist/
 .loom-dev/
 *.log
+
+# Loom's runtime state. The home directory (`~/.loom`, or `--home`) lives outside the
+# repository, so none of this is normally here — these patterns exist so a home pointed
+# at the checkout can never be committed. `state.db` holds every transcript, thread,
+# setting and approval; `vault/` is the person's knowledge; `artifacts/` holds spilled
+# tool output, images and process logs. All anchored to the repository root, because
+# `ui/src/components/vault/` is source and must stay tracked.
+/.loom/
+/.loom-*/
+/vault/
+/artifacts/
+/logs/
+/scratch/
+/releases/
+/secrets.index.json
+/supervisor.token
+*.db
+*.db-wal
+*.db-shm
