@@ -159,6 +159,12 @@ def parse_status(body: str) -> tuple[dict[str, str] | None, str | None]:
     return fields, match.group("owner")
 
 
+def status_blocks(body: str) -> list[str]:
+    """The full text of every delimited status block in `body`, in order — what
+    `Vault.write(protect_status=True)` requires a write to leave byte-identical."""
+    return [m.group(0) for m in _STATUS_BLOCK_RE.finditer(body or "")]
+
+
 def render_status(owner: str, fields: dict[str, Any]) -> str:
     """The delimited block, keys in `STATUS_FIELDS` order; unknown keys follow, sorted.
     Multi-line and list values render as indented bullets."""

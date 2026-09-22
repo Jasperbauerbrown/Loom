@@ -191,6 +191,46 @@ async def test_thread_without_status_write_gets_safety_net(app, fake):
     # parent inbox has the question
     rows = app.db.execute("SELECT content FROM inbox WHERE conversation_id=? AND delivered_at IS NULL", (desk,)).fetchall()
     assert any("Which format" in r["content"] for r in rows)
+    # the header says what happened, not what the thread wants (2026-09-22)
+    assert any(r["content"].startswith("[stopped without finishing]\nWhich format") for r in rows)
+    item = app.db.execute("SELECT title FROM items WHERE kind='thread_event'").fetchone()
+    assert item["title"].endswith("stopped without finishing")
+
+
+async def test_thread_only_tools_are_not_offered_to_the_desk(app, fake):
+    """`Tool.kinds`: the desk called conversation_finish twice in the game test and was
+    told "the desk never finishes"; it never sees the tool now, while a thread does."""
+    desk = app.desk_id()
+    row = conversation.create_thread(app, goal="write docs", project_name="docs proj", created_by="user")
+    fake.on("status", lambda req: Scripted(content='{"state":"working","goal":"write docs","done":"","doing":"","next":"","blockers":""}'))
+    fake.script(Scripted(content="ok"), Scripted(content="ok"))
+    conversation.post(app, desk, "hello")
+    await _run(app, desk)
+    await _run(app, row["id"])
+    await _settle(app)
+
+    def names(req):
+        return {t["function"]["name"] for t in (req.tools or [])}
+
+    desk_req = [c for c in fake.calls if c.conversation_id == desk and c.purpose == "turn"][-1]
+    thread_req = [c for c in fake.calls if c.conversation_id == row["id"] and c.purpose == "turn"][-1]
+    assert {"conversation_finish", "status_update"}.isdisjoint(names(desk_req))
+    assert {"conversation_finish", "status_update"} <= names(thread_req)
+    assert "conversation_create" in names(desk_req) and "conversation_create" in names(thread_req)
+
+
+def test_sub_thread_cannot_share_its_parents_scope_note(app):
+    """Sub-threads are allowed down to max_thread_depth, each on its own note or as a
+    task; two threads on one note meant two writers on one status block (2026-09-22)."""
+    parent = conversation.create_thread(app, goal="build the game", project_name="tower game", created_by="user")
+    with pytest.raises(conversation.ThreadError, match="cannot share its parent's scope note"):
+        conversation.create_thread(app, goal="do the map", parent_id=parent["id"], scope_note=parent["scope_note"], created_by="user")
+    with pytest.raises(conversation.ThreadError, match="cannot share its parent's scope note"):
+        conversation.create_thread(app, goal="do the map", parent_id=parent["id"], project_name="tower game", created_by="user")
+    sub = conversation.create_thread(app, goal="do the map", parent_id=parent["id"], project_name="tower game map", created_by="user")
+    assert sub["depth"] == 2 and sub["scope_note"] != parent["scope_note"] and app.vault.exists(sub["scope_note"])
+    task = conversation.create_thread(app, goal="check the tests", parent_id=parent["id"], created_by="user")
+    assert task["scope_note"] is None and task["depth"] == 2
 
 
 # -- budgets, cancel, failure ---------------------------------------------------------------
@@ -397,3 +437,6 @@ async def test_context_block_lists_the_roots_and_protected_paths(app, fake, tmp_
     assert "roots (relative paths resolve against the first): " in block
     assert fs_guard.normalise(str(app.vault_dir)) in block and fs_guard.normalise(str(extra)) in block
     assert "protected (always ask): " in block and "secrets.env" in block
+    # the projects root rides along: threads used to learn it by failing against a default
+    assert "projects root (new project folders are created here): " in block
+    assert str(app.settings.projects_root()).replace("\\", "/") in block

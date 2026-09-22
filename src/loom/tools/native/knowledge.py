@@ -19,7 +19,6 @@ from ... import prompts
 from ...knowledge.vault import VaultError
 from ..registry import Tool, ToolContext, ToolResult
 
-READ_CHAR_CAP = 8000
 DEFAULT_READ_LINES = 400
 
 
@@ -63,8 +62,17 @@ async def knowledge_read_handler(ctx: ToolContext, args: dict[str, Any]) -> Tool
     chunk = lines[offset : offset + limit]
     text = "\n".join(chunk)
     truncated = False
-    if len(text) > READ_CHAR_CAP:
-        text = text[:READ_CHAR_CAP]
+    # The page is `conversation.tool_output_cap`, the number the dispatcher spills at;
+    # knowledge_read is a paged tool, so page plus footer is never spilled. A fixed 8000
+    # here was the off-by-footer trap that looped artifact_recall (2026-09-22).
+    char_cap = int(ctx.app.settings.get("conversation.tool_output_cap"))
+    if len(text) > char_cap:
+        text = text[:char_cap]
+        # Drop the line the cut landed in so the next page opens with it whole; keep it
+        # only when it is the sole line, so a page always makes progress.
+        cut = text.rfind("\n")
+        if cut > 0:
+            text = text[:cut]
         chunk = text.splitlines()
         truncated = True
     end = offset + len(chunk)
@@ -106,6 +114,7 @@ async def knowledge_write_handler(ctx: ToolContext, args: dict[str, Any]) -> Too
             frontmatter=frontmatter,
             reason=(None if args.get("reason") is None else str(args.get("reason"))),
             actor="loom",
+            protect_status=True,
         )
     except VaultError as exc:
         return ToolResult.error(str(exc))
@@ -216,6 +225,7 @@ def tools() -> list[Tool]:
             },
             handler=knowledge_read_handler,
             read_only=True,
+            paged=True,
         ),
         Tool(
             name="knowledge_write",

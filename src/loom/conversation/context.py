@@ -103,7 +103,10 @@ class Context:
         if not enabled:
             return []
         limit = int(app.settings.get("conversation.tool_expose_max"))
-        return app.tools.expose(limit, self.exposed)
+        kind = self.conv.get("kind") or "thread"
+        # Thread-only tools (conversation_finish, status_update) never reach the desk,
+        # which otherwise called them and was told "the desk never finishes" (2026-09-22).
+        return [t for t in app.tools.expose(limit, self.exposed) if kind in t.kinds]
 
     def tool_schemas(self, app, enabled: bool = True) -> list[dict[str, Any]] | None:  # type: ignore[no-untyped-def]
         tools = self.tools(app, enabled)
@@ -206,7 +209,8 @@ CONTEXT_CLOSE = "</context>"
 
 
 def filesystem_block(app, conv: dict[str, Any]) -> str:  # type: ignore[no-untyped-def]
-    """Slot [6]: the roots this conversation may touch and the paths that always ask.
+    """Slot [6]: the roots this conversation may touch, the projects root, and the paths
+    that always ask.
     Until 2026-09-21 the model learned its roots only by failing against them (a desk
     guessed `projects/`, listed the artifacts folder, tried a Linux path, then asked for
     the home directory); mutable state belongs here, not in the soul."""
@@ -219,6 +223,12 @@ def filesystem_block(app, conv: dict[str, Any]) -> str:  # type: ignore[no-untyp
         lines.append("roots (relative paths resolve against the first): " + ", ".join(roots))
     else:
         lines.append("roots: (none — every file access will ask)")
+    # Where new project folders go (`general.projects_root`). Threads sent to a
+    # nonexistent default improvised paths, one inside this repo (2026-09-22).
+    lines.append(
+        "projects root (new project folders are created here): "
+        + str(app.settings.projects_root()).replace("\\", "/")
+    )
     protected = paths.get("protected") or []
     if protected:
         lines.append("protected (always ask): " + ", ".join(protected))

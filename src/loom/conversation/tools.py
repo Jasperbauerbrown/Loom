@@ -57,6 +57,15 @@ def create_thread(  # type: ignore[no-untyped-def]
     elif scope_note and not app.vault.exists(scope_note):
         stem = scope_note.rsplit("/", 1)[-1].removesuffix(".md")
         scope_note = app.vault.ensure_project_note(stem.replace("-", " "), aliases=aliases)
+    parent_scope = parent.get("scope_note")
+    if scope_note and parent_scope and _same_note(app, scope_note, parent_scope):
+        # Two threads on one note means two writers on one status block (the
+        # tower-defense parent and child, 2026-09-22). Sub-threads are welcome down to
+        # max_thread_depth; each gets its own note, or none.
+        raise ThreadError(
+            f"a sub-thread cannot share its parent's scope note ({parent_scope}); give it its own "
+            "project_name, or pass neither scope_note nor project_name to make it a task"
+        )
     roots = [_norm(r) for r in (roots or []) if r]
     cid = ulid()
     now = db.now_iso()
@@ -85,6 +94,13 @@ def _norm(p: str) -> str:
     from ..tools import fs_guard
 
     return fs_guard.normalise(p)
+
+
+def _same_note(app, a: str, b: str) -> bool:  # type: ignore[no-untyped-def]
+    try:
+        return app.vault.norm(a) == app.vault.norm(b)
+    except Exception:
+        return a.strip() == b.strip()
 
 
 TITLE_MAX = 80
@@ -152,7 +168,7 @@ async def _create(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         return ToolResult.error(str(exc))
     scope = row.get("scope_note")
     kind = f"scope note: {scope}" if scope else "a task (no scope note; status in its transcript, walkthrough to the daily log)"
-    return ToolResult(f"created thread {row['id']} (\"{row['title']}\"); {kind}. It will report back when it needs input or finishes.")
+    return ToolResult(f"created thread {row['id']} (\"{row['title']}\"); {kind}. It will report back when it stops without finishing, is blocked, or finishes.")
 
 
 async def _send(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
@@ -313,9 +329,11 @@ def tools() -> list[Tool]:
         Tool("conversation_list", prompts.load("tools/conversation_list"),
              _schema({"status": {"type": "string"}, "include_archived": {"type": "boolean"}}, []), _list, read_only=True),
         Tool("conversation_finish", prompts.load("tools/conversation_finish"),
-             _schema({"summary": {"type": "string"}, "walkthrough": {"type": "string"}, "state": {"type": "string", "enum": ["done", "failed"]}}, ["summary", "walkthrough"]), _finish),
+             _schema({"summary": {"type": "string"}, "walkthrough": {"type": "string"}, "state": {"type": "string", "enum": ["done", "failed"]}}, ["summary", "walkthrough"]), _finish,
+             kinds=("thread",)),
         Tool("status_update", prompts.load("tools/status_update"),
-             _schema({k: {"type": "string"} for k in STATUS_FIELDS} | {"state": {"type": "string", "enum": list(status.STATES)}}, []), _status_update),
+             _schema({k: {"type": "string"} for k in STATUS_FIELDS} | {"state": {"type": "string", "enum": list(status.STATES)}}, []), _status_update,
+             kinds=("thread",)),
         Tool("item_post", prompts.load("tools/item_post"),
              _schema({"kind": {"type": "string", "enum": ["notification", "setup"]}, "title": {"type": "string"}, "body": {"type": "string"}, "notify": {"type": "boolean"}}, ["title"]), _item_post),
     ]

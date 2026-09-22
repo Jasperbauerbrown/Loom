@@ -261,13 +261,16 @@ class Vault:
         frontmatter: dict[str, Any] | None = None,
         reason: str | None = None,
         actor: str = "loom",
+        protect_status: bool = False,
     ) -> Note:
         """The one write path for notes (03 §4.3, §8.4).
 
         `create` refuses an existing note; `append` adds a blank line then the content;
         `replace` swaps a unique `old` snippet; `rethink` rewrites the body and requires
-        a `reason`, which lands on the now board. Relative dates are refused. The write
-        is atomic, committed, indexed and announced."""
+        a `reason`, which lands on the now board. Relative dates are refused. With
+        `protect_status` (the knowledge_write tool) the note's status block must come out
+        byte-identical and none may be introduced: `status_update` is its one writer
+        (03 §4.3). The write is atomic, committed, indexed and announced."""
         if op not in OPS:
             raise VaultError(f"unknown op {op!r}; use one of {', '.join(OPS)}")
         target = self.resolve(path)
@@ -308,6 +311,16 @@ class Vault:
             body = old_body.replace(old, content, 1)
         else:  # rethink
             body = content
+
+        if protect_status and notes.status_blocks(body) != notes.status_blocks(old_body):
+            # Hand-written blocks carried an artifact id as owner into two live notes
+            # (2026-09-22); the tool edits around the block or not at all.
+            if not notes.status_blocks(old_body):
+                raise VaultError(f"{rel} gets its status block from status_update; do not write one by hand")
+            raise VaultError(
+                f"the status block in {rel} is written by status_update, not knowledge_write; "
+                "keep it byte-identical and edit around it"
+            )
 
         offender = notes.has_relative_dates(content)
         if offender:

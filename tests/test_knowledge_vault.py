@@ -313,3 +313,70 @@ def test_write_folds_a_frontmatter_block_found_in_the_body(app):
         "devices/printers.md", "---\ntitle: Printers\n---\n# Printers\n", op="rethink", reason="shape", frontmatter={"title": "All printers"}
     )
     assert note.title == "All printers" and note.body.strip() == "# Printers"
+
+
+async def test_knowledge_write_leaves_the_status_block_to_status_update(app):
+    """One writer for the block (03 §4.3): two live notes ended up with hand-written
+    blocks carrying an artifact id as owner (2026-09-22). The tool refuses to add or
+    alter a block, whatever the op, and edits around it freely."""
+    ctx = _ctx(app)
+    write = app.tools.get("knowledge_write").handler
+    block = "<!-- status:begin owner=01J8 -->\nstate: working\n<!-- status:end -->"
+
+    result = await write(ctx, {"path": "projects/p.md", "op": "create", "content": f"About p.\n\n## Status\n{block}"})
+    assert not result.ok and "status_update" in result.content and not app.vault.exists("projects/p.md")
+
+    assert (await write(ctx, {"path": "projects/p.md", "op": "create", "content": "About p."})).ok
+    app.vault.write_status("projects/p.md", "01J8", {"state": "working", "goal": "ship"})
+    before = app.vault.read("projects/p.md").body
+    status_before = app.vault.read_status("projects/p.md")
+
+    refused = [
+        {"op": "append", "content": block},
+        {"op": "replace", "old": "state: working", "content": "state: done"},
+        {"op": "rethink", "content": "Rewritten without the block.", "reason": "test"},
+    ]
+    for args in refused:
+        r = await write(ctx, {"path": "projects/p.md", **args})
+        assert not r.ok and "status_update" in r.content, args
+    assert app.vault.read("projects/p.md").body == before
+
+    r = await write(ctx, {"path": "projects/p.md", "op": "append", "content": "Decided: use SQLite."})
+    assert r.ok and app.vault.read_status("projects/p.md") == status_before
+    kept = app.vault.read("projects/p.md").body
+    r = await write(ctx, {"path": "projects/p.md", "op": "rethink", "content": kept.replace("About p.", "About project p."), "reason": "test"})
+    assert r.ok and app.vault.read_status("projects/p.md") == status_before
+    assert "About project p." in app.vault.read("projects/p.md").body
+
+
+async def test_knowledge_read_over_the_cap_returns_one_page_and_is_never_spilled(app):
+    """knowledge_read pages on `conversation.tool_output_cap` and is `paged`: a fixed 8000
+    here was the off-by-footer trap that looped artifact_recall (2026-09-22). Pages end
+    on whole lines, so the next page opens with the cut line intact."""
+    from loom.tools import dispatch
+    from loom.tools.registry import ToolContext
+
+    app.settings.set(app.db, "conversation.tool_output_cap", 500)
+    line_len = len("line 0000 " + "-" * 12)
+    app.vault.write("topics/big.md", "\n".join(f"line {i:04d} {'-' * 12}" for i in range(200)), op="create")
+    rows = app.db.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0]
+    tool = app.tools.get("knowledge_read")
+    assert tool.paged
+    ctx = ToolContext(app=app, conversation=app.conversation(app.desk_id()), call_id="c1", event_id=2)
+
+    first = await dispatch.execute(app, ctx, tool, {"path": "topics/big.md"})
+    assert first.ok and "artifact_id" not in first.meta
+    page, footer = first.content.rsplit("\n", 1)
+    assert len(page) <= 500 and page.splitlines()[-1].endswith("-" * 12)
+    assert footer.startswith("[lines 1–") and "knowledge_read(path, offset=" in footer
+    assert app.db.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0] == rows
+
+    end = int(footer.split("offset=")[1].split(")")[0])
+    second = await dispatch.execute(app, ctx, tool, {"path": "topics/big.md", "offset": end})
+    assert second.ok and len(second.content.splitlines()[0]) == line_len
+    assert app.db.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0] == rows
+    # pages cover the note with nothing skipped: the first body line after the frontmatter
+    # is line 0000 and the second page starts exactly where the first stopped
+    seen = page.splitlines() + second.content.rsplit("\n", 1)[0].splitlines()
+    body_lines = [l for l in seen if l.startswith("line ")]
+    assert [int(l.split()[1]) for l in body_lines] == list(range(len(body_lines)))

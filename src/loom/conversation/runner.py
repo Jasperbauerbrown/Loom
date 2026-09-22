@@ -546,7 +546,10 @@ def _notify_parent(app, state: TurnState, event: str, text: str) -> None:  # typ
     conv = state.conv
     parent = conv.get("parent_id")
     title = conv.get("title") or (conv.get("goal") or "")[:60] or conv["id"]
-    label = {"done": "finished", "failed": "failed", "waiting": "needs input", "blocked": "blocked"}.get(event, event)
+    # "waiting" is any turn that ended in plain text; the harness cannot tell a question
+    # from a report, so the header says what happened, not what the thread wants
+    # (three of four finished threads ended with a report instead of finish, 2026-09-22).
+    label = {"done": "finished", "failed": "failed", "waiting": "stopped without finishing", "blocked": "blocked"}.get(event, event)
     body = text.strip()
     if parent:
         from . import post
