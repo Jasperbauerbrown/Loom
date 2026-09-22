@@ -71,23 +71,11 @@ async def test_history_core_wanted_and_procedures(client):
     assert [n["path"] for n in graph["nodes"]] == ["topics/x.md"]
 
 
-async def test_status_endpoints_write_the_block(client):
-    app = client.loom
-    path = app.vault.ensure_project_note("Music bot")
-
-    empty = (await client.get("/api/vault/status", params={"path": path})).json()
-    assert empty["present"] is False
-
-    written = (
-        await client.put("/api/vault/status", json={"path": path, "fields": {"state": "working", "goal": "ship"}, "owner": "01J8"})
-    ).json()
-    assert written["owner"] == "01J8"
-    assert written["fields"]["state"] == "working"
-
-    # A later write keeps the owner and merges the fields.
-    again = (await client.put("/api/vault/status", json={"path": path, "fields": {"state": "done"}})).json()
-    assert again["owner"] == "01J8"
-    assert again["fields"] == {**written["fields"], "state": "done", "updated": again["fields"]["updated"]}
+async def test_status_block_endpoints_are_gone(client):
+    """A thread's status lives in its transcript (03 §6.7, 2026-09-22); notes carry no
+    block, so the old /vault/status routes no longer exist."""
+    assert (await client.get("/api/vault/status", params={"path": "projects/x.md"})).status_code in (404, 405)
+    assert (await client.put("/api/vault/status", json={"path": "projects/x.md", "fields": {}})).status_code in (404, 405)
 
 
 async def test_procedure_approval_endpoint(client):

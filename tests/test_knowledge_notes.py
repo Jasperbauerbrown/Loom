@@ -61,48 +61,6 @@ def test_relative_dates_positive_and_negative():
         assert notes.has_relative_dates(f"Printed {phrase}.") is None
 
 
-def test_status_render_parse_roundtrip():
-    fields = {"state": "working", "goal": "Ship it", "done": "a\nb", "next": "c"}
-    block = notes.render_status("01J8", fields)
-    assert block.startswith(notes.STATUS_BEGIN % "01J8")
-    assert block.endswith(notes.STATUS_END)
-    assert "  - a" in block and "  - b" in block
-    back, owner = notes.parse_status(f"## Status\n{block}\n")
-    assert owner == "01J8"
-    assert back == {"state": "working", "goal": "Ship it", "done": "a\nb", "next": "c"}
-
-
-def test_status_fields_render_in_fixed_order():
-    block = notes.render_status("o", {"next": "n", "state": "working", "goal": "g"})
-    assert block.index("state:") < block.index("goal:") < block.index("next:")
-
-
-def test_replace_status_in_place():
-    body = "Intro\n\n## Status\n" + notes.render_status("o1", {"state": "planning"}) + "\n\nTail\n"
-    out = notes.replace_status(body, "o1", {"state": "working"})
-    assert "state: working" in out and "state: planning" not in out
-    assert out.count(notes.STATUS_END) == 1
-    assert out.startswith("Intro") and out.rstrip().endswith("Tail")
-
-
-def test_replace_status_appends_section_when_missing():
-    out = notes.replace_status("Just a body.\n", "o2", {"state": "planning"})
-    assert "## Status" in out
-    fields, owner = notes.parse_status(out)
-    assert owner == "o2" and fields == {"state": "planning"}
-
-
-def test_replace_status_uses_existing_heading():
-    out = notes.replace_status("Body\n\n## Status\n\nnothing yet\n", "o3", {"state": "done"})
-    assert out.count("## Status") == 1
-    fields, _ = notes.parse_status(out)
-    assert fields == {"state": "done"}
-
-
-def test_parse_status_absent():
-    assert notes.parse_status("no block here") == (None, None)
-
-
 def test_titles_and_slugs():
     assert notes.title_from_path("devices/ender-3.md") == "Ender 3"
     assert notes.title_from_path("procedures/pla-print/SKILL.md") == "Pla print"

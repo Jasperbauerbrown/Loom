@@ -1,7 +1,7 @@
-A thread turn just ended without updating its status block. You are given the thread's
-goal, the current status block, and the turn's events (user messages, assistant
-messages, tool calls with a short result preview). Produce the status block fields as
-strict JSON with exactly these keys:
+A thread turn just ended without updating its status. You are given the thread's goal,
+the current status, and the turn's events (user messages, assistant messages, tool
+calls with a short result preview). Produce the status fields as strict JSON with
+exactly these keys:
 
 {"state": "planning|working|blocked|waiting|done",
  "goal": "…", "done": "…", "doing": "…", "next": "…", "blockers": "…"}

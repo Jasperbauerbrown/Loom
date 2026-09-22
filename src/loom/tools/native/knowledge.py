@@ -48,6 +48,23 @@ async def knowledge_search_handler(ctx: ToolContext, args: dict[str, Any]) -> To
 # ---------------------------------------------------------------------------------
 # knowledge_read
 # ---------------------------------------------------------------------------------
+def _apply_pin(ctx: ToolContext, path: str, pin: Any) -> str:
+    """`pin=true` keeps the note in this conversation's context every turn; `pin=false`
+    drops it; omitted leaves the list alone (03 §6.7, 2026-09-22). Runs after a
+    successful read only, on a fresh row so two pins in one turn both stick. Returns the
+    line appended to the result, or an empty string."""
+    if pin is None:
+        return ""
+    from ...conversation import pins
+
+    conv = ctx.app.conversation(ctx.conversation_id) or ctx.conversation
+    if pin:
+        pins.pin(ctx.app, conv, path)
+        return "\n[pinned: this note is in your context every turn; knowledge_read(path, pin=false) to drop it]"
+    pins.unpin(ctx.app, conv, path)
+    return "\n[unpinned]"
+
+
 async def knowledge_read_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     try:
         note = await asyncio.to_thread(ctx.app.vault.read, str(args.get("path") or ""))
@@ -57,8 +74,9 @@ async def knowledge_read_handler(ctx: ToolContext, args: dict[str, Any]) -> Tool
     total = len(lines)
     offset = max(0, _clamp(args.get("offset"), 0, 0, 10_000_000))
     limit = _clamp(args.get("limit"), DEFAULT_READ_LINES, 1, 10_000)
+    pin_line = _apply_pin(ctx, note.path, args.get("pin"))
     if offset >= total and total:
-        return ToolResult(content=f"[{note.path} has {total} lines; offset {offset} is past the end]")
+        return ToolResult(content=f"[{note.path} has {total} lines; offset {offset} is past the end]{pin_line}")
     chunk = lines[offset : offset + limit]
     text = "\n".join(chunk)
     truncated = False
@@ -82,7 +100,7 @@ async def knowledge_read_handler(ctx: ToolContext, args: dict[str, Any]) -> Tool
     if note.error:
         footer += f"\n[this note's frontmatter is invalid: {note.error}]"
     return ToolResult(
-        content=text + footer,
+        content=text + footer + pin_line,
         meta={"path": note.path, "lines": total, "offset": offset, "end": end, "type": note.type},
     )
 
@@ -114,7 +132,6 @@ async def knowledge_write_handler(ctx: ToolContext, args: dict[str, Any]) -> Too
             frontmatter=frontmatter,
             reason=(None if args.get("reason") is None else str(args.get("reason"))),
             actor="loom",
-            protect_status=True,
         )
     except VaultError as exc:
         return ToolResult.error(str(exc))
@@ -220,6 +237,7 @@ def tools() -> list[Tool]:
                     "path": {"type": "string", "description": "Vault-relative path, e.g. devices/ender-3.md."},
                     "offset": {"type": "integer", "description": "Zero-based first line.", "default": 0},
                     "limit": {"type": "integer", "description": "Lines to return.", "default": DEFAULT_READ_LINES},
+                    "pin": {"type": "boolean", "description": "true keeps this note in your context every turn, false drops it; omitted leaves it as is."},
                 },
                 "required": ["path"],
             },

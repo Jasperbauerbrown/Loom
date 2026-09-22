@@ -106,9 +106,11 @@ def ensure(app) -> None:  # type: ignore[no-untyped-def]
                 "INSERT OR IGNORE INTO tool_policies(tool, mode, updated_at) VALUES (?, ?, ?)",
                 (tool, mode, now),
             )
-        # Roots: vault + projects root + artifacts are always allowed.
+        # Roots: the vault and the artifacts folder are always allowed. Everything else
+        # is the person's call under Permissions (the projects-root setting that used to
+        # be seeded here is gone, 2026-09-22).
         if conn.execute("SELECT COUNT(*) FROM roots").fetchone()[0] == 0:
-            for p in (app.vault_dir, app.settings.projects_root(), app.artifacts_dir):
+            for p in (app.vault_dir, app.artifacts_dir):
                 conn.execute(
                     "INSERT OR IGNORE INTO roots(path, added_at, added_by) VALUES (?, ?, 'bootstrap')",
                     (_norm(str(p)), now),

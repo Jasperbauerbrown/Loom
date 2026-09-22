@@ -4,7 +4,8 @@ Message layout sent to the model:
 
     [0] system  slots [1]–[4]: soul + kind prompt, tools line, core blocks, procedures
                 index. Byte-stable across turns (sorted, no dates) for the prompt cache.
-    [1] system  slots [5]–[7]: now board (desk) / project note (thread), now line +
+    [1] system  slots [5]–[7]: now board (desk) / goal + status (thread), pinned notes,
+                filesystem, now line +
                 steps remaining, summary. Rebuilt every step.
     ...        slot [8]: live events replayed since `summary_cutoff`, evictions applied.
     user       slot [9]: <knowledge may_be_irrelevant="true"> pre-loaded entities, spliced
@@ -23,7 +24,7 @@ from typing import Any
 
 from .. import db, items, prompts
 from ..tools.registry import Tool
-from . import events, inbox, status
+from . import events, inbox, pins, status
 
 log = logging.getLogger(__name__)
 
@@ -168,7 +169,7 @@ def now_board(app) -> str:  # type: ignore[no-untyped-def]
         lines.append(f"- {it['kind']}: {it['title']}" + (f" — {it['body'][:120]}" if it.get("body") else ""))
     cap = int(app.settings.get("conversation.now_board_max_threads"))
     threads = app.db.execute(
-        "SELECT id, title, goal, status, scope_note FROM conversations WHERE kind='thread' "
+        "SELECT id, kind, title, goal, status FROM conversations WHERE kind='thread' "
         "AND status IN ('running','waiting_approval','waiting_input') ORDER BY updated_at DESC LIMIT ?",
         (cap,),
     ).fetchall()
@@ -187,21 +188,40 @@ def now_board(app) -> str:  # type: ignore[no-untyped-def]
     return "# Now board\n" + "\n".join(lines)
 
 
-def scope_block(app, conv: dict[str, Any]) -> str:  # type: ignore[no-untyped-def]
-    path = conv.get("scope_note")
-    if not path:
-        # A task: no project note; its status lives in its own transcript (03 §6.7).
-        try:
-            fields, _owner, _sink = status.read(app, conv)
-        except Exception:
-            fields = None
-        return f"# Scope\ngoal: {conv.get('goal') or ''}\n\n# Status\n{status.render(fields)}"
+def goal_block(app, conv: dict[str, Any]) -> str:  # type: ignore[no-untyped-def]
+    """Thread slot [5]: the goal and the status fields from its own transcript (03 §6.7).
+    Until 2026-09-22 a thread with a scope note saw that note here instead; the notes a
+    thread needs now ride in `pinned_block`, whatever their type."""
     try:
-        note = app.vault.read(path)
-        body = note.body if note.error is None else note.raw
-    except Exception as exc:  # missing note is an expected input
-        return f"# Scope note {path}\n(unreadable: {exc})\ngoal: {conv.get('goal') or ''}"
-    return f"# Scope note {path}\n{body.strip()}"
+        fields, _owner, _sink = status.read(app, conv)
+    except Exception:
+        fields = None
+    return f"# Goal\n{conv.get('goal') or ''}\n\n# Status\n{status.render(fields)}"
+
+
+def pinned_block(app, conv: dict[str, Any]) -> str:  # type: ignore[no-untyped-def]
+    """The conversation's pinned notes, each capped at `conversation.pinned_note_chars`
+    with a visible marker; empty string when nothing is pinned. A missing note says so
+    rather than vanishing, so the model can unpin or recreate it."""
+    pinned = pins.get(conv)
+    if not pinned:
+        return ""
+    cap = int(app.settings.get("conversation.pinned_note_chars"))
+    parts = ["# Pinned notes"]
+    for path in pinned:
+        try:
+            if not app.vault.exists(path):
+                parts.append(f"## {path}\n(missing)")
+                continue
+            note = app.vault.read(path)
+            body = (note.body if note.error is None else note.raw).strip()
+        except Exception as exc:  # an unreadable note must never break assembly
+            parts.append(f"## {path}\n(unreadable: {exc})")
+            continue
+        if len(body) > cap:
+            body = body[:cap] + f"\n[… {len(body) - cap} more chars; knowledge_read for the rest]"
+        parts.append(f"## {path}\n{body}")
+    return "\n\n".join(parts)
 
 
 CONTEXT_OPEN = '<context from="harness">'
@@ -209,8 +229,7 @@ CONTEXT_CLOSE = "</context>"
 
 
 def filesystem_block(app, conv: dict[str, Any]) -> str:  # type: ignore[no-untyped-def]
-    """Slot [6]: the roots this conversation may touch, the projects root, and the paths
-    that always ask.
+    """Slot [6]: the roots this conversation may touch and the paths that always ask.
     Until 2026-09-21 the model learned its roots only by failing against them (a desk
     guessed `projects/`, listed the artifacts folder, tried a Linux path, then asked for
     the home directory); mutable state belongs here, not in the soul."""
@@ -223,12 +242,6 @@ def filesystem_block(app, conv: dict[str, Any]) -> str:  # type: ignore[no-untyp
         lines.append("roots (relative paths resolve against the first): " + ", ".join(roots))
     else:
         lines.append("roots: (none — every file access will ask)")
-    # Where new project folders go (`general.projects_root`). Threads sent to a
-    # nonexistent default improvised paths, one inside this repo (2026-09-22).
-    lines.append(
-        "projects root (new project folders are created here): "
-        + str(app.settings.projects_root()).replace("\\", "/")
-    )
     protected = paths.get("protected") or []
     if protected:
         lines.append("protected (always ask): " + ", ".join(protected))
@@ -238,7 +251,11 @@ def filesystem_block(app, conv: dict[str, Any]) -> str:  # type: ignore[no-untyp
 def volatile_message(app, conv: dict[str, Any], steps_remaining: int | None = None) -> dict[str, Any]:  # type: ignore[no-untyped-def]
     """Slots [5]–[6] as one user-role block, fenced so the model can tell harness
     context from the person's words."""
-    parts = [now_board(app) if conv["kind"] == "desk" else scope_block(app, conv), filesystem_block(app, conv)]
+    parts = [now_board(app) if conv["kind"] == "desk" else goal_block(app, conv)]
+    pinned = pinned_block(app, conv)
+    if pinned:
+        parts.append(pinned)
+    parts.append(filesystem_block(app, conv))
     line = now_line(app)
     if conv["kind"] == "thread" and steps_remaining is not None:
         line += f"\n[steps remaining: {steps_remaining}]"
@@ -343,7 +360,7 @@ async def resolve_knowledge(app, conv: dict[str, Any], text: str) -> tuple[list[
     because the embedding fill-up is a model call; failures leave the slot empty."""
     if not text.strip():
         return [], ""
-    exclude = {conv["scope_note"]} if conv.get("scope_note") else set()
+    exclude = set(pins.get(conv))  # pinned notes are already in slot [5]
     try:
         paths = await app.index.resolve(text, exclude=exclude)
     except Exception:

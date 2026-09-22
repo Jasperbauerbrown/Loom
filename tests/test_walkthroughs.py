@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import asyncio
 
+from loom import conversation
 from loom.conversation import events
+from loom.conversation.tools import local_date
 from loom.models.fake import Scripted
 
 
@@ -29,7 +31,7 @@ def _kinds(app, cid):
 
 
 def _context(req):
-    """The harness context block (now board / scope note + now line) of a model request."""
+    """The harness context block (now board / goal + status, pinned notes, now line)."""
     blocks = [m["content"] for m in req.messages if m["role"] == "user" and m["content"].startswith("<context")]
     assert blocks, "no harness context block in the request"
     return blocks[-1]
@@ -128,21 +130,24 @@ async def test_walkthrough_music_bot(client, fake, tmp_path):
     app.index.rebuild()
     fake.on("classify", lambda req: Scripted(content='{"decision":"allow","reason":"in-scope test run"}'))
 
+    log_path = f"log/{local_date(app)}.md"
     fake.script(
-        # desk: resolve → spawn (judgment) → reply
+        # desk: resolve → spawn (judgment), pinning the note it just checked → reply
         Scripted(content="", tool_calls=[("conversation_create", {
             "goal": "Add a play-random command to the music bot; keep the existing queue semantics; run npm test.",
-            "scope_note": "projects/music-bot.md",
+            "notes": ["projects/music-bot.md"],
             "excerpt": "User: Add a play-random feature to the music bot.",
             "roots": [str(project_root)],
         })]),
         Scripted(content="Started a thread for the music bot; I'll say when it's ready."),
-        # thread: status (plan) → read → edit → test → status → finish
+        # thread: status (plan) → read → edit → test → status → link the walkthrough from
+        # the project note (its own knowledge work) → finish
         Scripted(content="", tool_calls=[("status_update", {"state": "planning", "goal": "play-random command", "next": "read bot.js, implement, test"})]),
         Scripted(content="", tool_calls=[("fs_read", {"path": str(project_root / "bot.js")})]),
         Scripted(content="", tool_calls=[("fs_edit", {"path": str(project_root / "bot.js"), "old": "// bot\n", "new": "// bot\nfunction playRandom() {}\n"})]),
         Scripted(content="", tool_calls=[("shell", {"command": "echo 1 passing", "cwd": str(project_root)})]),
         Scripted(content="", tool_calls=[("status_update", {"state": "working", "done": "- implemented playRandom\n- tests pass", "doing": "finishing"})]),
+        Scripted(content="", tool_calls=[("knowledge_write", {"path": "projects/music-bot.md", "op": "append", "content": f"Walkthroughs: [[{log_path.removesuffix('.md')}#Add a play-random command]] (play-random, {local_date(app)})."})]),
         Scripted(content="", tool_calls=[("conversation_finish", {
             "summary": "play-random implemented in bot.js; npm test passes.",
             "walkthrough": "Changed bot.js (added playRandom). Verified: npm test → 1 passing on 2026-09-20.",
@@ -157,25 +162,28 @@ async def test_walkthrough_music_bot(client, fake, tmp_path):
     threads = (await client.get("/api/conversations?kind=thread")).json()
     assert len(threads) == 1
     t = threads[0]
-    assert t["status"] == "done" and t["scope_note"] == "projects/music-bot.md" and t["parent_id"] == desk
+    assert t["status"] == "done" and t["pinned_notes"] == ["projects/music-bot.md"] and t["parent_id"] == desk
     assert (project_root / "bot.js").read_text(encoding="utf-8").startswith("// bot\nfunction playRandom")
     # thread transcript: the shell call was classified (allowed) and its result recorded
     kinds = _kinds(app, t["id"])
-    assert kinds.count("tool_call") == 6 and kinds.count("tool_result") == 6
-    # status block and walkthrough in the vault
-    fields, owner = app.vault.read_status("projects/music-bot.md")
-    assert fields["state"] == "done" and owner == t["id"]
-    walkthroughs = [p for p in app.vault.list("projects/music-bot/") if "walkthrough-" in p]
-    assert len(walkthroughs) == 1
-    assert "[[projects/music-bot/walkthrough-" in app.vault.read("projects/music-bot.md").body
+    assert kinds.count("tool_call") == 7 and kinds.count("tool_result") == 7
+    # status in the thread's transcript; the walkthrough in the daily log; the project
+    # note links to it because the thread wrote the link, not because Loom did
+    fields, owner, source = conversation.status_fields(app, app.conversation(t["id"]))
+    assert source == "transcript" and fields["state"] == "done" and owner == t["id"]
+    assert t["walkthrough"] == log_path
+    assert f"## {t['title']} ({t['id']})" in app.vault.read(log_path).body and "Changed bot.js" in app.vault.read(log_path).body
+    assert f"[[{log_path.removesuffix('.md')}#" in app.vault.read("projects/music-bot.md").body
+    assert not app.vault.list("projects/music-bot/")
     # the desk heard about it and answered; the now board carries the item
     desk_kinds = _kinds(app, desk)
     assert desk_kinds[-2:] == ["user", "assistant"]
     items_rows = (await client.get("/api/items")).json()
     assert any(i["kind"] == "thread_event" and "finished" in i["title"] for i in items_rows)
-    # thread context: scope note with status block in slot [5] and the budget line
+    # thread context: goal + status, the pinned note and the budget line in slot [5]
     thread_call = [c for c in fake.calls if c.conversation_id == t["id"] and c.purpose == "turn"][0]
-    assert "projects/music-bot.md" in _context(thread_call)
+    assert "# Goal\nAdd a play-random command" in _context(thread_call)
+    assert "# Pinned notes\n\n## projects/music-bot.md\nNode Discord music bot." in _context(thread_call)
     assert "[steps remaining:" in _context(thread_call)
     # thread steps ran at background priority, desk turns at interactive priority
     prios = {c.conversation_id: p for c, p in zip(fake.calls, fake.priorities) if c.purpose == "turn"}
@@ -189,8 +197,9 @@ async def test_walkthrough_3d_map(client, fake):
     app = client.loom
     desk = app.desk_id()
     fake.script(
-        # desk: nothing resolves; it creates the project note BEFORE spawning (state written
-        # before acting on it), with the aliases people will use for it
+        # desk: nothing resolves; it judges this a project and writes the note BEFORE
+        # spawning (the soul rule, not the harness), with the aliases people will use for
+        # it, then pins it into the thread
         Scripted(content="", tool_calls=[("knowledge_write", {
             "path": "projects/3d-map-viz.md", "op": "create",
             "content": "Desktop program visualising coordinates and datapoints on a 3D map. Input: CSV. Created 2026-09-20.",
@@ -198,7 +207,7 @@ async def test_walkthrough_3d_map(client, fake):
         })]),
         Scripted(content="", tool_calls=[("conversation_create", {
             "goal": "Build a desktop program that visualises coordinates and datapoints on a 3D map.",
-            "scope_note": "projects/3d-map-viz.md",
+            "notes": ["projects/3d-map-viz.md"],
             "excerpt": "User: I need a program to visualise coordinates and datapoints on a 3D map. Assume desktop, CSV input.",
         })]),
         Scripted(content="Started; assuming desktop + CSV input. Tell me if that's wrong."),
@@ -213,19 +222,19 @@ async def test_walkthrough_3d_map(client, fake):
     await _settle(app)
     t = (await client.get("/api/conversations?kind=thread")).json()[0]
     assert t["status"] == "waiting_input"
-    assert t["scope_note"] and app.vault.exists(t["scope_note"])
+    assert t["pinned_notes"] == ["projects/3d-map-viz.md"] and app.vault.exists("projects/3d-map-viz.md")
     assert t["status_line"] == "scaffolding the project"
 
-    # Meanwhile the user asks the desk for the state: answered from the note, no thread read.
+    # Meanwhile the user asks the desk for the state: answered from the now board (the
+    # thread's own status) and the project note resolved by alias; no thread read.
     fake.script(Scripted(content="The 3D map project is scaffolding; next: choose renderer, CSV loader. It is waiting on a renderer decision."))
     r = await client.post(f"/api/conversations/{desk}/messages", json={"content": "What's the state of the 3D map project?"})
     await _settle(app)
     last = [c for c in fake.calls if c.purpose == "turn"][-1]
     knowledge_msg = [m for m in last.messages if m["role"] == "user" and "<knowledge" in m["content"]]
     assert knowledge_msg, "the project note was resolved by alias and pre-loaded"
-    assert "scaffolding the project" in knowledge_msg[0]["content"]
-    assert "status:begin" in knowledge_msg[0]["content"]
-    assert "3D map" in _context(last)  # now board lists the waiting thread
+    assert "Desktop program visualising coordinates" in knowledge_msg[0]["content"]
+    assert "3D map" in _context(last) and "scaffolding the project" in _context(last)  # now board: the waiting thread and its status
     assert not any(c.conversation_id == t["id"] for c in fake.calls[-1:])  # no thread turn was run
 
     # The person answers on the desk; the desk forwards into the thread's inbox; the thread resumes.
@@ -240,5 +249,6 @@ async def test_walkthrough_3d_map(client, fake):
     await _settle(app)
     thread_users = events.list_events(app, t["id"], kinds=["user"])
     assert any("three.js in a webview" in e["content"] and '[from desk' in e["content"] for e in thread_users)
-    fields, _ = app.vault.read_status(t["scope_note"])
+    fields, _owner, _source = conversation.status_fields(app, app.conversation(t["id"]))
     assert fields["doing"] == "wiring three.js renderer"
+    assert app.vault.read("projects/3d-map-viz.md").body.strip().startswith("Desktop program")  # never written by the harness

@@ -529,7 +529,7 @@ def _finish_status(app, state: TurnState) -> None:  # type: ignore[no-untyped-de
     # thread
     if state.finished is not None:
         final = "done" if state.finished.get("state", "done") == "done" else "failed"
-        events.set_status(app, state.cid, final, finished_at=now)
+        events.set_status(app, state.cid, final, finished_at=now, walkthrough=state.finished.get("walkthrough_path"))
         _notify_parent(app, state, final, state.finished.get("summary") or "")
     elif state.failed:
         events.set_status(app, state.cid, "failed")

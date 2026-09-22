@@ -1,5 +1,6 @@
 """Vault endpoints (03 §12.1): the browser, editor, search, history and graph the UI
-renders, plus the status block a thread's plan panel writes through.
+renders. A thread's status lives in its transcript (`/conversations/{id}/status`), not
+in a note (2026-09-22).
 
 Everything here goes through `app.vault` / `app.index`, so the UI and the model see the
 same vault under the same rules (charter §2.2). Mutations emit `knowledge.changed` —
@@ -16,7 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from ...app import App
 from ...knowledge.vault import VaultError
@@ -42,10 +43,7 @@ class RevertBody(BaseModel):
     path: str | None = None
 
 
-class StatusBody(BaseModel):
-    path: str
-    fields: dict[str, Any] = Field(default_factory=dict)
-    owner: str | None = None
+
 
 
 # -- browsing -----------------------------------------------------------------------
@@ -151,18 +149,3 @@ async def procedures(app: App = Depends(get_app)) -> list[dict[str, Any]]:
 @router.post("/vault/procedures/{name}/approve")
 async def approve_procedure(name: str, app: App = Depends(get_app)) -> dict[str, Any]:
     return _guard(app.vault.approve_procedure, name)
-
-
-# -- status block (the thread plan panel) -------------------------------------------
-@router.get("/vault/status")
-async def get_status(path: str, app: App = Depends(get_app)) -> dict[str, Any]:
-    fields, owner = _guard(app.vault.read_status, path)
-    return {"path": _guard(app.vault.norm, path), "fields": fields or {}, "owner": owner, "present": fields is not None}
-
-
-@router.put("/vault/status")
-async def put_status(body: StatusBody, app: App = Depends(get_app)) -> dict[str, Any]:
-    _fields, owner = _guard(app.vault.read_status, body.path)
-    note = _guard(app.vault.write_status, body.path, body.owner or owner or "", body.fields)
-    fields, new_owner = _guard(app.vault.read_status, note.path)
-    return {"path": note.path, "fields": fields or {}, "owner": new_owner, "present": fields is not None}

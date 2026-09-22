@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from ... import conversation as conv_pkg
 from ... import db
 from ...artifacts import IMAGE_MIMES, sniff_image
-from ...conversation import events, inbox, status
+from ...conversation import events, inbox, pins, status
 from ...conversation.context import occupancy
 from ..deps import get_app
 
@@ -70,8 +70,7 @@ async def list_conversations(
 class CreateThread(BaseModel):
     kind: str = "thread"
     goal: str
-    scope_note: str | None = None
-    project_name: str | None = None
+    notes: list[str] | None = None  # vault paths pinned into the thread from its first turn
     roots: list[str] | None = None
     preset: str | None = None
     title: str | None = None
@@ -87,7 +86,7 @@ async def create_conversation(body: CreateThread, app=Depends(get_app)) -> dict[
         raise HTTPException(409, "no model configured for the worker role — open Settings › Models")
     try:
         row = conv_pkg.create_thread(
-            app, goal=body.goal, parent_id=body.parent_id, scope_note=body.scope_note, project_name=body.project_name,
+            app, goal=body.goal, parent_id=body.parent_id, notes=body.notes,
             roots=body.roots, preset=body.preset, title=body.title, excerpt=body.excerpt, created_by="user",
         )
     except conv_pkg.ThreadError as exc:
@@ -105,6 +104,7 @@ class PatchConversation(BaseModel):
     preset: str | None = None
     step_budget: int | None = None
     clear_preset: bool = False
+    pinned_notes: list[str] | None = None  # the whole list; a missing note is a 400
 
 
 @router.patch("/conversations/{conversation_id}")
@@ -128,6 +128,11 @@ async def patch_conversation(conversation_id: str, body: PatchConversation, app=
         fields["updated_at"] = db.now_iso()
         events.update(app, conversation_id, **fields)
         app.bus.emit("conversation.updated", events.public_row(app, conversation_id), conversation_id)
+    if body.pinned_notes is not None:
+        try:
+            pins.replace(app, conversation_id, body.pinned_notes)
+        except pins.PinError as exc:
+            raise HTTPException(400, str(exc))
     return _row(app, conversation_id)
 
 
@@ -160,15 +165,15 @@ class StatusBody(BaseModel):
 
 @router.get("/conversations/{conversation_id}/status")
 async def get_status(conversation_id: str, app=Depends(get_app)) -> dict[str, Any]:
-    """The thread's status wherever it lives: the scope note's block (`source: note`) or
-    its transcript's status events (`source: transcript`, a task)."""
+    """The thread's status: the fields of its latest `status` event (`source:
+    transcript`), or `none` for the desk."""
     return _status_payload(app, _row(app, conversation_id))
 
 
 @router.put("/conversations/{conversation_id}/status")
 async def put_status(conversation_id: str, body: StatusBody, app=Depends(get_app)) -> dict[str, Any]:
-    """The person edits the plan through the same writer the thread uses; a note block
-    keeps its owner, a transcript event records `user` as its author."""
+    """The person edits the plan through the same writer the thread uses; the status
+    event records `user` as its author."""
     row = _row(app, conversation_id)
     if row["kind"] != "thread":
         raise HTTPException(400, "the desk publishes no status")

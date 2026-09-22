@@ -261,16 +261,13 @@ class Vault:
         frontmatter: dict[str, Any] | None = None,
         reason: str | None = None,
         actor: str = "loom",
-        protect_status: bool = False,
     ) -> Note:
         """The one write path for notes (03 §4.3, §8.4).
 
         `create` refuses an existing note; `append` adds a blank line then the content;
         `replace` swaps a unique `old` snippet; `rethink` rewrites the body and requires
-        a `reason`, which lands on the now board. Relative dates are refused. With
-        `protect_status` (the knowledge_write tool) the note's status block must come out
-        byte-identical and none may be introduced: `status_update` is its one writer
-        (03 §4.3). The write is atomic, committed, indexed and announced."""
+        a `reason`, which lands on the now board. Relative dates are refused. The write
+        is atomic, committed, indexed and announced."""
         if op not in OPS:
             raise VaultError(f"unknown op {op!r}; use one of {', '.join(OPS)}")
         target = self.resolve(path)
@@ -311,16 +308,6 @@ class Vault:
             body = old_body.replace(old, content, 1)
         else:  # rethink
             body = content
-
-        if protect_status and notes.status_blocks(body) != notes.status_blocks(old_body):
-            # Hand-written blocks carried an artifact id as owner into two live notes
-            # (2026-09-22); the tool edits around the block or not at all.
-            if not notes.status_blocks(old_body):
-                raise VaultError(f"{rel} gets its status block from status_update; do not write one by hand")
-            raise VaultError(
-                f"the status block in {rel} is written by status_update, not knowledge_write; "
-                "keep it byte-identical and edit around it"
-            )
 
         offender = notes.has_relative_dates(content)
         if offender:
@@ -437,29 +424,6 @@ class Vault:
             self.app.index.update([rel])
         self.app.bus.emit("knowledge.changed", {"paths": [rel]})
 
-    # -- status block -----------------------------------------------------------
-    def read_status(self, path: str) -> tuple[dict[str, str] | None, str | None]:
-        return notes.parse_status(self.read(path).body)
-
-    def write_status(self, path: str, owner: str, fields: dict[str, Any]) -> Note:
-        """Merge `fields` into the note's status block and stamp `updated`. The block is
-        the thread's plan (charter §5.3); the user may edit it in place between turns."""
-        note = self.read(path)
-        current, existing_owner = notes.parse_status(note.body)
-        merged: dict[str, Any] = dict(current or {})
-        for key, value in (fields or {}).items():
-            if value is None:
-                merged.pop(key, None)
-            else:
-                merged[key] = value
-        merged["updated"] = db.now_iso()
-        body = notes.replace_status(note.body, owner or existing_owner or "", merged)
-        fm = dict(note.frontmatter)
-        self._stamp(note.path, fm, "loom")
-        self._atomic_write(self.resolve(note.path), notes.emit(fm, body))
-        self._after_write(note.path, f"loom: status {note.path}")
-        return self.read(note.path)
-
     # -- procedures (Agent Skills; 03 §4.3) -------------------------------------
     def procedure_path(self, name: str) -> str:
         return f"procedures/{notes.slug(name)}/SKILL.md"
@@ -526,23 +490,6 @@ class Vault:
         return self.read(row["path"]).body.strip()
 
     # -- entity helpers ---------------------------------------------------------
-    def ensure_project_note(self, name: str, root: str | None = None, aliases: list[str] | None = None) -> str:
-        """The project note a thread scopes to (03 §6.7). Idempotent: an existing note
-        with this slug is returned untouched. `aliases` are the names people will use
-        for it ("3d map", "map project"); the project name is always one."""
-        stem = notes.slug(name)
-        path = f"projects/{stem}.md"
-        if self.exists(path):
-            return path
-        folder = root or str(self.app.settings.projects_root() / stem)
-        text = self.template("project", title=name, alias=name.strip().lower(), root=str(folder).replace("\\", "/"))
-        parsed = notes.parse(text)
-        fm = dict(parsed.frontmatter)
-        fm["aliases"] = clean_aliases([name, *(aliases or [])])
-        fm["root"] = str(folder).replace("\\", "/")
-        self.write(path, parsed.body, op="create", frontmatter=fm, actor="loom")
-        return path
-
     def ensure_note(self, path: str, template: str, **values: Any) -> str:
         """Create a note from a template if it is missing; return its path."""
         if self.exists(path):

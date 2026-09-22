@@ -122,31 +122,6 @@ def test_delete(app):
     assert app.vault.git.log("topics/x.md")[0]["message"] == "user: delete topics/x.md"
 
 
-def test_status_block_roundtrip(app):
-    path = app.vault.ensure_project_note("Music bot")
-    assert path == "projects/music-bot.md"
-    app.vault.write_status(path, "01J8", {"state": "working", "goal": "ship it", "done": "a\nb"})
-    fields, owner = app.vault.read_status(path)
-    assert owner == "01J8"
-    assert fields["state"] == "working" and fields["done"] == "a\nb"
-    assert fields["updated"].endswith("Z")
-
-    app.vault.write_status(path, "01J8", {"state": "done"})
-    fields, _ = app.vault.read_status(path)
-    assert fields["state"] == "done" and fields["goal"] == "ship it"  # merged, not replaced
-
-
-def test_ensure_project_note_is_idempotent_and_sets_root(app):
-    path = app.vault.ensure_project_note("Music bot")
-    note = app.vault.read(path)
-    assert note.aliases == ["music bot"]
-    assert note.frontmatter["root"].endswith("/music-bot")
-    assert app.vault.ensure_project_note("Music bot") == path
-
-    other = app.vault.ensure_project_note("3D map", root="D:/work/3d-map")
-    assert app.vault.read(other).frontmatter["root"] == "D:/work/3d-map"
-
-
 def test_procedures_approval_flow(app):
     # A procedure Loom writes itself is approved at write time.
     app.vault.write(
@@ -315,40 +290,6 @@ def test_write_folds_a_frontmatter_block_found_in_the_body(app):
     assert note.title == "All printers" and note.body.strip() == "# Printers"
 
 
-async def test_knowledge_write_leaves_the_status_block_to_status_update(app):
-    """One writer for the block (03 §4.3): two live notes ended up with hand-written
-    blocks carrying an artifact id as owner (2026-09-22). The tool refuses to add or
-    alter a block, whatever the op, and edits around it freely."""
-    ctx = _ctx(app)
-    write = app.tools.get("knowledge_write").handler
-    block = "<!-- status:begin owner=01J8 -->\nstate: working\n<!-- status:end -->"
-
-    result = await write(ctx, {"path": "projects/p.md", "op": "create", "content": f"About p.\n\n## Status\n{block}"})
-    assert not result.ok and "status_update" in result.content and not app.vault.exists("projects/p.md")
-
-    assert (await write(ctx, {"path": "projects/p.md", "op": "create", "content": "About p."})).ok
-    app.vault.write_status("projects/p.md", "01J8", {"state": "working", "goal": "ship"})
-    before = app.vault.read("projects/p.md").body
-    status_before = app.vault.read_status("projects/p.md")
-
-    refused = [
-        {"op": "append", "content": block},
-        {"op": "replace", "old": "state: working", "content": "state: done"},
-        {"op": "rethink", "content": "Rewritten without the block.", "reason": "test"},
-    ]
-    for args in refused:
-        r = await write(ctx, {"path": "projects/p.md", **args})
-        assert not r.ok and "status_update" in r.content, args
-    assert app.vault.read("projects/p.md").body == before
-
-    r = await write(ctx, {"path": "projects/p.md", "op": "append", "content": "Decided: use SQLite."})
-    assert r.ok and app.vault.read_status("projects/p.md") == status_before
-    kept = app.vault.read("projects/p.md").body
-    r = await write(ctx, {"path": "projects/p.md", "op": "rethink", "content": kept.replace("About p.", "About project p."), "reason": "test"})
-    assert r.ok and app.vault.read_status("projects/p.md") == status_before
-    assert "About project p." in app.vault.read("projects/p.md").body
-
-
 async def test_knowledge_read_over_the_cap_returns_one_page_and_is_never_spilled(app):
     """knowledge_read pages on `conversation.tool_output_cap` and is `paged`: a fixed 8000
     here was the off-by-footer trap that looped artifact_recall (2026-09-22). Pages end
@@ -380,3 +321,44 @@ async def test_knowledge_read_over_the_cap_returns_one_page_and_is_never_spilled
     seen = page.splitlines() + second.content.rsplit("\n", 1)[0].splitlines()
     body_lines = [l for l in seen if l.startswith("line ")]
     assert [int(l.split()[1]) for l in body_lines] == list(range(len(body_lines)))
+
+
+async def test_knowledge_read_pin_and_unpin(app):
+    """Pinning is `knowledge_read(pin=…)` (03 §6.7, 2026-09-22): the note joins the
+    conversation's pinned list and is shown in its context every turn; `pin=false`
+    drops it. Any conversation kind may pin. A failed read pins nothing, and the handler
+    re-reads the row so two pins in one turn both stick."""
+    from loom.conversation import pins
+    from loom.tools import dispatch
+    from loom.tools.registry import ToolContext
+
+    app.vault.write("projects/bot.md", "A music bot.", op="create")
+    app.vault.write("devices/pi.md", "A Pi.", op="create")
+    tool = app.tools.get("knowledge_read")
+    desk = app.desk_id()
+
+    def ctx() -> ToolContext:
+        return ToolContext(app=app, conversation=app.conversation(desk), call_id="c1", event_id=1)
+
+    def pinned() -> list[str]:
+        return pins.get(app.conversation(desk))
+
+    r = await dispatch.execute(app, ctx(), tool, {"path": "projects/bot.md"})
+    assert r.ok and "[pinned" not in r.content and pinned() == []
+
+    r = await dispatch.execute(app, ctx(), tool, {"path": "projects/bot.md", "pin": True})
+    assert r.ok and r.content.rstrip().endswith("to drop it]") and pinned() == ["projects/bot.md"]
+
+    stale = ctx()  # one row object for two calls: the second pin must not drop the first
+    r = await dispatch.execute(app, stale, tool, {"path": "projects/bot.md", "pin": True})
+    assert r.ok and pinned() == ["projects/bot.md"]
+    r = await dispatch.execute(app, stale, tool, {"path": "devices/pi.md", "pin": True})
+    assert r.ok and pinned() == ["projects/bot.md", "devices/pi.md"]
+
+    r = await dispatch.execute(app, ctx(), tool, {"path": "projects/bot.md", "pin": False})
+    assert r.ok and r.content.rstrip().endswith("[unpinned]") and pinned() == ["devices/pi.md"]
+    r = await dispatch.execute(app, ctx(), tool, {"path": "projects/bot.md", "pin": False})
+    assert r.ok and pinned() == ["devices/pi.md"]  # not pinned: a no-op, not an error
+
+    r = await dispatch.execute(app, ctx(), tool, {"path": "projects/missing.md", "pin": True})
+    assert not r.ok and pinned() == ["devices/pi.md"]

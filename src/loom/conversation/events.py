@@ -103,4 +103,5 @@ def public_row(app, conversation_id: str) -> dict[str, Any] | None:  # type: ign
     if row is None:
         return None
     row["roots"] = db.loads(row.get("roots"), [])
+    row["pinned_notes"] = db.loads(row.get("pinned_notes"), [])
     return row

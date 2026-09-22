@@ -141,7 +141,6 @@ class SetupRequest(BaseModel):
     provider: str | None = None
     embedding_model: str | None = None
     timezone: str | None = None
-    projects_root: str | None = None
     openrouter: OpenRouter | None = None
 
 
@@ -164,7 +163,6 @@ async def setup_state(app: App = Depends(get_app)) -> dict[str, Any]:
         "needed": not app.has_model("desk"),
         "providers_detected": detected,
         "timezone": app.settings.get("general.timezone") or detect_timezone(),
-        "projects_root": str(app.settings.projects_root()),
         "embedding_available": embedding_available or bool(_role_preset(app, "embedding")),
     }
 
@@ -216,8 +214,6 @@ async def run_setup(body: SetupRequest, app: App = Depends(get_app)) -> dict[str
         patch: dict[str, Any] = {}
         if body.timezone:
             patch["general.timezone"] = body.timezone
-        if body.projects_root:
-            patch["general.projects_root"] = body.projects_root
         if body.embedding_model:
             patch["models.embeddings_enabled"] = True
         if patch:

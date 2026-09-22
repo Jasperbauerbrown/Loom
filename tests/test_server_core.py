@@ -198,7 +198,7 @@ async def test_setup_state_reports_detected_providers(client):
     assert body["providers_detected"][0]["name"] == "local-ollama"
     assert "nomic-embed-text" in body["providers_detected"][0]["models"]
     assert body["embedding_available"] is True
-    assert body["projects_root"]
+    assert "projects_root" not in body  # the setting is gone (2026-09-22)
 
 
 async def test_setup_creates_preset_roles_settings_and_the_first_item(client):
@@ -215,7 +215,6 @@ async def test_setup_creates_preset_roles_settings_and_the_first_item(client):
             "model": "qwen3.6:35b",
             "embedding_model": "nomic-embed-text:latest",
             "timezone": "America/Denver",
-            "projects_root": "C:/Work",
         },
     )
     assert response.status_code == 200
@@ -228,7 +227,6 @@ async def test_setup_creates_preset_roles_settings_and_the_first_item(client):
     params = db.loads(preset["params"], {})
     assert params["max_tokens"] == 4096 and params["num_ctx"] == 32768 and params["reasoning"] == "on"
     assert app.settings.get("general.timezone") == "America/Denver"
-    assert app.settings.get("general.projects_root") == "C:/Work"
     assert app.has_model("desk")
 
     kinds = [e["type"] for e in events]

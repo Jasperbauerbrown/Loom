@@ -1,11 +1,10 @@
-"""Thread status: one reader, one writer, two sinks (03 §6.7).
+"""Thread status: one reader, one writer, one sink (03 §6.7, decided 2026-09-22).
 
-A thread with a scope note keeps its status in that note's delimited block — the plan
-the person can edit in place. A thread without one (a *task*) keeps it in its own
-transcript as `status` events, which the model never replays and which every surface
-reads through the same call. The nullable `scope_note` column picks the sink; nothing
-else knows the difference, so a task that grows into a project is a field set, not a
-migration (decided 2026-09-21).
+A thread's status lives in its own transcript as `status` events, which the model never
+replays and which every surface — the now board, the status line, the thread panel —
+reads through the same call. Until 2026-09-22 a thread with a scope note kept its status
+in that note's delimited block instead; projects are now ordinary knowledge and threads
+pin the notes they need (`pins.py`), so the note sink and its `owner=` marker are gone.
 """
 
 from __future__ import annotations
@@ -21,18 +20,10 @@ LINE_MAX = 200
 
 
 def read(app, conv: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None, str]:  # type: ignore[no-untyped-def]
-    """`(fields, owner, source)`. `source` names the sink: `note` for a thread with a
-    scope note, `transcript` for a task, `none` for the desk or an unreadable note.
-    `fields` is None when nothing has been written yet."""
+    """`(fields, owner, source)`. `source` is `transcript` for a thread and `none` for the
+    desk, which publishes no status. `fields` is None when nothing has been written yet."""
     if conv.get("kind") == "desk":
         return None, None, "none"
-    scope = conv.get("scope_note")
-    if scope:
-        try:
-            fields, owner = app.vault.read_status(scope)
-        except Exception:
-            return None, None, "none"
-        return fields, owner, "note"
     last = events.last(app, conv["id"], 1, kinds=["status"])
     if not last:
         return None, None, "transcript"
@@ -44,15 +35,10 @@ def read(app, conv: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None, 
 
 
 def write(app, conv: dict[str, Any], fields: dict[str, Any], owner: str | None = None) -> str:  # type: ignore[no-untyped-def]
-    """Merge `fields` into the thread's status (a None value drops the key) and return the
-    sink written. The note sink never changes hands: an existing owner stays; `owner`
-    only names a block that has none. The transcript sink records who wrote each event."""
+    """Merge `fields` into the thread's status (a None value drops the key), append the
+    `status` event and return the sink name. The event records who wrote it: the thread
+    itself, the safety net on its behalf, or `user` from the thread panel."""
     cid = conv["id"]
-    scope = conv.get("scope_note")
-    if scope:
-        _current, existing_owner = app.vault.read_status(scope)
-        app.vault.write_status(scope, existing_owner or owner or cid, fields)
-        return "note"
     previous, _owner, _source = read(app, conv)
     merged: dict[str, Any] = dict(previous or {})
     for key, value in (fields or {}).items():
@@ -82,7 +68,7 @@ def line(fields: dict[str, Any] | None) -> str:
 
 
 def render(fields: dict[str, Any] | None) -> str:
-    """The fields as the model sees them in slot [5] when there is no note block."""
+    """The fields as the model sees them in slot [5]."""
     if not fields:
         return "(no status yet)"
     return "\n".join(f"{key}: {value}" for key, value in fields.items() if value not in (None, ""))

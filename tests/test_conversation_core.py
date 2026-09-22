@@ -8,7 +8,8 @@ import json
 import pytest
 
 from loom import conversation, db
-from loom.conversation import compaction, context, events, inbox, runner
+from loom.conversation import compaction, context, events, inbox, pins, runner
+from loom.conversation.tools import local_date
 from loom.models.fake import Scripted
 from loom.tools import approvals
 
@@ -24,7 +25,7 @@ def _collect(app):
 
 
 def _ctx_block(req):
-    """The harness context block (now board / scope note, now line, steps) of a request."""
+    """The harness context block (now board / goal + status, pinned notes, now line, steps)."""
     blocks = [m["content"] for m in req.messages if m["role"] == "user" and m["content"].startswith("<context")]
     assert blocks, "no harness context block in the request"
     return blocks[-1]
@@ -143,11 +144,15 @@ async def _settle(app):
 
 async def test_thread_spawn_status_finish_notifies_parent(app, fake):
     desk = app.desk_id()
+    # The project note is knowledge the desk already has; it pins it into the thread it
+    # spawns (03 §6.7, decided 2026-09-22). Loom itself never writes a project note.
+    app.vault.write("projects/music-bot.md", "Node Discord music bot. Run: npm start.", op="create",
+                    frontmatter={"title": "Music bot", "aliases": ["music bot"], "type": "project"})
     # The whole flow is deterministic, so script it in order: the desk spawns a thread
     # (2 calls); the thread wakes automatically and runs status_update then finish
     # (2 calls); the finish event wakes the desk again (1 call).
     fake.script(
-        Scripted(content="", tool_calls=[("conversation_create", {"goal": "Add play-random to the music bot", "project_name": "music bot", "excerpt": "user wants random playback"})]),
+        Scripted(content="", tool_calls=[("conversation_create", {"goal": "Add play-random to the music bot", "notes": ["projects/music-bot.md"], "excerpt": "user wants random playback"})]),
         Scripted(content="Started a thread."),
         Scripted(content="", tool_calls=[("status_update", {"state": "working", "doing": "reading the code", "next": "implement"})]),
         Scripted(content="", tool_calls=[("conversation_finish", {"summary": "Added play-random.", "walkthrough": "Changed bot.js; tests pass (artifact none)."})]),
@@ -158,14 +163,16 @@ async def test_thread_spawn_status_finish_notifies_parent(app, fake):
     threads = app.db.execute("SELECT * FROM conversations WHERE kind='thread'").fetchall()
     assert len(threads) == 1
     t = dict(threads[0])
-    assert t["parent_id"] == desk and t["depth"] == 1 and t["scope_note"].startswith("projects/")
-    assert app.vault.exists(t["scope_note"])
+    assert t["parent_id"] == desk and t["depth"] == 1 and pins.get(t) == ["projects/music-bot.md"]
     await _settle(app)
     t2 = app.conversation(t["id"])
     assert t2["status"] == "done"
-    fields, owner = app.vault.read_status(t["scope_note"])
-    assert fields["state"] == "done" and owner == t["id"]
-    assert any(p.startswith(f"projects/{t['scope_note'].rsplit('/',1)[-1][:-3]}/walkthrough-") for p in app.vault.list("projects/"))
+    fields, owner, source = conversation.status_fields(app, t2)
+    assert source == "transcript" and fields["state"] == "done" and owner == t["id"]
+    # the walkthrough is a section of the daily log, and the row remembers where
+    log_path = f"log/{local_date(app)}.md"
+    assert t2["walkthrough"] == log_path and f"## {t['title']} ({t['id']})" in app.vault.read(log_path).body
+    assert app.vault.read("projects/music-bot.md").body.strip() == "Node Discord music bot. Run: npm start."  # untouched by the harness
     # parent got an inbox row (already consumed by its wake) + an item, and answered
     rows = app.db.execute("SELECT * FROM inbox WHERE conversation_id=? AND source=?", (desk, f"conversation:{t['id']}")).fetchall()
     assert rows and rows[0]["delivered_at"]
@@ -173,20 +180,23 @@ async def test_thread_spawn_status_finish_notifies_parent(app, fake):
     assert len(items_rows) == 1
     desk_kinds = [e["kind"] for e in _events(app, desk)]
     assert desk_kinds[-2:] == ["user", "assistant"] and "[finished]" in _events(app, desk, ["user"])[-1]["content"]
-    # scope note is slot [5] of the thread's context and the budget line is present
+    # goal + status and the pinned note are slot [5] of the thread's context; budget line present
     thread_req = [c for c in fake.calls if c.conversation_id == t["id"] and c.purpose == "turn"][0]
-    assert "Scope note" in _ctx_block(thread_req) and "[steps remaining:" in _ctx_block(thread_req)
+    block = _ctx_block(thread_req)
+    assert "# Goal\nAdd play-random to the music bot" in block and "# Status\n(no status yet)" in block
+    assert "# Pinned notes\n\n## projects/music-bot.md\nNode Discord music bot." in block
+    assert "[steps remaining:" in block
 
 
 async def test_thread_without_status_write_gets_safety_net(app, fake):
     desk = app.desk_id()
-    row = conversation.create_thread(app, goal="write docs", project_name="docs proj", created_by="user")
+    row = conversation.create_thread(app, goal="write docs", created_by="user")
     fake.on("status", lambda req: Scripted(content='{"state":"waiting","goal":"write docs","done":"","doing":"","next":"answer question","blockers":""}'))
     fake.script(Scripted(content="Which format do you want?"))
     await _run(app, row["id"])
     conv = app.conversation(row["id"])
     assert conv["status"] == "waiting_input"
-    fields, _ = app.vault.read_status(row["scope_note"])
+    fields, _owner, _source = conversation.status_fields(app, conv)
     assert fields["state"] == "waiting" and fields["next"] == "answer question"
     # parent inbox has the question
     rows = app.db.execute("SELECT content FROM inbox WHERE conversation_id=? AND delivered_at IS NULL", (desk,)).fetchall()
@@ -201,7 +211,7 @@ async def test_thread_only_tools_are_not_offered_to_the_desk(app, fake):
     """`Tool.kinds`: the desk called conversation_finish twice in the game test and was
     told "the desk never finishes"; it never sees the tool now, while a thread does."""
     desk = app.desk_id()
-    row = conversation.create_thread(app, goal="write docs", project_name="docs proj", created_by="user")
+    row = conversation.create_thread(app, goal="write docs", created_by="user")
     fake.on("status", lambda req: Scripted(content='{"state":"working","goal":"write docs","done":"","doing":"","next":"","blockers":""}'))
     fake.script(Scripted(content="ok"), Scripted(content="ok"))
     conversation.post(app, desk, "hello")
@@ -219,18 +229,21 @@ async def test_thread_only_tools_are_not_offered_to_the_desk(app, fake):
     assert "conversation_create" in names(desk_req) and "conversation_create" in names(thread_req)
 
 
-def test_sub_thread_cannot_share_its_parents_scope_note(app):
-    """Sub-threads are allowed down to max_thread_depth, each on its own note or as a
-    task; two threads on one note meant two writers on one status block (2026-09-22)."""
-    parent = conversation.create_thread(app, goal="build the game", project_name="tower game", created_by="user")
-    with pytest.raises(conversation.ThreadError, match="cannot share its parent's scope note"):
-        conversation.create_thread(app, goal="do the map", parent_id=parent["id"], scope_note=parent["scope_note"], created_by="user")
-    with pytest.raises(conversation.ThreadError, match="cannot share its parent's scope note"):
-        conversation.create_thread(app, goal="do the map", parent_id=parent["id"], project_name="tower game", created_by="user")
-    sub = conversation.create_thread(app, goal="do the map", parent_id=parent["id"], project_name="tower game map", created_by="user")
-    assert sub["depth"] == 2 and sub["scope_note"] != parent["scope_note"] and app.vault.exists(sub["scope_note"])
-    task = conversation.create_thread(app, goal="check the tests", parent_id=parent["id"], created_by="user")
-    assert task["scope_note"] is None and task["depth"] == 2
+def test_spawn_pins_notes_and_refuses_a_missing_one(app):
+    """`notes` are pinned from the first turn (deduped, vault-relative); a pin to nothing
+    refuses the spawn. Sub-threads down to max_thread_depth pin whatever they need — two
+    threads may pin the same note, since status no longer lives in it (2026-09-22)."""
+    app.vault.write("projects/tower-game.md", "A tower defense game.", op="create", frontmatter={"type": "project"})
+    app.vault.write("devices/gpu.md", "The GPU.", op="create", frontmatter={"type": "device"})
+    parent = conversation.create_thread(app, goal="build the game", notes=["projects/tower-game.md", "projects/tower-game.md", "devices/gpu.md"], created_by="user")
+    assert parent["pinned_notes"] == ["projects/tower-game.md", "devices/gpu.md"]
+    with pytest.raises(conversation.ThreadError, match="no such note: projects/nope.md"):
+        conversation.create_thread(app, goal="do the map", parent_id=parent["id"], notes=["projects/nope.md"], created_by="user")
+    assert app.db.execute("SELECT COUNT(*) FROM conversations WHERE kind='thread'").fetchone()[0] == 1
+    sub = conversation.create_thread(app, goal="do the map", parent_id=parent["id"], notes=["projects/tower-game.md"], created_by="user")
+    assert sub["depth"] == 2 and sub["pinned_notes"] == ["projects/tower-game.md"]
+    bare = conversation.create_thread(app, goal="check the tests", parent_id=parent["id"], created_by="user")
+    assert bare["pinned_notes"] == [] and bare["depth"] == 2 and bare["walkthrough"] is None
 
 
 # -- budgets, cancel, failure ---------------------------------------------------------------
@@ -342,8 +355,17 @@ async def test_messages_endpoint_runs_turn(client, fake):
     assert [e["kind"] for e in r.json()] == ["user", "assistant"]
     r = await client.get("/api/conversations")
     assert r.json()[0]["kind"] == "desk"
-    r = await client.post("/api/conversations", json={"goal": "build x", "project_name": "x proj"})
-    assert r.status_code == 201 and r.json()["kind"] == "thread"
+    app.vault.write("projects/x.md", "Project x.", op="create", frontmatter={"type": "project"})
+    r = await client.post("/api/conversations", json={"goal": "build x", "notes": ["projects/x.md"]})
+    assert r.status_code == 201 and r.json()["kind"] == "thread" and r.json()["pinned_notes"] == ["projects/x.md"]
+    tid = r.json()["id"]
+    assert (await client.post("/api/conversations", json={"goal": "build y", "notes": ["projects/y.md"]})).status_code == 400
+    # the person edits the pinned list through PATCH; a missing note is refused whole
+    r = await client.patch(f"/api/conversations/{tid}", json={"pinned_notes": []})
+    assert r.status_code == 200 and r.json()["pinned_notes"] == []
+    r = await client.patch(f"/api/conversations/{tid}", json={"pinned_notes": ["projects/x.md", "projects/y.md"]})
+    assert r.status_code == 400 and "projects/y.md" in r.json()["detail"]
+    assert (await client.get(f"/api/conversations/{tid}")).json()["pinned_notes"] == []
     fake.script(Scripted(content="starting"))
     r = await client.get(f"/api/conversations/{desk}/occupancy")
     assert r.status_code == 200 and "limit_tokens" in r.json()
@@ -437,6 +459,37 @@ async def test_context_block_lists_the_roots_and_protected_paths(app, fake, tmp_
     assert "roots (relative paths resolve against the first): " in block
     assert fs_guard.normalise(str(app.vault_dir)) in block and fs_guard.normalise(str(extra)) in block
     assert "protected (always ask): " in block and "secrets.env" in block
-    # the projects root rides along: threads used to learn it by failing against a default
-    assert "projects root (new project folders are created here): " in block
-    assert str(app.settings.projects_root()).replace("\\", "/") in block
+    assert "projects root" not in block  # the setting is gone (2026-09-22)
+
+
+async def test_pinned_notes_render_in_slot_five_with_a_cap_and_a_missing_marker(app, fake):
+    """Any conversation's pinned notes ride in slot [5], each cut at
+    `conversation.pinned_note_chars` with a visible marker; a note deleted after pinning
+    says so instead of vanishing."""
+    app.settings.set(app.db, "conversation.pinned_note_chars", 500)
+    body = "The Ender 3. " * 100  # 1300 chars
+    app.vault.write("devices/ender-3.md", body, op="create", frontmatter={"type": "device"})
+    app.vault.write("devices/gone.md", "Soon deleted.", op="create", frontmatter={"type": "device"})
+    row = conversation.create_thread(app, goal="heat the printer", notes=["devices/ender-3.md", "devices/gone.md"], created_by="user")
+    app.vault.delete("devices/gone.md")
+    fake.default = lambda req: Scripted(content="ok")
+    fake.script(Scripted(content="ok"))
+    await _run(app, row["id"])
+    await _settle(app)
+    block = _ctx_block([c for c in fake.calls if c.conversation_id == row["id"] and c.purpose == "turn"][0])
+    stripped = body.strip()
+    assert "# Pinned notes\n\n## devices/ender-3.md\n" + stripped[:500] in block
+    assert f"[… {len(stripped) - 500} more chars; knowledge_read for the rest]" in block
+    assert "## devices/gone.md\n(missing)" in block
+    # the desk pins too: its slot [5] is the now board, then its pinned notes
+    desk = app.desk_id()
+    pins.pin(app, app.conversation(desk), "devices/ender-3.md")
+    fake.script(Scripted(content="ok"))
+    conversation.post(app, desk, "hi")
+    await _run(app, desk)
+    desk_block = _ctx_block([c for c in fake.calls if c.conversation_id == desk and c.purpose == "turn"][-1])
+    assert "# Now board" in desk_block and "# Pinned notes\n\n## devices/ender-3.md" in desk_block
+    assert desk_block.index("# Now board") < desk_block.index("# Pinned notes") < desk_block.index("# Filesystem")
+    # pinned notes are already in context, so knowledge resolution skips them
+    paths, _text = await context.resolve_knowledge(app, app.conversation(desk), "heat the ender 3")
+    assert "devices/ender-3.md" not in paths

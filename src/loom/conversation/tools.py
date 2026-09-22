@@ -13,7 +13,7 @@ from typing import Any
 from .. import db, items, prompts
 from ..ids import ulid
 from ..tools.registry import Tool, ToolContext, ToolResult
-from . import compaction, events, status
+from . import compaction, events, pins, status
 
 
 class ThreadError(Exception):
@@ -25,18 +25,18 @@ def create_thread(  # type: ignore[no-untyped-def]
     *,
     goal: str,
     parent_id: str | None = None,
-    scope_note: str | None = None,
-    project_name: str | None = None,
     roots: list[str] | None = None,
     preset: str | None = None,
     title: str | None = None,
     excerpt: str | None = None,
-    aliases: list[str] | None = None,
+    notes: list[str] | None = None,
     role: str = "worker",
     created_by: str = "user",
 ) -> dict[str, Any]:
     """Persist the row, emit `conversation.created`, then post the goal (+ excerpt) to its
-    inbox — the row exists before the first turn is scheduled."""
+    inbox — the row exists before the first turn is scheduled. `notes` are vault paths
+    pinned into the thread's context from its first turn: what the spawning conversation
+    already checked before deciding to spawn. A missing note refuses the spawn."""
     goal = (goal or "").strip()
     if not goal:
         raise ThreadError("goal is required")
@@ -52,29 +52,19 @@ def create_thread(  # type: ignore[no-untyped-def]
         row = app.db.execute("SELECT enabled FROM presets WHERE name=?", (preset,)).fetchone()
         if row is None or not row["enabled"]:
             raise ThreadError(f"preset {preset!r} does not exist or is disabled")
-    if not scope_note and project_name:
-        scope_note = app.vault.ensure_project_note(project_name, aliases=aliases)
-    elif scope_note and not app.vault.exists(scope_note):
-        stem = scope_note.rsplit("/", 1)[-1].removesuffix(".md")
-        scope_note = app.vault.ensure_project_note(stem.replace("-", " "), aliases=aliases)
-    parent_scope = parent.get("scope_note")
-    if scope_note and parent_scope and _same_note(app, scope_note, parent_scope):
-        # Two threads on one note means two writers on one status block (the
-        # tower-defense parent and child, 2026-09-22). Sub-threads are welcome down to
-        # max_thread_depth; each gets its own note, or none.
-        raise ThreadError(
-            f"a sub-thread cannot share its parent's scope note ({parent_scope}); give it its own "
-            "project_name, or pass neither scope_note nor project_name to make it a task"
-        )
+    try:
+        pinned = pins.normalise(app, notes)
+    except pins.PinError as exc:
+        raise ThreadError(str(exc)) from exc
     roots = [_norm(r) for r in (roots or []) if r]
     cid = ulid()
     now = db.now_iso()
     title = (title or "").strip() or default_title(goal)
     with db.transaction(app.db):
         app.db.execute(
-            "INSERT INTO conversations(id, kind, parent_id, title, goal, scope_note, roots, depth, role, preset, status, created_at, updated_at) "
+            "INSERT INTO conversations(id, kind, parent_id, title, goal, pinned_notes, roots, depth, role, preset, status, created_at, updated_at) "
             "VALUES (?, 'thread', ?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?)",
-            (cid, parent_id, title, goal, scope_note, db.dumps(roots), depth, role, preset, now, now),
+            (cid, parent_id, title, goal, db.dumps(pinned), db.dumps(roots), depth, role, preset, now, now),
         )
     row = events.public_row(app, cid)
     app.bus.emit("conversation.created", row, cid)
@@ -94,13 +84,6 @@ def _norm(p: str) -> str:
     from ..tools import fs_guard
 
     return fs_guard.normalise(p)
-
-
-def _same_note(app, a: str, b: str) -> bool:  # type: ignore[no-untyped-def]
-    try:
-        return app.vault.norm(a) == app.vault.norm(b)
-    except Exception:
-        return a.strip() == b.strip()
 
 
 TITLE_MAX = 80
@@ -128,8 +111,9 @@ def render_transcript(app, conv: dict[str, Any], limit: int = 30, before: int | 
     ]
     if conv.get("goal"):
         head.append(f"goal: {conv['goal']}")
-    if conv.get("scope_note"):
-        head.append(f"scope note: {conv['scope_note']}")
+    pinned = pins.get(conv)
+    if pinned:
+        head.append("pinned notes: " + ", ".join(pinned))
     if conv.get("summary"):
         head.append(f"summary: {conv['summary'][:1500]}")
     body = compaction.render_for_summary([e for e in evs if e["kind"] != "thinking"])
@@ -155,20 +139,20 @@ async def _create(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
             app,
             goal=args.get("goal", ""),
             parent_id=ctx.conversation_id,
-            scope_note=args.get("scope_note"),
-            project_name=args.get("project_name"),
             roots=args.get("roots") or [],
             preset=args.get("preset"),
             title=args.get("title"),
             excerpt=args.get("excerpt"),
-            aliases=args.get("aliases") or None,
+            notes=args.get("notes") or [],
             created_by=f"conversation:{ctx.conversation_id}",
         )
     except ThreadError as exc:
         return ToolResult.error(str(exc))
-    scope = row.get("scope_note")
-    kind = f"scope note: {scope}" if scope else "a task (no scope note; status in its transcript, walkthrough to the daily log)"
-    return ToolResult(f"created thread {row['id']} (\"{row['title']}\"); {kind}. It will report back when it stops without finishing, is blocked, or finishes.")
+    pinned = pins.get(row)
+    return ToolResult(
+        f"created thread {row['id']} (\"{row['title']}\"); pinned: {', '.join(pinned) if pinned else 'none'}. "
+        "It will report back when it stops without finishing, is blocked, or finishes."
+    )
 
 
 async def _send(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
@@ -198,7 +182,7 @@ async def _read(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
 
 async def _list(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     app = ctx.app
-    sql = "SELECT id, kind, parent_id, title, goal, scope_note, status, depth, preset, updated_at FROM conversations"
+    sql = "SELECT id, kind, parent_id, title, goal, pinned_notes, status, depth, preset, updated_at FROM conversations"
     where, params = [], []
     if args.get("status"):
         where.append("status=?")
@@ -209,11 +193,11 @@ async def _list(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY kind, updated_at DESC"
     rows = app.db.execute(sql, params).fetchall()
-    lines = ["id | kind | status | title | goal | scope note | parent | preset | updated"]
+    lines = ["id | kind | status | title | goal | pinned | parent | preset | updated"]
     for r in rows:
         lines.append(
             f"{r['id']} | {r['kind']} | {r['status']} | {r['title'] or ''} | {(r['goal'] or '')[:80]} | "
-            f"{r['scope_note'] or ''} | {r['parent_id'] or ''} | {r['preset'] or ''} | {r['updated_at']}"
+            f"{', '.join(pins.get(dict(r)))} | {r['parent_id'] or ''} | {r['preset'] or ''} | {r['updated_at']}"
         )
     return ToolResult("\n".join(lines))
 
@@ -230,37 +214,18 @@ async def _finish(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         return ToolResult.error("state must be done or failed")
     if not summary or not walkthrough:
         return ToolResult.error("summary and walkthrough are both required")
-    scope = conv.get("scope_note")
     date = local_date(app)
     title = conv.get("title") or conv["id"]
     try:
-        if scope:
-            # A project: its own walkthrough note, linked from the project note.
-            stem = scope.rsplit("/", 1)[-1].removesuffix(".md")
-            note_path = f"projects/{stem}/walkthrough-{date}.md"
-            n = 2
-            while app.vault.exists(note_path):
-                note_path = f"projects/{stem}/walkthrough-{date}-{n}.md"
-                n += 1
-            app.vault.write(
-                note_path,
-                f"# Walkthrough — {title}\n\n{walkthrough}\n",
-                op="create",
-                frontmatter={"title": f"Walkthrough {date}: {title}", "type": "walkthrough", "conversation": conv["id"], "state": state},
-            )
-            link = note_path.removesuffix(".md")
-            note = app.vault.read(scope)
-            section = "" if "## Walkthroughs" in note.body else "## Walkthroughs\n"
-            app.vault.write(scope, f"{section}- [[{link}]] ({state}, {date})", op="append")
+        # A section of the daily log, so the evidence outlives the transcript. Every
+        # thread files here (03 §6.7, decided 2026-09-22): a project note, when the work
+        # has one, links to the section as ordinary knowledge.
+        note_path = f"log/{date}.md"
+        section = f"## {title} ({conv['id']})\nstate: {state}\n\n{walkthrough}\n"
+        if app.vault.exists(note_path):
+            app.vault.write(note_path, section, op="append")
         else:
-            # A task: a section in the daily log, so the evidence outlives the transcript
-            # without leaving a project note behind (03 §6.7, decided 2026-09-21).
-            note_path = f"log/{date}.md"
-            section = f"## {title} ({conv['id']})\nstate: {state}\n\n{walkthrough}\n"
-            if app.vault.exists(note_path):
-                app.vault.write(note_path, section, op="append")
-            else:
-                app.vault.write(note_path, f"# {date}\n\n{section}", op="create", frontmatter={"type": "log", "title": date})
+            app.vault.write(note_path, f"# {date}\n\n{section}", op="create", frontmatter={"type": "log", "title": date})
         status.write(app, conv, {"state": "done" if state == "done" else "blocked", "doing": "", "next": "", "done": summary}, owner=conv["id"])
     except Exception as exc:
         return ToolResult.error(f"could not write the walkthrough: {exc}")
@@ -312,13 +277,11 @@ def tools() -> list[Tool]:
             "conversation_create", prompts.load("tools/conversation_create"),
             _schema({
                 "goal": {"type": "string"},
-                "scope_note": {"type": "string", "description": "vault path of the project note; omit (and project_name) for a one-off task"},
-                "project_name": {"type": "string", "description": "name for a new project note when the work is a project and has no note yet"},
-                "aliases": {"type": "array", "items": {"type": "string"}, "description": "other names people will use for a new project note"},
                 "excerpt": {"type": "string"},
                 "roots": {"type": "array", "items": {"type": "string"}},
                 "preset": {"type": "string"},
                 "title": {"type": "string"},
+                "notes": {"type": "array", "items": {"type": "string"}, "description": "vault paths to pin into the thread's context every turn (the notes you checked before spawning); a missing note refuses the spawn"},
             }, ["goal"]),
             _create,
         ),

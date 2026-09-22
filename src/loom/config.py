@@ -183,7 +183,6 @@ FIELDS: list[Field] = [
     Field("general.bind_host", "str", "127.0.0.1", "Bind address", "Use 0.0.0.0 to serve on the LAN (set a token).", "text", restart=True),
     Field("general.port", "int", 8500, "Port", "", "number", min=1024, max=65535, restart=True),
     Field("general.lan_token", "str", "", "LAN bearer token", "Required on every request when bound beyond loopback. Empty = loopback only.", "secret"),
-    Field("general.projects_root", "str", "", "Projects root", "Where new project folders are created. Empty = ~/Projects.", "path"),
     Field("general.theme", "enum", "system", "Theme", "Light or dark; system follows the OS.", "select", choices=("system", "light", "dark")),
     Field("general.palette", "enum", "default", "Palette", "Colour palette; the theme picks its light or dark side.", "select", choices=("default", "slate", "warm", "forest", "nord", "mono")),
     Field("general.open_browser", "bool", True, "Open browser on start", "", "toggle"),
@@ -207,10 +206,11 @@ FIELDS: list[Field] = [
     Field("conversation.thread_archive_days", "int", 14, "Archive finished threads after (days)", "", "number", min=1, max=3650),
     Field("conversation.max_thread_depth", "int", 3, "Max thread depth", "", "number", min=1, max=10),
     Field("conversation.tool_expose_max", "int", 48, "Max tools exposed per turn", "Above this, non-native tools load via tool_search.", "number", min=8, max=512),
+    Field("conversation.pinned_note_chars", "int", 6000, "Pinned note cap (chars)", "Each note a conversation pins is shown up to this many characters per turn; the rest is a knowledge_read away.", "number", min=500, max=50000),
     Field("conversation.tool_timeout_shell_s", "int", 120, "Shell timeout (s)", "", "number", min=1, max=3600),
     Field("conversation.tool_timeout_http_s", "int", 60, "HTTP timeout (s)", "", "number", min=1, max=3600),
     Field("conversation.tool_timeout_mcp_s", "int", 300, "MCP tool timeout (s)", "", "number", min=1, max=3600),
-    Field("conversation.now_board_max_threads", "int", 10, "Now board: running threads shown", "", "number", min=1, max=50),
+    Field("conversation.now_board_max_threads", "int", 10, "Now board: threads shown", "", "number", min=1, max=50),
     Field("conversation.shutdown_grace_s", "int", 10, "Shutdown grace (s)", "Time in-flight tool calls get to finish.", "number", min=0, max=120),
     # Knowledge
     Field("knowledge.preload_budget_tokens", "int", 3000, "Pre-load budget (tokens)", "Per turn, for resolved entities and their first-hop links.", "number", min=200, max=50000),
@@ -304,10 +304,6 @@ class Settings:
             for key, value in coerced.items():
                 self.set(conn, key, value)
         return list(coerced)
-
-    def projects_root(self) -> Path:
-        raw = self.values.get("general.projects_root") or ""
-        return Path(raw).expanduser() if raw else Path.home() / "Projects"
 
     def to_json(self) -> dict[str, Any]:
         return dict(self.values)

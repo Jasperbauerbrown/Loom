@@ -1,1 +1,1 @@
-List conversations: the desk and every thread with id, title, status (idle, running, waiting_approval, waiting_input, done, failed, archived), goal, scope note, parent, and last update. Arguments: `status` (filter, optional); `include_archived` (default false). Returns a table as text.
+List conversations: the desk and every thread with id, title, status (idle, running, waiting_approval, waiting_input, done, failed, archived), goal, pinned notes, parent, and last update. Arguments: `status` (filter, optional); `include_archived` (default false). Returns a table as text.

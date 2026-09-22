@@ -1,6 +1,6 @@
-"""Thread status with and without a scope note (03 §6.7, decided 2026-09-21): one reader,
-one writer, two sinks. A thread without a scope note is a task: its status lives in its
-own transcript as `status` events and its walkthrough lands in the daily log."""
+"""Thread status (03 §6.7, decided 2026-09-22): one reader, one writer, one sink. Every
+thread's status lives in its own transcript as `status` events and its walkthrough lands
+in the daily log; the notes a thread pins are never written by the harness."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ def _quiet_desk(fake):
 async def test_status_update_on_a_task_writes_transcript_events(app, fake):
     _quiet_desk(fake)
     row = conversation.create_thread(app, goal="Check whether the NAS answers on 443.", created_by="user")
-    assert row["scope_note"] is None
+    assert row["pinned_notes"] == []
     fake.script(
         Scripted(content="", tool_calls=[("status_update", {"state": "working", "doing": "probing port 443"})]),
         Scripted(content="", tool_calls=[("status_update", {"next": "report to the desk"})]),
@@ -91,6 +91,7 @@ async def test_finish_on_a_task_appends_to_the_daily_log(app, fake):
     fields, _owner, source = conversation.status_fields(app, app.conversation(first["id"]))
     assert source == "transcript" and fields["state"] == "done" and fields["done"] == "Done A."
     assert app.conversation(first["id"])["status"] == "done"
+    assert app.conversation(first["id"])["walkthrough"] == path  # the row remembers where it filed
     assert not app.vault.list("projects/")  # no dead project note left behind
 
     # a second task the same day appends a section rather than failing on `create`
@@ -103,46 +104,43 @@ async def test_finish_on_a_task_appends_to_the_daily_log(app, fake):
     assert body.count("\n## ") == 2
 
 
-async def test_project_thread_status_is_unchanged(app, fake):
-    """The note sink works exactly as before: block in the note, owner = the thread."""
+async def test_status_never_touches_a_pinned_note(app, fake):
+    """A thread with a pinned project note still keeps its status in its transcript; the
+    note is the model's knowledge and the harness never writes into it (2026-09-22)."""
     _quiet_desk(fake)
-    row = conversation.create_thread(app, goal="Add play-random to the music bot.", project_name="music bot", created_by="user")
+    app.vault.write("projects/music-bot.md", "Node Discord music bot.", op="create", frontmatter={"type": "project"})
+    row = conversation.create_thread(app, goal="Add play-random to the music bot.", notes=["projects/music-bot.md"], created_by="user")
     fake.script(
         Scripted(content="", tool_calls=[("status_update", {"state": "working", "doing": "reading bot.js"})]),
         Scripted(content="Reading."),
     )
     await _run(app, row["id"])
     fields, owner, source = conversation.status_fields(app, app.conversation(row["id"]))
-    assert source == "note" and owner == row["id"] and fields["doing"] == "reading bot.js"
-    assert not events.list_events(app, row["id"], kinds=["status"])
+    assert source == "transcript" and owner == row["id"] and fields["doing"] == "reading bot.js"
+    assert len(events.list_events(app, row["id"], kinds=["status"])) == 1
     results = [e["content"] for e in events.list_events(app, row["id"], kinds=["tool_result"])]
-    assert results[0].startswith("status block updated:")
+    assert results[0].startswith("status recorded:")
+    assert app.vault.read("projects/music-bot.md").body.strip() == "Node Discord music bot."
     await _settle(app)
 
 
-async def test_status_endpoints_for_a_project_and_a_task(client, fake):
+async def test_status_endpoints(client, fake):
     app = client.loom
     _quiet_desk(fake)
     fake.on("status", lambda req: Scripted(content='{"state":"working","doing":"starting"}'))
-    project = conversation.create_thread(app, goal="Build the bot.", project_name="music bot", created_by="user")
     task = conversation.create_thread(app, goal="Check the printer.", created_by="user")
-    await _settle(app)  # both turns end in text; the safety net writes a first status
+    await _settle(app)  # the turn ends in text; the safety net writes a first status
 
-    p = (await client.get(f"/api/conversations/{project['id']}/status")).json()
-    assert p["source"] == "note" and p["owner"] == project["id"] and p["fields"]["doing"] == "starting"
     t = (await client.get(f"/api/conversations/{task['id']}/status")).json()
     assert t["source"] == "transcript" and t["owner"] == task["id"] and t["fields"]["doing"] == "starting"
 
-    # the person edits both through the same endpoint; a note block keeps its owner
-    p2 = (await client.put(f"/api/conversations/{project['id']}/status", json={"fields": {"next": "write tests"}})).json()
-    assert p2["fields"]["next"] == "write tests" and p2["fields"]["doing"] == "starting" and p2["owner"] == project["id"]
+    # the person edits through the same writer; the event records who wrote it
     t2 = (await client.put(f"/api/conversations/{task['id']}/status", json={"fields": {"next": "report"}})).json()
     assert t2["source"] == "transcript" and t2["fields"]["next"] == "report" and t2["fields"]["doing"] == "starting"
     assert t2["owner"] == "user"
 
-    # the row's status line follows either sink
+    # the row's status line follows
     assert (await client.get(f"/api/conversations/{task['id']}")).json()["status_line"] == "starting"
-    assert (await client.get(f"/api/conversations/{project['id']}")).json()["status_line"] == "starting"
 
     desk = app.desk_id()
     assert (await client.get(f"/api/conversations/{desk}/status")).json() == {"fields": None, "owner": None, "source": "none"}
