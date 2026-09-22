@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from ... import prompts
-from ...processes import kill_tree
+from ...processes import assign, close, create_job, kill_tree, terminate_job
 from ..fs_guard import normalise
 from ..registry import Tool, ToolContext, ToolResult
 
@@ -44,21 +44,41 @@ def find_git_bash() -> str | None:
     return found if found else None
 
 
+FLAVOURS = ("gitbash", "cmd", "powershell", "sh")
+
+# What the model must know about a flavour to use it without failing against it. Git
+# Bash rewrites `/F`-style switches as paths and `2>nul` writes a file named nul (the
+# Music-Bridge incident, 2026-09-22). Rendered in the harness context block, not the
+# soul: the flavour is a setting.
+FLAVOUR_HINTS = {
+    "gitbash": "Windows switches must be written //F, //FI, //PID (a single slash is rewritten as a path); redirect to /dev/null, never nul; 2>nul creates a file",
+}
+
+
+def resolve_flavour(app: Any) -> str:
+    """The effective flavour: the setting, with `auto` resolved and a missing Git Bash
+    falling back the same way `resolve_shell` does."""
+    flavour = str(app.settings.get("permissions.shell_flavour") or "auto")
+    if flavour == "auto":
+        flavour = ("gitbash" if find_git_bash() else "cmd") if os.name == "nt" else "sh"
+    if flavour == "gitbash" and not find_git_bash():
+        log.warning("shell_flavour=gitbash but no bash found; falling back")
+        flavour = "cmd" if os.name == "nt" else "sh"
+    return flavour if flavour in FLAVOURS else "sh"
+
+
+def flavour_hint(flavour: str) -> str:
+    return FLAVOUR_HINTS.get(flavour, "")
+
+
 def resolve_shell(app: Any) -> list[str]:
     """The argv prefix a command line is appended to, e.g.
     `["C:/Program Files/Git/bin/bash.exe", "-lc"]` or `["cmd.exe", "/d", "/c"]`."""
-    flavour = str(app.settings.get("permissions.shell_flavour") or "auto")
-    if flavour == "auto":
-        if os.name == "nt":
-            bash = find_git_bash()
-            flavour = "gitbash" if bash else "cmd"
-        else:
-            flavour = "sh"
+    flavour = resolve_flavour(app)
     if flavour == "gitbash":
         bash = find_git_bash()
         if bash:
             return [bash.replace("\\", "/"), "-lc"]
-        log.warning("shell_flavour=gitbash but no bash found; falling back")
         flavour = "cmd" if os.name == "nt" else "sh"
     if flavour == "cmd":
         return [shutil.which("cmd") or "cmd.exe", "/d", "/c"]
@@ -67,8 +87,10 @@ def resolve_shell(app: Any) -> list[str]:
     return [shutil.which("sh") or "/bin/sh", "-c"]
 
 
-def _kill_tree(proc: asyncio.subprocess.Process) -> None:
-    """Kill the process and everything it started (shared helper in `loom.processes`)."""
+def _kill_tree(proc: asyncio.subprocess.Process, job: int | None = None) -> None:
+    """Kill the process and everything it started. The Job Object reaches descendants
+    whose parent already exited; the pid tree kill is belt and braces (`loom.processes`)."""
+    terminate_job(job)
     if proc.returncode is not None:
         return
     kill_tree(proc.pid)
@@ -110,6 +132,11 @@ async def shell_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     argv = resolve_shell(app) + [command]
     stdin_text = args.get("stdin")
 
+    # Everything a foreground call starts ends with the call: a kill-on-close Job Object
+    # on Windows (descendants whose parent exited included), a process group elsewhere.
+    # Orphans of a timed-out `node … &` had kept a port for hours (2026-09-22).
+    job = create_job(kill_on_close=True)
+    kwargs: dict[str, Any] = {} if os.name == "nt" else {"start_new_session": True}
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -118,9 +145,14 @@ async def shell_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
             stdin=asyncio.subprocess.PIPE if stdin_text is not None else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            **kwargs,
         )
     except (OSError, ValueError) as exc:
+        close(job)
         return ToolResult.error(f"cannot start {argv[0]}: {exc}")
+    if job is not None and not assign(job, proc.pid):
+        close(job)
+        job = None
 
     timed_out = False
     try:
@@ -130,14 +162,16 @@ async def shell_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         )
     except asyncio.TimeoutError:
         timed_out = True
-        _kill_tree(proc)
+        _kill_tree(proc, job)
         try:
             out, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
         except Exception:
             out = b""
     except asyncio.CancelledError:
-        _kill_tree(proc)
+        _kill_tree(proc, job)
         raise
+    finally:
+        close(job)  # kill-on-close: whatever the command left behind ends here
 
     text = out.decode("utf-8", errors="replace") if out else ""
     if timed_out:

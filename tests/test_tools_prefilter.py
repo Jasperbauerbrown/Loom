@@ -104,6 +104,37 @@ def test_split_words_strips_quotes():
     assert pf.split_words("cat 'a b.txt' \"c\"") == ["cat", "a b.txt", "c"]
 
 
+def test_a_command_naming_a_protected_path_is_not_granted(tmp_path):
+    """Read-only is not harmless when the file is `secrets.json`: protected paths used to
+    guard the fs tools only, and `cat ~/.loom/secrets.json` sailed through (2026-09-22).
+    Not granted means the classifier judges it; the pre-filter still never denies."""
+    secret = tmp_path / "secrets.json"
+    protected = [str(secret)]
+    assert pf.is_readonly(f"cat {secret}", ALLOW, protected=protected) is False
+    assert pf.is_readonly(f'type "{secret}"', ALLOW, protected=protected) is False
+    assert pf.is_readonly(f"cat {str(secret).replace('/', chr(92))}", ALLOW, protected=protected) is False
+    assert pf.is_readonly("cat README.md", ALLOW, protected=protected) is True
+    # a protected directory covers everything under it
+    assert pf.is_readonly(f"ls {tmp_path / 'sub' / 'x.txt'}", ALLOW, protected=[str(tmp_path)]) is False
+    # relative paths resolve against the shell's cwd
+    assert pf.is_readonly("cat secrets.json", ALLOW, protected=protected, cwd=str(tmp_path)) is False
+    assert pf.is_readonly("cat ./secrets.json", ALLOW, protected=protected, cwd=str(tmp_path)) is False
+    assert pf.is_readonly("cat secrets.json", ALLOW, protected=protected, cwd=str(tmp_path / "elsewhere")) is True
+    # a path it cannot resolve statically goes to the classifier too
+    assert pf.is_readonly("cat $HOME/.loom/secrets.json", ALLOW, protected=protected) is False
+    assert pf.is_readonly("type %USERPROFILE%\\.loom\\secrets.json", ALLOW, protected=protected) is False
+    # no protected list: unchanged behaviour
+    assert pf.is_readonly(f"cat {secret}", ALLOW) is True
+
+
+def test_tilde_paths_resolve_against_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    protected = [str(tmp_path / ".loom" / "secrets.json")]
+    assert pf.is_readonly("cat ~/.loom/secrets.json", ALLOW, protected=protected) is False
+    assert pf.is_readonly("cat ~/.loom/notes.md", ALLOW, protected=protected) is True
+
+
 def test_fuzz_never_raises_and_always_returns_bool():
     rng = random.Random(20260920)
     alphabet = string.printable

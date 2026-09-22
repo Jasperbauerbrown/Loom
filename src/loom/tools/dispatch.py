@@ -51,6 +51,18 @@ def denied_result(reason: str = "denied by user") -> ToolResult:
     return ToolResult(content=f"denied: {reason}", ok=False, meta={"denied": True})
 
 
+def _shell_cwd(app: Any, ctx: ToolContext, args: dict[str, Any]) -> str:
+    """The directory a shell command's relative paths resolve against: the `cwd`
+    argument against the first root, else the first root, else the process cwd — the
+    same choice the shell tool makes, so the pre-filter judges the paths it will see."""
+    import os
+
+    roots = fs_guard.effective_roots(app, ctx.conversation)
+    base = roots[0] if roots else os.getcwd()
+    cwd_arg = args.get("cwd")
+    return fs_guard.normalise(str(cwd_arg), cwd=base) if cwd_arg else base
+
+
 # ---------------------------------------------------------------------------------
 # Step 2: argument validation (a minimal JSON-schema check; unknown keys are fine)
 # ---------------------------------------------------------------------------------
@@ -140,7 +152,10 @@ async def dispatch(app: Any, ctx: ToolContext, call: ToolCall) -> ToolResult | A
     reason = ""
     if mode == "classify":
         if tool.name == "shell" and shell_prefilter.is_readonly(
-            str(args.get("command") or ""), list(app.settings.get("permissions.shell_readonly_commands") or [])
+            str(args.get("command") or ""),
+            list(app.settings.get("permissions.shell_readonly_commands") or []),
+            protected=fs_guard.protected_paths(app),
+            cwd=_shell_cwd(app, ctx, args),
         ):
             decision, reason = "allow", "read-only command (static pre-filter)"
         else:

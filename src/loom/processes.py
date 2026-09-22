@@ -20,6 +20,15 @@ Statuses: starting | running | exited | stopped | failed | lost. Bus events:
 
 No new dependency: pids are probed with `ctypes` on Windows and `os.kill(pid, 0)`
 elsewhere; trees are killed with `taskkill /T /F` or `killpg`.
+
+Containment (2026-09-22, after orphaned node processes survived a foreground timeout
+because their parent bash had already exited): on Windows every spawn is put in a Job
+Object through `ctypes`. The foreground shell's job is kill-on-close, so everything a
+foreground call started ends with the call; a background process's job is not, so the
+child survives a restart, but while the handle lives `stop` terminates the whole job and
+reaches descendants whose parent is gone. A restart loses the handle (a Job Object is a
+handle, not a row) and `stop` falls back to `kill_tree(pid)`. Every Job Object call is
+best effort: a sandbox that refuses one logs at debug and the old behaviour continues.
 """
 
 from __future__ import annotations
@@ -100,6 +109,125 @@ def pid_alive(pid: int | None) -> bool:
     return True
 
 
+# -- Windows Job Objects (ctypes; no-ops elsewhere) -------------------------------------
+
+_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+_JobObjectExtendedLimitInformation = 9
+_PROCESS_SET_QUOTA = 0x0100
+_PROCESS_TERMINATE = 0x0001
+
+
+def _kernel32() -> Any:
+    import ctypes
+    from ctypes import wintypes
+
+    k = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    k.CreateJobObjectW.restype = wintypes.HANDLE
+    k.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+    k.SetInformationJobObject.restype = wintypes.BOOL
+    k.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+    k.OpenProcess.restype = wintypes.HANDLE
+    k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k.AssignProcessToJobObject.restype = wintypes.BOOL
+    k.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    k.TerminateJobObject.restype = wintypes.BOOL
+    k.TerminateJobObject.argtypes = [wintypes.HANDLE, ctypes.c_uint]
+    k.CloseHandle.restype = wintypes.BOOL
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+    return k
+
+
+def _extended_limit_info() -> Any:
+    import ctypes
+    from ctypes import wintypes
+
+    class IO_COUNTERS(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_ulonglong) for name in (
+            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount",
+        )]
+
+    class BASIC(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_longlong), ("PerJobUserTimeLimit", ctypes.c_longlong),
+            ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD), ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class EXTENDED(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", BASIC), ("IoInfo", IO_COUNTERS),
+            ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    return EXTENDED()
+
+
+def create_job(kill_on_close: bool) -> int | None:
+    """A new Job Object handle, or None where there are none (POSIX) or the call failed.
+    `kill_on_close`: closing the last handle terminates every process in the job."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+
+        k = _kernel32()
+        handle = k.CreateJobObjectW(None, None)
+        if not handle:
+            return None
+        if kill_on_close:
+            info = _extended_limit_info()
+            info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            if not k.SetInformationJobObject(handle, _JobObjectExtendedLimitInformation, ctypes.byref(info), ctypes.sizeof(info)):
+                k.CloseHandle(handle)
+                return None
+        return int(handle)
+    except Exception as exc:  # pragma: no cover - platform dependent
+        log.debug("job object unavailable: %s", exc)
+        return None
+
+
+def assign(job: int | None, pid: int | None) -> bool:
+    """Put `pid` (and every process it creates from now on) in the job. Best effort."""
+    if job is None or not pid:
+        return False
+    try:
+        k = _kernel32()
+        handle = k.OpenProcess(_PROCESS_SET_QUOTA | _PROCESS_TERMINATE, False, int(pid))
+        if not handle:
+            return False
+        try:
+            return bool(k.AssignProcessToJobObject(job, handle))
+        finally:
+            k.CloseHandle(handle)
+    except Exception as exc:  # pragma: no cover - platform dependent
+        log.debug("assign to job failed for pid %s: %s", pid, exc)
+        return False
+
+
+def terminate_job(job: int | None) -> bool:
+    """Kill every process in the job, including descendants whose parent already exited."""
+    if job is None:
+        return False
+    try:
+        return bool(_kernel32().TerminateJobObject(job, 1))
+    except Exception as exc:  # pragma: no cover - platform dependent
+        log.debug("terminate job failed: %s", exc)
+        return False
+
+
+def close(job: int | None) -> None:
+    """Drop the handle. For a kill-on-close job this is the kill."""
+    if job is None:
+        return
+    try:
+        _kernel32().CloseHandle(job)
+    except Exception as exc:  # pragma: no cover - platform dependent
+        log.debug("close job failed: %s", exc)
+
+
 def _duration(started_at: str | None, ended_at: str | None = None) -> str:
     try:
         start = _dt.datetime.fromisoformat((started_at or "").replace("Z", "+00:00"))
@@ -129,6 +257,7 @@ class Processes:
     def __init__(self, app: Any) -> None:
         self.app = app
         self._procs: dict[str, asyncio.subprocess.Process] = {}
+        self._jobs: dict[str, int] = {}  # Windows Job Object handles for this run's children
 
     # -- rows ------------------------------------------------------------------
     def _decorate(self, row: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -208,6 +337,14 @@ class Processes:
         except (OSError, ValueError) as exc:
             return self._end(process_id, "failed", error=f"cannot start {command[:80]}: {exc}") or {}
         self._procs[process_id] = proc
+        # Not kill-on-close: the child must outlive a restart. The job is for `stop`, so
+        # it reaches descendants whose parent has already gone.
+        job = create_job(kill_on_close=False)
+        if job is not None:
+            if assign(job, proc.pid):
+                self._jobs[process_id] = job
+            else:
+                close(job)
         row = self._set(process_id, pid=proc.pid, status="running")
         assert row is not None
         self.app.bus.emit("process.started", row, conversation_id)
@@ -225,7 +362,13 @@ class Processes:
         row = self._end(process_id, "stopped", error=f"stopped by {actor}")
         proc = self._procs.pop(process_id, None)
         pid = row.get("pid") if row else None
+        job = self._jobs.pop(process_id, None)
+        if job is not None:
+            # The job reaches every descendant, reparented or not; the tree kill after
+            # it is belt and braces for the moment between spawn and assignment.
+            await asyncio.to_thread(terminate_job, job)
         await asyncio.to_thread(kill_tree, pid)
+        close(job)
         if proc is not None:
             try:
                 await asyncio.wait_for(proc.wait(), timeout=10)
@@ -267,6 +410,7 @@ class Processes:
     async def _watch(self, process_id: str, proc: asyncio.subprocess.Process) -> None:
         code = await proc.wait()
         self._procs.pop(process_id, None)
+        close(self._jobs.pop(process_id, None))
         row = self.get(process_id)
         if row is None or row["status"] != "running":
             return  # stopped meanwhile; the stopper already said so
@@ -323,6 +467,9 @@ class Processes:
             if name.startswith("process:") and not task.done():
                 task.cancel()
         self._procs.clear()
+        for job in self._jobs.values():
+            close(job)  # not kill-on-close: dropping the handle leaves the child running
+        self._jobs.clear()
 
     def prune_archived(self, retention_days: int | None = None) -> int:
         """Rows of archived conversations past the artifact retention window; their log

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import logging
+import os
 import zoneinfo
 from dataclasses import dataclass, field
 from typing import Any
@@ -240,10 +241,13 @@ CONTEXT_CLOSE = "</context>"
 
 
 def filesystem_block(app, conv: dict[str, Any]) -> str:  # type: ignore[no-untyped-def]
-    """Slot [6]: the roots this conversation may touch and the paths that always ask.
+    """Slot [6]: the roots this conversation may touch, the paths that always ask, what
+    Loom itself is (address, pid, home) and which shell runs commands, with its quirks.
     Until 2026-09-21 the model learned its roots only by failing against them (a desk
     guessed `projects/`, listed the artifacts folder, tried a Linux path, then asked for
-    the home directory); mutable state belongs here, not in the soul."""
+    the home directory); on 2026-09-22 it could not tell its own port from a music bot's
+    and lost an hour to Git Bash rewriting `/F` as a path. Mutable state belongs here,
+    not in the soul."""
     from ..tools import fs_guard
 
     paths = fs_guard.describe(app, conv)
@@ -256,7 +260,29 @@ def filesystem_block(app, conv: dict[str, Any]) -> str:  # type: ignore[no-untyp
     protected = paths.get("protected") or []
     if protected:
         lines.append("protected (always ask): " + ", ".join(protected))
+    lines.append(loom_line(app))
+    lines.append(shell_line(app))
     return "\n".join(lines)
+
+
+def loom_line(app) -> str:  # type: ignore[no-untyped-def]
+    """Where this backend listens and lives. `serve` records the effective bind host
+    and port on the app (a `--port` flag beats the setting); the settings are the
+    fallback, e.g. under the test client. Stable within a run: pid and port do not move."""
+    host = str(getattr(app, "bind_host", "") or app.settings.get("general.bind_host") or "127.0.0.1")
+    port = int(getattr(app, "bind_port", 0) or app.settings.get("general.port"))
+    shown = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+    home = str(app.home).replace("\\", "/")
+    return f"loom: this backend serves http://{shown}:{port} (pid {os.getpid()}); its home is {home}; never stop or bind over it"
+
+
+def shell_line(app) -> str:  # type: ignore[no-untyped-def]
+    """The shell flavour commands run under, and what the model must know to use it."""
+    from ..tools.native import shell
+
+    flavour = shell.resolve_flavour(app)
+    hint = shell.flavour_hint(flavour)
+    return f"shell: {flavour}" + (f" — {hint}" if hint else "")
 
 
 def volatile_message(app, conv: dict[str, Any], steps_remaining: int | None = None) -> dict[str, Any]:  # type: ignore[no-untyped-def]

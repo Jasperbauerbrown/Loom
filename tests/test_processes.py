@@ -228,3 +228,82 @@ async def test_prune_archived_drops_old_rows_of_archived_conversations(app, proj
     assert app.processes.prune_archived() == 1
     assert app.processes.get("old-exited") is None
     assert app.processes.get("old-running") is not None and app.processes.get("fresh") is not None
+
+
+# -- containment: everything a call started ends with it (Windows Job Objects) ---------------
+
+windows_only = pytest.mark.skipif(sys.platform != "win32", reason="Job Objects are a Windows mechanism")
+
+GRANDPARENT = """\
+import os, subprocess, sys, time
+g = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "{name}.pid"), "w") as fh:
+    fh.write(str(g.pid))
+print("GRANDCHILD", g.pid, flush=True)
+{tail}
+"""
+
+
+def _grandparent(project: Path, name: str, tail: str) -> str:
+    """A python script that starts a detached grandchild, records its pid in
+    `<name>.pid` beside itself (a timed-out call's partial output is not reliable), then
+    runs `tail`."""
+    script = project / f"{name}.py"
+    script.write_text(GRANDPARENT.format(name=name, tail=tail), encoding="utf-8")
+    return f'"{PY}" "{str(script).replace(chr(92), "/")}"'
+
+
+async def _grandchild_pid(project: Path, name: str) -> int:
+    pid_file = project / f"{name}.pid"
+    await wait_for(lambda: pid_file.exists() and pid_file.read_text().strip() != "", timeout=20)
+    return int(pid_file.read_text().strip())
+
+
+@windows_only
+async def test_foreground_timeout_kills_a_grandchild_whose_parent_is_gone(app, ctx, project):
+    """The orphan class from 2026-09-22: `taskkill /T` follows parent links, so a
+    grandchild whose parent had exited survived and kept a port for hours. The Job
+    Object does not care who the parent was."""
+    # The parent hands off and exits at once; only the grandchild remains, and the
+    # tool still waits because the grandchild inherited nothing — so this variant exits
+    # cleanly. The kill-on-close job then ends the grandchild with the call.
+    res = await dispatch.execute(
+        app, ctx, app.tools.get("shell"),
+        {"command": _grandparent(project, "handoff", "pass"), "cwd": str(project), "timeout_s": 20},
+    )
+    assert res.ok, res.content
+    gpid = await _grandchild_pid(project, "handoff")
+    try:
+        await wait_for(lambda: not processes.pid_alive(gpid), timeout=10)
+    finally:
+        processes.kill_tree(gpid)
+
+    # The parent lingers, the call times out, and both die — including the grandchild.
+    res = await dispatch.execute(
+        app, ctx, app.tools.get("shell"),
+        {"command": _grandparent(project, "linger", "time.sleep(120)"), "cwd": str(project), "timeout_s": 2},
+    )
+    assert not res.ok and "process tree killed" in res.content
+    gpid = await _grandchild_pid(project, "linger")
+    try:
+        await wait_for(lambda: not processes.pid_alive(gpid), timeout=10)
+    finally:
+        processes.kill_tree(gpid)
+
+
+@windows_only
+async def test_stopping_a_background_process_kills_its_descendants(app, ctx, project):
+    row = await app.processes.start(ctx.conversation_id, _grandparent(project, "bg", "time.sleep(120)"), str(project), title="bg")
+    assert row["status"] == "running" and row["id"] in app.processes._jobs
+    await wait_for(lambda: "GRANDCHILD" in Path(row["log_path"]).read_text(encoding="utf-8"))
+    gpid = await _grandchild_pid(project, "bg")
+    assert processes.pid_alive(gpid)
+    try:
+        stopped = await app.processes.stop(row["id"], actor=f"conversation:{ctx.conversation_id}")
+        assert stopped["status"] == "stopped"
+        await wait_for(lambda: not processes.pid_alive(gpid) and not processes.pid_alive(row["pid"]), timeout=10)
+        assert row["id"] not in app.processes._jobs
+    finally:
+        processes.kill_tree(gpid)
+        processes.kill_tree(row["pid"])

@@ -38,6 +38,10 @@ class App:
     started_at: str = ""
     shutting_down: bool = False
     first_run: bool = False
+    # What `serve` actually bound (a CLI --port beats the setting); the harness context
+    # block tells the model so it never mistakes its own port for someone else's.
+    bind_host: str = ""
+    bind_port: int = 0
 
     # Attached by packages in install(): typed as Any so packages can land independently.
     secrets: Any = None  # loom.secrets.Store

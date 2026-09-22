@@ -442,15 +442,23 @@ async def test_reasoning_replay_keeps_the_tail_of_long_reasoning(app, fake, tmp_
     assert replayed.count("PLAN") < 20  # the 40-token head is gone; only the tail's few remain
 
 
-async def test_context_block_lists_the_roots_and_protected_paths(app, fake, tmp_path):
-    """Slot [6]: the model sees where it may work instead of learning it by failing."""
+async def test_context_block_lists_the_roots_and_protected_paths(app, fake, tmp_path, monkeypatch):
+    """Slot [6]: the model sees where it may work instead of learning it by failing, and
+    what Loom itself is (address, pid, home) and which shell it commands — it once
+    mistook a music bot's port for its own and lost an hour to Git Bash rewriting `/F`
+    as a path (2026-09-22)."""
+    import os
+
     from loom.tools import fs_guard
+    from loom.tools.native import shell
 
     desk = app.desk_id()
     extra = tmp_path / "extra-root"
     extra.mkdir()
     fs_guard.add_root(app, str(extra), added_by="test")
     fs_guard.add_protected(app, str(extra / "secrets.env"))
+    app.bind_host, app.bind_port = "0.0.0.0", 8599  # what serve() records; a LAN bind shows the loopback address
+    monkeypatch.setattr(shell, "resolve_flavour", lambda app: "gitbash")
     fake.script(Scripted(content="ok"))
     conversation.post(app, desk, "where can you write?")
     await _run(app, desk)
@@ -460,6 +468,15 @@ async def test_context_block_lists_the_roots_and_protected_paths(app, fake, tmp_
     assert fs_guard.normalise(str(app.vault_dir)) in block and fs_guard.normalise(str(extra)) in block
     assert "protected (always ask): " in block and "secrets.env" in block
     assert "projects root" not in block  # the setting is gone (2026-09-22)
+    assert f"loom: this backend serves http://127.0.0.1:8599 (pid {os.getpid()}); its home is {str(app.home).replace(chr(92), '/')}; never stop or bind over it" in block
+    assert "shell: gitbash — Windows switches must be written //F, //FI, //PID (a single slash is rewritten as a path); redirect to /dev/null, never nul; 2>nul creates a file" in block
+
+    # Without a recorded bind the settings speak, and a flavour without quirks gets no hint.
+    app.bind_host, app.bind_port = "", 0
+    monkeypatch.setattr(shell, "resolve_flavour", lambda app: "sh")
+    line = context.loom_line(app)
+    assert line.startswith(f"loom: this backend serves http://127.0.0.1:{int(app.settings.get('general.port'))} (pid ")
+    assert context.shell_line(app) == "shell: sh"
 
 
 async def test_pinned_notes_render_in_slot_five_with_a_cap_and_a_missing_marker(app, fake):

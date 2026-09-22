@@ -1,10 +1,11 @@
 """Static shell pre-filter (03 §9.4). It can only GRANT.
 
 A command whose every pipeline stage starts with a word on the read-only allowlist, and
-which contains no redirection, substitution or newline, is obviously harmless; running
-a model to say so is a waste. Everything else — including anything this module cannot
-parse — falls through to the classifier. Nothing here ever returns "deny": static
-filters that deny are what models fight (02 §4), and the charter forbids it.
+which contains no redirection, substitution or newline, and names no protected path, is
+obviously harmless; running a model to say so is a waste. Everything else — including
+anything this module cannot parse — falls through to the classifier. Nothing here ever
+returns "deny": static filters that deny are what models fight (02 §4), and the charter
+forbids it.
 
 The splitter is deliberately small and total: it never raises, and any doubt is `False`.
 """
@@ -132,8 +133,49 @@ def _entries(allowlist: Iterable[str]) -> tuple[set[str], set[tuple[str, str]]]:
     return singles, pairs
 
 
-def is_readonly(command: str, allowlist: list[str]) -> bool:
-    """True only when every stage is plainly read-only. Never raises."""
+def _key(path: str) -> str:
+    p = path.replace("\\", "/").rstrip("/")
+    return p.lower() if os.name == "nt" else p
+
+
+def _looks_like_path(word: str) -> bool:
+    return "/" in word or "\\" in word or word.startswith("~") or (len(word) > 1 and word[1] == ":")
+
+
+def names_protected(words: Iterable[str], protected: Iterable[str] | None, cwd: str | None = None) -> bool:
+    """True when any word, taken as a path relative to the shell's `cwd`, is a protected
+    path or sits under one, or is a path that cannot be resolved statically (`$VAR`,
+    `%VAR%`). A read-only command is not harmless when it reads `secrets.json`;
+    protected paths guarded the fs tools but not `cat` (2026-09-22). Not granting is
+    not denying: the classifier sees the call. Options (`-x`) are skipped; a bare word
+    like `notes.md` is a path in `cwd`, so a command run inside a protected tree is
+    judged too."""
+    keys = [_key(p) for p in (protected or ()) if p]
+    if not keys:
+        return False
+    from .fs_guard import normalise
+
+    for word in words:
+        if not word or word.startswith("-"):
+            continue
+        if "$" in word or "%" in word:
+            if _looks_like_path(word):
+                return True
+            continue
+        try:
+            target = _key(normalise(word, cwd=cwd))
+        except Exception:
+            return True
+        for key in keys:
+            if target == key or target.startswith(key + "/"):
+                return True
+    return False
+
+
+def is_readonly(command: str, allowlist: list[str], protected: Iterable[str] | None = None, cwd: str | None = None) -> bool:
+    """True only when every stage is plainly read-only and names no protected path.
+    `cwd` is what relative paths in the command resolve against (the shell's working
+    directory). Never raises."""
     try:
         if not command or not command.strip():
             return False
@@ -141,6 +183,7 @@ def is_readonly(command: str, allowlist: list[str]) -> bool:
         if not stages:
             return False
         singles, pairs = _entries(allowlist)
+        seen: list[str] = []
         for stage in stages:
             if not stage:
                 return False
@@ -153,11 +196,14 @@ def is_readonly(command: str, allowlist: list[str]) -> bool:
                 words = words[1:]
             if not words:
                 return False
+            seen.extend(words)
             name = command_name(words[0])
             if name in singles:
                 continue
             if len(words) >= 2 and (name, words[1]) in pairs:
                 continue
+            return False
+        if names_protected(seen, protected, cwd):
             return False
         return True
     except Exception:  # a pre-filter that raises would break a turn; doubt means classify

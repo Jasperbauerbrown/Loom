@@ -213,6 +213,7 @@ def serve(
 
     bind = host or str(app.settings.get("general.bind_host"))
     listen_port = int(port if port is not None else app.settings.get("general.port"))
+    app.bind_host, app.bind_port = bind, listen_port  # the model reads these in its context block
     url = f"http://{'127.0.0.1' if bind in ('0.0.0.0', '::') else bind}:{listen_port}"
 
     busy = _port_in_use(bind, listen_port)
