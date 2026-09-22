@@ -795,3 +795,17 @@ sessions do not re-litigate.
   it is a rule, not a fact, and the block had been repeating it every turn. Because the
   description is composed once at registration, `permissions.shell_flavour` is now
   restart-required, so the setting and `resolve_shell` can never disagree.
+- **2026-09-22** — The desk hands over open-ended work before its first step. Asked to
+  "get familiar with this machine", the desk surveyed it inline: 11 model steps and 18
+  tool calls across four approval segments, no note written, and reasoning that never
+  once weighed a thread. The prose had sized effort by the request ("short requests are
+  yours"), named thread work by its products (many steps, files, a later conversation),
+  which a survey has none of up front, and "check knowledge before you spawn" had licensed
+  the first tool calls. Now the soul sizes effort by the work; the ladder's test is
+  whether the end can be named from here; a result that raises a new question instead of
+  answering one is the sign of exploring; `kind-desk.md` names finding-out as thread work
+  and bounds the pre-spawn lookup to what is already written; `conversation_create`'s goal
+  names what an investigation must write. No step counter for the desk: the fix is
+  judgment, not a budget. Two rules the tool descriptions already carry word for word
+  (background processes: `shell`, `process`; waiting for approvals: the soul itself) left
+  the rules section, paying for the two new lines.

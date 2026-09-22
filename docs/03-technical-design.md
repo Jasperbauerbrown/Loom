@@ -513,7 +513,11 @@ note, and a thread without one was a "task". Every thread is now that.
   text from the parent), `notes` (vault paths to pin; each must exist), `roots`, `preset`
   override (validated against enabled presets), `title`. `depth = parent.depth + 1`;
   refused above `max_thread_depth` (default 3). Row written and `conversation.created`
-  emitted **before** the first turn is scheduled.
+  emitted **before** the first turn is scheduled. *When* to spawn is prose, not
+  mechanism (`system.md`, `kind-desk.md`; decided 2026-09-22): the test is whether the
+  end of the work can be named from where the desk stands — a survey, an investigation,
+  a build cannot, and go to a thread before the desk's first step — and a result that
+  raises a new question instead of answering one is the sign that the desk is exploring.
 - **Pinned notes** (`conversations.pinned_notes`, json list; `conversation/pins.py` is
   the one reader and writer): the notes a conversation keeps in slot [5] every turn,
   each capped at `pinned_note_chars` (6,000) with a visible marker. Pinned by the thread
