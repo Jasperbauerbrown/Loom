@@ -648,6 +648,13 @@ sessions do not re-litigate.
 - **2026-09-21** — The "also add this root" checkbox on approval cards defaults to
   unchecked and pairs with `allow always` on every surface (the backend only applies it
   there). Widening roots is a deliberate act, not the default click.
+- **2026-09-21** - After a hosted Qwen 3.6 desk step spent 68k characters repeating
+  five paragraphs verbatim: sampling penalties (repetition/presence/frequency) are
+  ordinary preset params on both wire shapes; in-turn reasoning replay keeps the *tail*
+  of a long step (what led to its calls) behind an elision marker instead of the head
+  (the plan, and where a loop's seed sits); the desk prompt says to send a failed
+  verification back to the thread rather than debugging it itself. A stream-level
+  repetition brake was proposed and left for the person to decide.
 - **2026-09-21** — First visual QA pass by screenshot (headless Chromium against a
   `--fake` server, every screen, both themes, all palettes). Behavioural choices it
   settled: inbox rows from threads, schedules and connectors render as grey bubbles

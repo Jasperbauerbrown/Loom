@@ -337,6 +337,13 @@ class Client:
             options["top_p"] = float(params["top_p"])
         if params.get("max_tokens") is not None:
             options["num_predict"] = int(params["max_tokens"])
+        # Sampling penalties: the standard lever against reasoning that repeats itself.
+        if params.get("repetition_penalty") is not None:
+            options["repeat_penalty"] = float(params["repetition_penalty"])
+        if params.get("presence_penalty") is not None:
+            options["presence_penalty"] = float(params["presence_penalty"])
+        if params.get("frequency_penalty") is not None:
+            options["frequency_penalty"] = float(params["frequency_penalty"])
 
         body: dict[str, Any] = {
             "model": request.model,
@@ -418,6 +425,11 @@ class Client:
             body["temperature"] = float(params["temperature"])
         if params.get("top_p") is not None:
             body["top_p"] = float(params["top_p"])
+        # Penalties are sent only when the preset sets them: `repetition_penalty` is an
+        # OpenRouter/vLLM/llama.cpp extension that a strict OpenAI endpoint may reject.
+        for key in ("presence_penalty", "frequency_penalty", "repetition_penalty"):
+            if params.get(key) is not None:
+                body[key] = float(params[key])
         reasoning = _openai_reasoning(params.get("reasoning"))
         if reasoning is not None:
             body["reasoning"] = reasoning

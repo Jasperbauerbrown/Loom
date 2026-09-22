@@ -352,3 +352,29 @@ async def test_message_posted_during_the_last_model_call_is_queued_then_answered
     answers = [e["content"] for e in _events(app, desk, ["assistant"])]
     assert users[-2:] == ["first", "second message"] and answers[-2:] == ["first answer", "second answer"]
     assert app.conversation(desk)["status"] == "idle"
+
+
+async def test_reasoning_replay_keeps_the_tail_of_long_reasoning(app, fake, tmp_path):
+    """In-turn replay carries the end of a step's reasoning (what led to its calls),
+    prefixed by the elision marker, never the start where a loop's seed would sit."""
+    from loom import prompts
+
+    desk = app.desk_id()
+    app.settings.set(app.db, "conversation.reasoning_replay_max_chars", 60)
+    target = tmp_path / "loom-home" / "artifacts" / "note.txt"
+    target.write_text("hello", encoding="utf-8")
+    long_reasoning = "PLAN " * 40 + "END-OF-THOUGHT reads the file"
+    fake.script(
+        Scripted(content="", reasoning=long_reasoning, tool_calls=[("fs_read", {"path": str(target)})]),
+        Scripted(content="done"),
+    )
+    conversation.post(app, desk, "read the note")
+    await _run(app, desk)
+    second = [c for c in fake.calls if c.purpose == "turn"][1]
+    assistant = [m for m in second.messages if m.get("role") == "assistant" and m.get("tool_calls")][-1]
+    replayed = assistant["reasoning"]
+    marker = prompts.load("context/reasoning-elided")
+    assert replayed.startswith(marker)
+    assert replayed.endswith("END-OF-THOUGHT reads the file")
+    assert len(replayed) <= len(marker) + 1 + 60
+    assert replayed.count("PLAN") < 20  # the 40-token head is gone; only the tail's few remain

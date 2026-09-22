@@ -476,3 +476,33 @@ async def test_openai_reasoning_off_sends_effort_none(app):
     assert seen["body"]["reasoning"] == {"effort": "medium"}
     await drain(client, request_for("hosted"))
     assert "reasoning" not in seen["body"]
+
+
+async def test_sampling_penalties_reach_both_wire_shapes(app):
+    """Penalties are ordinary preset params: Ollama options (repeat_penalty) and
+    OpenAI-compatible body keys; absent params send nothing (a strict endpoint may
+    reject repetition_penalty)."""
+    seen: dict = {}
+
+    def ollama(request: httpx.Request) -> httpx.Response:
+        seen["ollama"] = json.loads(request.content)
+        return httpx.Response(200, content=ndjson({"message": {"content": "ok"}}, {"done": True}))
+
+    client = make_client(app, ollama)
+    await drain(client, request_for(repetition_penalty=1.1, presence_penalty=0.3, frequency_penalty=0.2))
+    opts = seen["ollama"]["options"]
+    assert opts["repeat_penalty"] == 1.1 and opts["presence_penalty"] == 0.3 and opts["frequency_penalty"] == 0.2
+
+    await drain(client, request_for())
+    assert not {"repeat_penalty", "presence_penalty", "frequency_penalty"} & set(seen["ollama"].get("options", {}))
+
+    def openai(request: httpx.Request) -> httpx.Response:
+        seen["openai"] = json.loads(request.content)
+        return httpx.Response(200, content=sse({"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]}, "[DONE]"))
+
+    client = make_client(app, openai, kind="openai_compatible")
+    await drain(client, request_for("hosted", presence_penalty=0.4, repetition_penalty=1.05))
+    body = seen["openai"]
+    assert body["presence_penalty"] == 0.4 and body["repetition_penalty"] == 1.05 and "frequency_penalty" not in body
+    await drain(client, request_for("hosted"))
+    assert not {"presence_penalty", "frequency_penalty", "repetition_penalty"} & set(seen["openai"])

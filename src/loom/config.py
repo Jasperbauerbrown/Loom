@@ -198,7 +198,7 @@ FIELDS: list[Field] = [
     Field("conversation.forced_compactions_per_turn", "int", 2, "Forced compactions per turn", "", "number", min=0, max=10),
     Field("conversation.model_error_retries", "int", 1, "Model error retries", "Retries for transient model errors.", "number", min=0, max=5),
     Field("conversation.reasoning_replay", "bool", True, "Replay reasoning within a turn", "Feed each step's reasoning into later steps of the same turn.", "toggle"),
-    Field("conversation.reasoning_replay_max_chars", "int", 4000, "Reasoning replay cap (chars)", "", "number", min=0, max=100000),
+    Field("conversation.reasoning_replay_max_chars", "int", 4000, "Reasoning replay cap (chars)", "Longer reasoning replays its last N characters, the part that led to the step's calls.", "number", min=0, max=100000),
     Field("conversation.tool_output_cap", "int", 8000, "Tool output cap (chars)", "Longer outputs are spilled to artifacts.", "number", min=500, max=200000),
     Field("conversation.artifact_head_chars", "int", 2000, "Artifact preview head (chars)", "", "number", min=0, max=50000),
     Field("conversation.artifact_tail_chars", "int", 1000, "Artifact preview tail (chars)", "", "number", min=0, max=50000),

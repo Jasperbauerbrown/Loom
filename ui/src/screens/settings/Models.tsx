@@ -417,6 +417,9 @@ function PresetDialog({
   const [numCtx, setNumCtx] = useState(String(p.num_ctx ?? ""));
   const [keepAlive, setKeepAlive] = useState(String(p.keep_alive ?? ""));
   const [timeoutS, setTimeoutS] = useState(String(p.timeout_s ?? ""));
+  const [repetitionPenalty, setRepetitionPenalty] = useState(String(p.repetition_penalty ?? ""));
+  const [presencePenalty, setPresencePenalty] = useState(String(p.presence_penalty ?? ""));
+  const [frequencyPenalty, setFrequencyPenalty] = useState(String(p.frequency_penalty ?? ""));
   const initReasoning = parseReasoning(p.reasoning);
   const [reasoningMode, setReasoningMode] = useState(initReasoning.mode);
   const [reasoningBudget, setReasoningBudget] = useState(initReasoning.budget);
@@ -467,6 +470,9 @@ function PresetDialog({
       num_ctx: num(numCtx),
       keep_alive: keepAlive || undefined,
       timeout_s: num(timeoutS),
+      repetition_penalty: num(repetitionPenalty),
+      presence_penalty: num(presencePenalty),
+      frequency_penalty: num(frequencyPenalty),
       reasoning,
       multimodal,
       image_tokens: num(imageTokens),
@@ -554,6 +560,15 @@ function PresetDialog({
         </FieldRow>
         <FieldRow label="Timeout (s)">
           <Input type="number" value={timeoutS} onChange={(e) => setTimeoutS(e.target.value)} />
+        </FieldRow>
+        <FieldRow label="Repetition penalty" help="Ollama repeat_penalty / OpenRouter repetition_penalty. 1.0 is neutral; 1.05 to 1.2 discourages loops. Empty = provider default.">
+          <Input type="number" step="any" value={repetitionPenalty} onChange={(e) => setRepetitionPenalty(e.target.value)} placeholder="1.0" />
+        </FieldRow>
+        <FieldRow label="Presence penalty" help="-2 to 2. A small positive value (0.1 to 0.5) is the usual cure for reasoning that repeats itself.">
+          <Input type="number" step="any" value={presencePenalty} onChange={(e) => setPresencePenalty(e.target.value)} placeholder="0" />
+        </FieldRow>
+        <FieldRow label="Frequency penalty" help="-2 to 2. Penalises tokens by how often they have already appeared.">
+          <Input type="number" step="any" value={frequencyPenalty} onChange={(e) => setFrequencyPenalty(e.target.value)} placeholder="0" />
         </FieldRow>
         <FieldRow label="Reasoning">
           <div className="flex gap-1.5">

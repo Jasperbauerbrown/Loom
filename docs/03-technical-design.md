@@ -153,7 +153,8 @@ providers(name TEXT PK, kind TEXT /*ollama|openai_compatible*/, base_url TEXT,
           api_key_ref TEXT, params TEXT /*json defaults*/, enabled INT)
 presets(name TEXT PK, provider TEXT, model TEXT,
         params TEXT /*json: max_tokens, temperature, top_p, effective_ctx, num_ctx,
-        keep_alive, timeout_s, reasoning (on|off|budget), token_factor_seed,
+        keep_alive, timeout_s, reasoning (on|off|budget), repetition_penalty,
+        presence_penalty, frequency_penalty, token_factor_seed,
         multimodal (bool), image_tokens (per-image prompt-token estimate)*/,
         notes TEXT, enabled INT, created_at TEXT, updated_at TEXT)
 model_roles(role TEXT PK /*desk|worker|maintenance|utility|embedding*/, preset TEXT)
@@ -437,7 +438,9 @@ id). So a message is never lost and never duplicated.
 6  unlock
 ```
 Reasoning replay within the turn: each step's reasoning is fed back into subsequent
-steps of the *same* turn, head-capped at `reasoning_replay_max_chars` (4,000); never
+steps of the *same* turn, tail-capped at `reasoning_replay_max_chars` (4,000: the last N
+characters behind an elision marker, the part that led to the step's calls, never the
+head where a degenerate loop's seed sits); never
 replayed across turns; counted at zero in occupancy.
 
 ### 6.4 Budgets and brakes
@@ -1075,7 +1078,8 @@ remembered in `localStorage` so a reload does not flash the default look.
   secret picker, default params, concurrency, enabled; probe button lists live
   models). *Presets* (CRUD: name, provider, model picked from the probe list or typed,
   every generation/window parameter with provider defaults shown as placeholders,
-  reasoning mode, a *multimodal* toggle with the per-image token estimate, notes;
+  reasoning mode, repetition/presence/frequency penalties, a *multimodal* toggle with
+  the per-image token estimate, notes;
   "test" runs one short completion; shows calibrated
   `token_factor_seed` read-only; usage count of roles/threads pointing at it; delete
   blocked while referenced). *Roles* (five dropdowns → preset; `fallback_role`;

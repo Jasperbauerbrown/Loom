@@ -205,8 +205,14 @@ async def _turn(app, state: TurnState) -> None:  # type: ignore[no-untyped-def]
             "tool_calls": [{"id": c.id, "type": "function", "function": {"name": c.name, "arguments": db.dumps(c.arguments)}} for c in result.tool_calls],
         }
         if result.reasoning and app.settings.get("conversation.reasoning_replay"):
+            # The end of the reasoning is what led to this step's calls; the start is the
+            # plan, and when a step degenerated into repetition the start is also where
+            # the loop's seed sits (a 68k-char loop was primed that way, 2026-09-21).
             cap = int(app.settings.get("conversation.reasoning_replay_max_chars"))
-            assistant_msg["reasoning"] = result.reasoning[:cap]
+            text = result.reasoning
+            if len(text) > cap:
+                text = prompts.load("context/reasoning-elided") + "\n" + text[-cap:]
+            assistant_msg["reasoning"] = text
         ctx.turn.append(assistant_msg)
 
         paused = await _dispatch_calls(app, state, ctx, ev, result.tool_calls)

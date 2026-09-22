@@ -34,6 +34,9 @@ PRESET_PARAM_KEYS = (
     "token_factor_seed",
     "multimodal",
     "image_tokens",
+    "repetition_penalty",
+    "presence_penalty",
+    "frequency_penalty",
 )
 PROVIDER_PARAM_KEYS = ("timeout_s", "concurrency", "stream_idle_s")
 
