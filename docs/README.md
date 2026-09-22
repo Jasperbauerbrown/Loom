@@ -7,7 +7,7 @@ the Loom repository; `CLAUDE.md` here moves to the repository root.
 |---|---|---|
 | 1 | `00-charter.md` | Purpose, ethos, technical constraints, the assistant's shape (desk / knowledge / capabilities / threads), and the dated decision log. The place to check before re-opening a settled question. |
 | 2 | `03-technical-design.md` | Implementation-level design: processes, schema, vault format, turn loop, context slots, tools and permissions, MCP and connectors, triggers, API, UI, settings inventory, promotion, dependencies, build order. |
-| 3 | `04-soul.md` | Draft of `prompts/system.md` and the two kind prompts. The only model-facing text that says who Loom is. |
+| 3 | `04-soul.md` | The constraints the soul must keep (static prose, cache-stable prefix, line budgets). The prompts themselves live in `prompts/system.md`, `kind-desk.md`, `kind-thread.md`, the only model-facing text that says who Loom is. |
 | 4 | `01-walkthroughs.md` | The four example requests traced through the design; also the specification for the integration tests. |
 | 5 | `02-research-takeaways.md` | What was adopted, adapted and rejected from the field survey, with reasons. |
 | ref | `reference/agentic-harnesses.md` | Survey of ~85 agentic harnesses (2026-09-17). |

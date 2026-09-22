@@ -98,11 +98,12 @@ loom/
 ### 3.2 Backend
 - FastAPI + uvicorn, single process, asyncio. Binds `127.0.0.1:8500` by default; LAN
   binding and a bearer token are settings.
-- Startup order: migrate DB → load settings → init secrets → init model client → load
+- Startup order: migrate DB → load settings → init secrets → reconcile background processes (§9.6) → init model client → load
   vault index (rebuild if stale) → start watcher → load connectors → connect MCP servers
   → start scheduler → resume interrupted conversations (§6.3 step 0) → serve.
 - Shutdown: stop accepting turns, let in-flight tool calls finish (bounded 10s),
-  persist, exit. Persist-before-act (§4) makes abrupt kills safe.
+  persist, exit. Persist-before-act (§4) makes abrupt kills safe. Background processes
+  are left running on purpose (§9.6).
 
 ### 3.3 First run (decided)
 Simplicity ethos: from install to a working desk in under a minute, one required
@@ -133,6 +134,7 @@ Settings; the screen never reappears unless the desk role is cleared.
   state.db  state.db-wal      # system of record
   vault/                      # git repo; markdown truth (§4.3)
   artifacts/<conv_id>/<event_id>.txt   # spilled tool output
+  artifacts/<conv_id>/proc_<id>.log    # background process output (§9.6)
   secrets.json                # fallback store only (§4.5)
   releases/<id>/              # git worktrees of the assistant's own repo (§15)
   current  previous           # release pointers (`previous` is what rollback returns to)
@@ -175,7 +177,7 @@ events(id INTEGER PK, conversation_id TEXT, kind TEXT
 events_fts  -- FTS5 external-content table over events.content for user/assistant/tool_result
 
 inbox(id INTEGER PK, conversation_id TEXT, source TEXT
-      /*user|conversation:<id>|schedule:<id>|connector:<name>|system*/,
+      /*user|conversation:<id>|schedule:<id>|connector:<name>|process:<id>|system*/,
       content TEXT, meta TEXT, created_at TEXT, delivered_at TEXT)
 
 approvals(id TEXT PK, conversation_id TEXT, event_id INT /*the tool_call*/,
@@ -192,6 +194,11 @@ schedules(id TEXT PK, spec TEXT, target TEXT /*conversation id or 'desk'*/,
 
 artifacts(id TEXT PK, conversation_id TEXT, event_id INT, path TEXT, bytes INT,
           head TEXT, tail TEXT, created_at TEXT)
+
+processes(id TEXT PK /*ULID*/, conversation_id TEXT, title TEXT, command TEXT, cwd TEXT,
+          pid INT, status TEXT /*starting|running|exited|stopped|failed|lost*/,
+          exit_code INT, error TEXT, log_path TEXT /*artifacts/<conv>/proc_<id>.log*/,
+          started_at TEXT, ended_at TEXT)                     -- 0003 (2026-09-22), §9.6
 
 tool_policies(tool TEXT PK, mode TEXT /*allow|ask|classify*/, updated_at TEXT)
 roots(path TEXT PK, added_at TEXT, added_by TEXT)
@@ -557,7 +564,7 @@ note, and a thread without one was a "task". Every thread is now that.
 | — | *end of cache-friendly prefix* | | |
 | [7] | `summary` (if any), fenced `<context from="harness">` | user, right after the prefix | changes only on fold |
 | [8] | Live events since `summary_cutoff`, replayed in order; `thinking`/`system`/`status` kinds skipped; evictions applied. A `user` event's `meta.images` become data URLs on its message; a `tool_result` with images stays text (one `[image <id> attached to this result]` marker per image) and is followed, after the step's last tool message, by a user-role *follower* carrying the images (`prompts/context/tool-image-note.md`) — tool-role messages cannot carry image parts. Evicted results lose their images with their content. | assistant / user / tool | stable within a turn |
-| [5]+[6] | Desk: the **now board** (pending approvals, unseen items, running threads with one-line status). Thread: the goal + its status fields. Both: the **pinned notes** (`# Pinned notes`, each capped at `pinned_note_chars`). Then a **Filesystem** block: the conversation's effective roots (global + its own, the first being what relative paths resolve against) and the protected paths, one line each. Then `now: 2026-09-20 14:02 (America/…)` + threads: `[steps remaining: N]`. One fenced `<context from="harness">` block | user, immediately before this turn's messages | volatile |
+| [5]+[6] | Desk: the **now board** (pending approvals, unseen items, running threads with one-line status, then one line per running background process). Thread: the goal + its status fields. Both: the **pinned notes** (`# Pinned notes`, each capped at `pinned_note_chars`). Then a **Filesystem** block: the conversation's effective roots (global + its own, the first being what relative paths resolve against) and the protected paths, one line each. Then `now: 2026-09-20 14:02 (America/…)` + threads: `[steps remaining: N]`. One fenced `<context from="harness">` block | user, immediately before this turn's messages | volatile |
 | [9] | Resolved entities for this input (§8.2–8.3), wrapped `<knowledge may_be_irrelevant="true">…</knowledge>`; ephemeral, never persisted | user | volatile |
 | [10] | Claimed inbox messages as user-role messages (with their images), then the turn's own assistant / tool messages and image followers | user / assistant / tool | volatile |
 
@@ -752,7 +759,8 @@ Registry = native tools + MCP tools (prefixed `mcp_<server>_<tool>`) + connector
 | `fs_search` | regex/grep with context | yes | allow |
 | `fs_write` | create/overwrite (guarded) | no | allow (within roots) |
 | `fs_edit` | exact `old`→`new` replace, must be unique | no | allow (within roots) |
-| `shell` | one command line, `cwd` in roots, env passthrough minus secrets, timeout, output cap; Windows: cmd.exe or Git Bash per setting | no | classify (pre-filter first) |
+| `shell` | one command line, `cwd` in roots, env passthrough minus secrets, timeout, output cap; `background=true` (+ `title`) starts a supervised long-running process instead and returns its id, pid and log path at once (§9.6); Windows: cmd.exe or Git Bash per setting | no | classify (pre-filter first) |
+| `process` | `list` / `logs` / `stop` for background processes (§9.6); `logs` is the tail by default, paged forward with a footer (`paged`, never spilled) | list, logs yes | allow |
 | `http` | GET/POST/… with headers/body; secret templating; an image response is returned as the image | no (GET treated read-only) | classify |
 | `screenshot` | capture a monitor, the whole virtual screen, a region or a window (by title, Windows) as an image; `scale` downsizes; via PowerShell/System.Drawing on Windows, `screencapture` on macOS, `grim`/`gnome-screenshot`/`import`/`scrot` on Linux — no dependency | yes | allow |
 | `knowledge_*`, `procedure_load`, `transcript_search`, `artifact_recall` | §8.4 | mixed | allow (core/ → ask) |
@@ -823,6 +831,49 @@ side effects, credential access, or out-of-scope → ask). Output: strict JSON
 `{"decision":"allow|ask","reason":"…"}`; any parse failure → ask. Role: `utility` if
 set else the conversation's role; priority inherits. Result and reason are stored on
 the tool_call event `meta` and shown in the UI on hover.
+
+### 9.6 Background processes (decided 2026-09-22)
+A program that must outlive a tool call — a dev server, a bot, a watcher — is started
+with `shell(command, cwd?, env?, background=true, title?)`. The command is judged exactly
+like a foreground one (pre-filter, then classifier); `timeout_s` and `stdin` do not
+apply. The tool writes the `processes` row first (persist before act, status
+`starting`), spawns the child through the same shell flavour with stdout and stderr
+appended to `artifacts/<conv>/proc_<id>.log`, stdin closed and its own process group,
+then marks the row `running` with the pid and returns id, pid and log path at once. A
+spawn that fails leaves a `failed` row carrying the error.
+
+`loom.processes` (installed right after `loom.artifacts`) supervises. One watcher task
+per process waits for it, marks the row `exited` with the exit code and posts an inbox
+message to the owning conversation — source `process:<id>`, rendered
+`[process "<title>" exited]`, carrying the last 600 chars of output — so the thread
+learns of the exit at its next step boundary like any other event. `stop` (the tool,
+the REST call or the UI) kills the process tree with the same helper the foreground
+timeout uses and marks the row `stopped`; when someone other than the owning
+conversation stopped it, the owner is told the same way.
+
+The model reads and manages processes through one tool, `process(action, id?, offset?,
+limit?)`: `list` (every row, newest first, with status, pid, owner and log size),
+`logs` (paged like `artifact_recall`: the tail by default, `offset` pages forward with a
+footer; `paged`, never spilled) and `stop`. Default policy `allow`: Loom started it. The
+desk's now board carries one line per running process after the thread lines; every
+conversation's panel lists the processes it started; the board's Processes group has
+Stop and a log drawer.
+
+Why a log file and not a pipe: a child whose stdout is a pipe into the backend dies
+with the backend (EPIPE on its next write), and the whole point of a background process
+is that it stays up. So children deliberately outlive a backend restart, and shutdown
+leaves them alone. On start every `running` row is reconciled: pid alive → re-attached
+with a 5-second poll (a process that is not our child cannot be waited on) and later
+marked `exited` with an unknown exit code; pid dead → `lost`; `starting` (crashed
+between the row and the spawn) → `failed`. Nothing is restarted and nothing is posted
+for a reconciled row; the board simply stops listing it.
+
+Deliberately left out, each a knob to add when something needs it: a restart policy
+(Hydra had never / on_failure / always; Loom restarts nothing on its own), Windows Job
+Objects for containment and memory caps (they need `pywin32`, §19), and log rotation (a
+rotating writer would have to sit on a pipe, see above; the log grows until the
+conversation's artifacts are pruned, and `list` shows its size so a chatty child is
+visible). Rows of archived conversations are pruned with their artifacts.
 
 ## 10. Connectors and MCP
 
@@ -963,6 +1014,7 @@ POST /conversations/{id}/images  (raw image bytes; Content-Type image/*) → {id
 GET  /conversations/{id}/images/{image_id} → the bytes, immutable cache headers; 404 on miss or a malformed id
 POST /conversations/{id}/cancel         POST /conversations/{id}/archive     POST /conversations/{id}/clear (409 while running)
 GET  /conversations/{id}/occupancy      GET  /conversations/{id}/artifacts     GET /artifacts/{id}?offset&limit
+GET  /processes?conversation_id&status  GET  /processes/{id}   GET /processes/{id}/logs?offset&limit   POST /processes/{id}/stop   (§9.6; starting one is a model action, `shell(background=true)`)
 GET  /conversations/{id}/inbox          rows posted but not yet in the transcript (surfaces render them as *queued*)
 GET  /conversations/{id}/status         → {fields|null, owner|null, source: note|transcript|none}   PUT /conversations/{id}/status {fields} (owner `user`; a note block keeps its owner)
 GET  /approvals?status                  GET  /approvals/{id}   POST /approvals/{id} {decision: allow|deny|allow_always, add_root?}
@@ -991,7 +1043,7 @@ GET  /system/promote/log   GET /system/snapshots   GET /system/supervisor   POST
 ```
 Update verbs: `PATCH` for partial row updates (providers, presets, conversations, mcp
 servers, connectors, schedules, settings); `PUT` where the body replaces the whole value
-(roles, tool policies, secrets, vault note/status). All mutations emit a matching WS
+(roles, tool policies, secrets, vault note). All mutations emit a matching WS
 event so every surface stays consistent.
 
 ### 12.2 WebSocket `/ws`
@@ -1014,6 +1066,7 @@ inbox.posted                        data: {id, source, content, created_at, meta
                                     when the `user` event carrying `meta.inbox_id` is appended
 models.changed                      data: {kind: provider|preset|role, name}
 approval.requested|resolved         data: approval row
+process.started|exited|stopped|failed|lost   data: process row (§9.6)
 schedule.created|updated|deleted    data: schedule row
 item.created|updated                data: item row
 notification                        data: {title, body, item_id}
@@ -1058,14 +1111,16 @@ remembered in `localStorage` so a reload does not flash the default look.
   by paperclip, paste or drop; each uploads at once (`POST …/images`) and shows as a
   thumbnail chip until sent; user bubbles, queued cards and tool rows with images show a
   thumbnail strip served from `GET …/images/{id}` (click opens the full image). Right rail:
-  **Now board** (items grouped: needs you / running threads / queued), each item
-  actionable. Header: occupancy meter (used/limit, colour by proximity to compaction),
+  **Now board** (items grouped: needs you / threads / queued / processes — each
+  running process with Stop and a log drawer), each item actionable. Inbox rows posted
+  by a background process carry a *from process* caption. Header: occupancy meter (used/limit, colour by proximity to compaction),
   queue indicator, model role in use.
 - **Threads**. List (status, goal, last update, depth tree). Thread view = same
   conversation component + a **Status/plan panel** rendering the status as an editable
   form (`GET`/`PUT /conversations/{id}/status`), the **pinned notes** (links; unpin; add
   by path → `PATCH pinned_notes`), a link to the walkthrough (`conversations.walkthrough`,
-  the daily-log note) and artifacts, and "spawned by" links. Create-thread dialog: goal,
+  the daily-log note), artifacts, a **Processes** section (the processes this
+  conversation started: status, pid, log size, Stop, log drawer; §9.6), and "spawned by" links. Create-thread dialog: goal,
   notes to pin (optional), roots, role.
 - **Vault**. Tree by type; note view/edit (Markdown editor with wikilink completion and
   frontmatter form); backlinks and outgoing links; search (fused); **Recent changes**
@@ -1255,6 +1310,9 @@ Nothing in these files references mutable state (model names, paths, rosters).
 | Tool exception / timeout | error tool result; model continues |
 | Malformed tool args | error tool result; never executed |
 | Crash mid-turn | on restart: unpaired tool_call → synthetic "interrupted" result; undelivered inbox redelivered |
+| Background process exits | row `exited` with the code; the owning conversation gets an inbox message with the last output; nothing restarts it |
+| Background process stopped by someone else | row `stopped`; the owning conversation is told |
+| Background process gone at backend start | row `lost` (`failed` if it never got a pid); no message; the board stops listing it |
 | Vault parse error | note indexed with `type=invalid`, shown in vault UI; never blocks |
 | MCP server down | tools removed, item posted, reconnect with backoff |
 | Connector import error | disabled, item posted |
@@ -1287,7 +1345,8 @@ Backend runtime: `fastapi`, `uvicorn`, `httpx`, `pyyaml`, `keyring`, `tzdata`. D
 builds), `asyncio`, `json`, `re`, `array`/`math.sumprod`, `subprocess`, `shlex`.
 Not used, deliberately: SQLAlchemy/alembic (hand SQL), LiteLLM/openai SDK (one HTTP
 shape), LanceDB/numpy (brute-force cosine), APScheduler/croniter (80-line parser),
-watchfiles (polling), GitPython (git CLI), cryptography (see §4.5).
+watchfiles (polling), GitPython (git CLI), cryptography (see §4.5), pywin32 (Job Objects
+for background processes, §9.6).
 UI: `react`, `react-dom`, `vite`, `typescript`, `tailwindcss`, one Markdown renderer
 (`marked` or `react-markdown`), dev `vitest`. No state library, no component library.
 

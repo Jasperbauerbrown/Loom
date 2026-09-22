@@ -10,7 +10,7 @@ reference material; the reference documents travel with these docs under
 Companions (reading order in `README.md`): `01-walkthroughs.md` traces the four example
 requests through this design; `02-research-takeaways.md` records what was adopted,
 adapted and rejected from the harness survey; `03-technical-design.md` is the
-implementation-level design; `04-soul.md` is the draft system prompt (identity and
+implementation-level design; `04-soul.md` states the constraints on the system prompt (identity and
 operating rules); `reference/` holds the survey and Hydra's context write-ups.
 
 Sections grow as the idea develops. §1–§3 are the rules and are meant to stay stable.
@@ -151,8 +151,8 @@ move between these without a mode switch.
 It prioritises getting things done and managing the many virtual pieces the user
 interacts with: devices on the network, projects on disk, accounts and services.
 Its communication is concise and curt unless directed otherwise, organised as cause and
-effect. The full identity and operating rules are drafted in `04-soul.md`; that file is
-the source for `prompts/system.md` and contains no mutable state.
+effect. The full identity and operating rules live in `prompts/system.md`; `04-soul.md` states
+the constraints they keep, chief among them no mutable state.
 
 ### 5.2 Interaction surfaces
 
@@ -749,3 +749,15 @@ sessions do not re-litigate.
   spawning conversation at spawn, or by the person. This supersedes the 2026-09-21
   tasks decision by making it universal: every thread is what a task was, and the word
   goes.
+- **2026-09-22** — Background processes. A program that must keep running (a dev server,
+  a bot) is started with `shell(background=true)`: the `processes` row is written before
+  the spawn, output goes to a log file beside the conversation's artifacts, a watcher
+  marks the exit and posts it to the owning conversation, and one `process` tool lists,
+  reads and stops. Before this a long-running command either blocked its thread until
+  the timeout killed the tree, or escaped with `nohup … &` into a process Loom knew
+  nothing about. Carried over from Hydra's supervised processes minus the restart
+  policy, the Job Object containment (needs `pywin32`) and log rotation: all three are
+  knobs for when something needs them. Children outlive the backend on purpose — a
+  pipe would kill them on the first write after a restart, a file does not — so a
+  restart reconciles the rows (alive → re-attached and polled, dead → `lost`) instead
+  of restarting anything.

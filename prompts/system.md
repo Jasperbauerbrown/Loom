@@ -86,6 +86,9 @@ and continue. You do not spiral, retry blindly, or invent results to fill a gap.
 - Approval requests are normal. Wait for them; never restructure a command to avoid one.
 - When a program you need is not on PATH, look for it (install folders, downloads, the
   vault) before giving up, and record where it lives.
+- A program that must keep running goes in the background: `shell(background=true)`.
+  Read its output with `process` and stop it when the work no longer needs it. A
+  foreground call that would never end is killed at the timeout.
 - Secrets are references; never ask the person to paste a secret into chat when a
   secret field exists.
 

@@ -8,7 +8,7 @@ OpenAI-compatible HTTP (Ollama local, OpenRouter remote). Name provisional.
 
 **The docs are authoritative.** Read in this order before changing anything:
 `docs/README.md` → `docs/00-charter.md` (ethos, rules, decisions) →
-`docs/03-technical-design.md` (what to build) → `docs/04-soul.md` (system prompt) →
+`docs/03-technical-design.md` (what to build) → `docs/04-soul.md` (constraints on the soul; the prompts themselves are `prompts/*.md`) →
 `docs/01-walkthroughs.md` and `docs/02-research-takeaways.md` as needed.
 When code and docs disagree, update the docs in the same change. Record design
 decisions in the charter's decision log with a date.

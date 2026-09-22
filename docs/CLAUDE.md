@@ -8,7 +8,7 @@ OpenAI-compatible HTTP (Ollama local, OpenRouter remote). Name provisional.
 
 **The docs are authoritative.** Read in this order before changing anything:
 `docs/README.md` → `docs/00-charter.md` (ethos, rules, decisions) →
-`docs/03-technical-design.md` (what to build) → `docs/04-soul.md` (system prompt) →
+`docs/03-technical-design.md` (what to build) → `docs/04-soul.md` (constraints on the soul; the prompts themselves are `prompts/*.md`) →
 `docs/01-walkthroughs.md` and `docs/02-research-takeaways.md` as needed.
 When code and docs disagree, update the docs in the same change. Record design
 decisions in the charter's decision log with a date.
@@ -40,7 +40,8 @@ decisions in the charter's decision log with a date.
 - **Fail closed.** Unknown tool or unset policy behaves as `ask`. Nothing static ever
   *denies* a shell command (the pre-filter may only grant).
 - **Model-facing prose lives in `prompts/*.md`.** Never hardcode it.
-- **Tests never call a live model.** The fake model client is the test harness.
+- **Tests never call a live model or the machine's credential store.** The fake model
+  client and the conftest fake keyring are the test harness.
 - **No lint/type tooling uninvited.** UI type-checks via `tsc` during build.
 
 ## Commands (as designed; keep this block true as the repo takes shape)
