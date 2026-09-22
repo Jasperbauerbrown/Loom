@@ -38,12 +38,59 @@ GIT_BASH_CANDIDATES = (
 )
 
 
+# Directories whose `bash.exe` is not a shell: Windows' WSL launcher lives in System32 and
+# the Store stub in WindowsApps, and a PATH lookup for `bash` lands on one of them first.
+_WSL_LAUNCHER_DIRS = ("system32", "windowsapps")
+
+
+def _registry_git_roots() -> list[str]:
+    """Git for Windows records its install root under `SOFTWARE\\GitForWindows`, wherever
+    the person put it."""
+    if os.name != "nt":
+        return []
+    import winreg  # Windows only
+
+    roots: list[str] = []
+    for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        for flag in (0, winreg.KEY_WOW64_32KEY):
+            try:
+                with winreg.OpenKey(hive, r"SOFTWARE\GitForWindows", 0, winreg.KEY_READ | flag) as key:
+                    value = str(winreg.QueryValueEx(key, "InstallPath")[0])
+            except OSError:
+                continue
+            if value and value not in roots:
+                roots.append(value)
+    return roots
+
+
+def _is_wsl_launcher(path: str) -> bool:
+    parts = path.replace("\\", "/").lower().split("/")
+    return any(p in _WSL_LAUNCHER_DIRS for p in parts[:-1])
+
+
 def find_git_bash() -> str | None:
-    for candidate in GIT_BASH_CANDIDATES:
-        if os.path.exists(candidate):
-            return candidate
+    """Git's bash, found from where Git is installed: the registry, the standard folders,
+    then the `git` on PATH (`<root>/cmd/git.exe` or `<root>/mingw64/bin/git.exe`). A bare
+    `bash.exe` on PATH is the last resort and never accepted when it is the WSL launcher:
+    on 2026-09-22 a desk told its shell was Git Bash ran in Ubuntu, because Git lived in a
+    non-standard folder and System32 came first on PATH."""
+    roots = _registry_git_roots()
+    roots += [os.path.dirname(os.path.dirname(c)) for c in GIT_BASH_CANDIDATES]
+    git = shutil.which("git")
+    if git:
+        parent = os.path.dirname(os.path.realpath(git))  # <root>/cmd or <root>/mingw64/bin
+        roots += [os.path.dirname(parent), os.path.dirname(os.path.dirname(parent))]
+    seen: set[str] = set()
+    for root in roots:
+        if not root or root in seen:
+            continue
+        seen.add(root)
+        for rel in (("bin", "bash.exe"), ("usr", "bin", "bash.exe")):
+            candidate = os.path.join(root, *rel)
+            if os.path.isfile(candidate) and not _is_wsl_launcher(candidate):
+                return candidate
     found = shutil.which("bash")
-    return found if found else None
+    return found if found and not _is_wsl_launcher(found) else None
 
 
 FLAVOURS = ("gitbash", "cmd", "powershell", "sh")

@@ -199,6 +199,40 @@ def test_resolve_shell_honours_the_setting(app):
     assert ("cmd" in argv[0].lower()) if os.name == "nt" else argv[-1] == "-c"
 
 
+# Git Bash is found from where Git is installed, never from a bare `bash.exe` on PATH: on
+# Windows that is the WSL launcher in System32 (or the Store stub in WindowsApps), and a
+# desk told "Git Bash" once ran in Ubuntu that way (2026-09-22).
+def _plant(*files):
+    for f in files:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"")
+
+
+def test_find_git_bash_refuses_the_wsl_launcher(monkeypatch, tmp_path):
+    launcher = tmp_path / "Windows" / "System32" / "bash.exe"
+    _plant(launcher)
+    monkeypatch.setattr(shell_tool, "_registry_git_roots", lambda: [])
+    monkeypatch.setattr(shell_tool, "GIT_BASH_CANDIDATES", ())
+    monkeypatch.setattr(shell_tool.shutil, "which", lambda name, *a, **k: str(launcher) if name == "bash" else None)
+    assert shell_tool.find_git_bash() is None
+
+
+def test_find_git_bash_follows_the_git_install(monkeypatch, tmp_path):
+    root = tmp_path / "Computer Stuff" / "Git"
+    bash, git = root / "usr" / "bin" / "bash.exe", root / "cmd" / "git.exe"
+    launcher = tmp_path / "Windows" / "System32" / "bash.exe"
+    _plant(bash, git, launcher)
+    monkeypatch.setattr(shell_tool, "_registry_git_roots", lambda: [])
+    monkeypatch.setattr(shell_tool, "GIT_BASH_CANDIDATES", ())
+    monkeypatch.setattr(shell_tool.shutil, "which", lambda name, *a, **k: {"git": str(git), "bash": str(launcher)}.get(name))
+    assert os.path.normcase(shell_tool.find_git_bash() or "") == os.path.normcase(str(bash))
+    # the registry's install root wins when it is set, wherever Git was put
+    other = tmp_path / "Elsewhere" / "Git" / "bin" / "bash.exe"
+    _plant(other)
+    monkeypatch.setattr(shell_tool, "_registry_git_roots", lambda: [str(other.parent.parent)])
+    assert os.path.normcase(shell_tool.find_git_bash() or "") == os.path.normcase(str(other))
+
+
 async def test_shell_round_trips_a_command(app, ctx, project):
     result = await run(app, ctx, "shell", {"command": "echo loom-works", "cwd": str(project)})
     assert result.ok

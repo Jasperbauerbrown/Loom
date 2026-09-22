@@ -809,3 +809,14 @@ sessions do not re-litigate.
   judgment, not a budget. Two rules the tool descriptions already carry word for word
   (background processes: `shell`, `process`; waiting for approvals: the soul itself) left
   the rules section, paying for the two new lines.
+- **2026-09-22** — Git Bash is found from where Git is installed, never from a bare
+  `bash.exe` on PATH. In the same survey turn the harness block said the shell was Git
+  Bash and the process was WSL Ubuntu: Git lives in a non-standard folder here, the
+  standard-folder candidates missed, and the fallback `which("bash")` returned the WSL
+  launcher in System32. Five of the turn's eleven steps went to that discrepancy, and the
+  device note it left behind records WSL, and a "the shell eats `$var`" gotcha that was
+  really WSL's launcher, as facts about the machine. `find_git_bash` now asks the
+  registry (`SOFTWARE\GitForWindows\InstallPath`), then the standard folders, then
+  derives the root from the `git` on PATH; a PATH `bash.exe` under System32 or
+  WindowsApps is refused. Restart-required, as the flavour already was: the harness block
+  and the process can no longer disagree about which shell this is.
