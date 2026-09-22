@@ -213,14 +213,15 @@ memory changes, not just its retrieval.
   protocol, events or a surface demand it. All tools are always available.
 - **Threads.** Long work spawned from the desk, each with its own context and
   transcript, running in parallel. A thread publishes status (goal, progress, blockers,
-  decisions) into its project entity as it works. The desk answers "what's the state
-  of X?" by reading that entity, not the thread transcript. Threads are where the
-  session model is *correct*: task-bound, focused, disposable; their durable output is
-  knowledge and files.
+  decisions) into its own transcript as it works and pins the notes it needs. The desk
+  answers "how is it going?" from that status, not from the thread transcript. Threads
+  are where the session model is *correct*: bounded, focused, disposable; their durable
+  output is knowledge and files. What a project is, Loom does not decide: it is whatever
+  the person calls one, known through a note the model writes.
 
 **One conversation primitive.** Desk and thread are the same thing configured
 differently: a *conversation* = scope + lifetime + transcript. Desk: scope
-"everything", lifetime infinite. Thread: scope "one project/task", lifetime until done.
+"everything", lifetime infinite. Thread: scope "one goal", lifetime until done.
 The user talks primarily to the desk but may enter any thread directly. Messages into a
 working conversation (from the user or from the desk) land in one inbox and are
 injected at the next step boundary. Effect: one codepath for both; no separate
@@ -263,9 +264,9 @@ skills) first; *episodic* (what happened: transcripts) last.
   procedures first, within a fixed token budget. One rule for every entity type; no
   per-entity configuration. Everything deeper the model reads with knowledge tools.
 - **Granularity.** One note per entity holding stable facts; linked notes for
-  procedures and decisions. A project note carries a delimited *status* section that
-  its thread owns and rewrites (goal, progress, blockers, next). Working position — may
-  move to a separate linked status note if churn is a problem.
+  procedures and decisions. A thread's status lives in its own transcript, never in a
+  note (decided 2026-09-22; until then a project note carried a status block its thread
+  owned).
 - **Indexes are caches.** Alias table, link graph, embeddings: all rebuildable from the
   markdown, rebuilt on file change. Personal scale (thousands of notes) → brute-force
   cosine over a flat embedding file; no vector database.
@@ -416,12 +417,12 @@ per-tool permission mode, allowed roots and protected paths.
 
 ### 5.11 Open questions
 - Desk window size and exactly what the "now" board pins.
-- Status: in-note section (current lean) vs. separate linked note.
+- Status: decided 2026-09-22 — in the thread's transcript, never in a note.
 - Connectors: hot-load individually, or always via promotion + restart? Lean: restart
   only, until it hurts.
 - The `classify` policy text: what counts as in-scope for a thread vs. the desk?
-- Projects vs. tasks: decided 2026-09-21 (see the decision log) — the scope note is
-  optional; a thread without one is a task.
+- Threads vs. projects: decided 2026-09-22 (see the decision log) — a thread is Loom's
+  shape; a project is knowledge the model writes.
 - Pre-load token budget and compaction thresholds (tuning, not design).
 - Companion doc: `03-technical-design.md` carries implementation-level detail.
 
@@ -733,3 +734,18 @@ sessions do not re-litigate.
   recorded before giving up. In the test the desk reported "39 tests passing" from a
   file listing, and no thread or desk turn ever launched Godot, whose binary sat in
   Downloads; a one-character scene-header typo went unnoticed through two rewrites.
+- **2026-09-22** — Threads and projects are separate things. A thread is a scoped tangent
+  Loom manages: goal, roots, status in its own transcript, pinned notes, a walkthrough
+  filed in the daily log, temporary by design. A project is a shapeless thing on disk —
+  a codebase, a folder of images, an ongoing effort — that the person calls a project;
+  Loom does not maintain a shape for it. It exists as an ordinary `projects/` note the
+  model writes when it recognises the work will persist and be returned to (the soul
+  rule; the thread as it works, the desk as it verifies, maintenance sweeping
+  transcripts), with `root` a recorded fact. Removed: the harness-created project note,
+  the scope note and its status block with `owner=`, the `knowledge_write` block guard,
+  the sub-thread scope rule, the `projects_root` setting and wizard step, and the
+  project walkthrough folder. Added: pinned notes — any vault paths a conversation keeps
+  in context every turn, pinned by the thread through `knowledge_read(pin=true)`, by the
+  spawning conversation at spawn, or by the person. This supersedes the 2026-09-21
+  tasks decision by making it universal: every thread is what a task was, and the word
+  goes.

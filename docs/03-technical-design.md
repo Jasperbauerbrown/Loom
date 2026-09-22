@@ -110,16 +110,15 @@ choice. On `loom serve` with no `state.db`:
 1. Create `APP_HOME`, migrate, insert the desk row, `git init` the vault and write the
    `core/` templates, write default settings, tool policies and protected paths.
 2. Probe providers: local Ollama at `http://127.0.0.1:11434` (and `OLLAMA_HOST` if
-   set); list models. Detect timezone from the OS. Default `projects_root` = `~/Projects`
-   (created on first use, not now).
+   set); list models. Detect timezone from the OS.
 3. Print the URL and open the browser to the **Setup** screen — shown only while no
    `desk` role is configured. One page: provider (detected Ollama pre-selected; "add
    OpenRouter key" expands to a base URL + key field), **model** (the one required
    choice; picked from the probed list; saved as a preset with sensible defaults and
    assigned to the desk, worker and maintenance roles), embedding
    model (auto-selected if `nomic-embed-text` is present, otherwise the exact `ollama
-   pull` command is shown and embeddings stay off until it appears), timezone (confirm),
-   projects root (confirm). Finish → the Desk, with a first item on the now board:
+   pull` command is shown and embeddings stay off until it appears), timezone (confirm).
+   Finish → the Desk, with a first item on the now board:
    "Tell me about yourself, or point me at something to learn."
 4. The CLI works the moment a model is set; before that, `loom send` returns a clear
    "no model configured — open <url>" error.
@@ -160,13 +159,15 @@ presets(name TEXT PK, provider TEXT, model TEXT,
 model_roles(role TEXT PK /*desk|worker|maintenance|utility|embedding*/, preset TEXT)
 
 conversations(id TEXT PK /*ULID*/, kind TEXT /*desk|thread*/, parent_id TEXT,
-              title TEXT, goal TEXT, scope_note TEXT /*vault path of project note*/,
+              title TEXT, goal TEXT, pinned_notes TEXT /*json list of vault paths, slot [5]*/,
               roots TEXT /*json list*/, depth INT, role TEXT /*model role*/,
               preset TEXT /*optional override of the role's preset*/,
               status TEXT /*idle|running|waiting_approval|waiting_input|done|failed|archived*/,
               step_budget INT, summary TEXT, summary_cutoff INT /*events.id*/,
               token_factor REAL, maint_watermark INT /*events.id*/,
-              created_at, updated_at, finished_at, archived_at)
+              created_at, updated_at, finished_at, archived_at,
+              walkthrough TEXT /*log/ note the finish walkthrough landed in*/)
+              -- 0002 (2026-09-22): pinned_notes + walkthrough replaced scope_note
 
 events(id INTEGER PK, conversation_id TEXT, kind TEXT
        /*user|assistant|tool_call|tool_result|thinking|system|compaction|status*/,
@@ -218,7 +219,7 @@ vault/
   core/           about-me.md  preferences.md  conventions.md   (always in context, §7)
   devices/  projects/  people/  connectors/  courses/  topics/   (one note per entity)
   procedures/<name>/SKILL.md [+ scripts/, references/]           (Agent Skills format)
-  log/YYYY-MM-DD.md                                              (daily notes, agent-written: task walkthroughs land here)
+  log/YYYY-MM-DD.md                                              (daily notes: thread walkthroughs land here as sections)
 ```
 
 Note format:
@@ -228,7 +229,7 @@ title: Ender 3
 aliases: [ender 3, the printer, 3d printer]
 type: device            # optional; defaults from folder
 tags: [lan, octoprint]
-root: C:/Users/me/Projects/music-bot   # projects only: filesystem root
+root: C:/Users/me/Projects/music-bot   # projects only: where it lives, recorded by the model
 modified: 2026-09-20T14:02:11Z         # harness-stamped on every write
 ---
 Body. Wikilinks like [[ender-3-control]] resolve by filename, then title, then alias.
@@ -238,24 +239,13 @@ Rules enforced by `knowledge_write` (not by the model): frontmatter is parsed an
 re-emitted (PyYAML), `modified` is stamped, `aliases` are lower-cased and de-duplicated,
 relative dates in the body are rejected with an error result ("use absolute dates").
 
-**Status block** (projects; owned by the working thread):
-```markdown
-## Status
-<!-- status:begin owner=01J8… -->
-state: working            # planning|working|blocked|waiting|done
-goal: …
-done: …                   # bullets allowed
-doing: …
-next: …
-blockers: …
-updated: 2026-09-20T14:02Z
-<!-- status:end -->
-```
-Written only through the `status_update` tool (§9.2), which formats the block; the
-user may edit it in the UI or Obsidian, and the thread re-reads it every turn (§7 slot
-[5]). `knowledge_write` refuses a write that adds or alters the block, so the tool and
-the person's editor are its only writers (2026-09-22: two live notes had hand-written
-blocks with an artifact id as owner). This block is the plan (charter §5.3, takeaways §2).
+**Project notes** are ordinary entity notes. The model writes one when it recognises
+that the thing it works on will persist and be returned to (the soul rule, decided
+2026-09-22): what it is, where it lives (`root`, a recorded fact, never a default), how
+to run and check it, decisions and why, links to the `log/` sections that touched it.
+The harness never creates one and keeps no block in one; a thread's status lives in its
+own transcript (§6.7). Until 2026-09-22 a thread scoped to a harness-created project
+note and rewrote a delimited status block inside it; that shape is gone.
 
 **Procedures** are Agent Skills: `SKILL.md` with `name` + `description` frontmatter;
 body loaded on demand via `procedure_load`; scripts run through `shell`, never read into
@@ -446,7 +436,7 @@ id). So a message is never lost and never duplicated.
      calibrate token_factor from usage                                       (§6.6)
      maybe_compact                                                           (§6.5)
      threads: status safety net — if no status_update this turn, run one
-              utility/worker call producing the block from the turn's events
+              utility/worker call producing the status fields from the turn's events
      mark inbox delivered; status = idle (or done if finish was called)
      threads: emit thread_event to parent inbox + item if state changed      (§6.7)
 6  unlock
@@ -506,37 +496,41 @@ conversations seed from their preset's `token_factor_seed`, which each calibrati
 writes back (the factor is a property of model + content, so the preset is its home).
 
 ### 6.7 Threads
-- **Spawn** (`conversation.create`): payload = `goal`, optional `scope_note` (project
-  note path; created first if missing, with `root` under `projects_root` setting) or
-  `project_name`, optional `roots`, `excerpt` (model-selected text from the parent),
-  optional `preset` override (a preset name; validated against enabled presets).
-  `depth = parent.depth + 1`; refused above `max_thread_depth` (default 3).
-  Row written and `conversation.created` emitted **before** the first turn is scheduled.
-- **Project or task** (decided 2026-09-21): the scope note is optional. A thread with one
-  is a project; a thread without one is a *task* — bounded work (investigate, check,
-  report, update notes) that must not leave a dead project note behind. The nullable
-  column picks every sink below; nothing else knows the difference, so a task that grows
-  into a project is a field set (`scope_note`), not a migration. The desk chooses at
-  spawn time with the effort ladder's question: a filesystem root, files to produce, or
-  the person coming back to it → project; otherwise a task.
-- **Scope in context**: slot [5] every turn is the project note (with status block) or,
-  for a task, the goal plus the current status fields.
+A thread is Loom's shape for scoped work: a conversation with a goal, its own roots, its
+status, its pinned notes and its transcript, temporary by design. A *project* is not a
+shape Loom maintains: it is whatever the person calls one — a codebase, a folder of
+images, an ongoing effort — and it exists in Loom as an ordinary note the model writes
+(§4.3). Decided 2026-09-22; before that a thread scoped to a harness-created project
+note, and a thread without one was a "task". Every thread is now that.
+- **Spawn** (`conversation.create`): payload = `goal`, optional `excerpt` (model-selected
+  text from the parent), `notes` (vault paths to pin; each must exist), `roots`, `preset`
+  override (validated against enabled presets), `title`. `depth = parent.depth + 1`;
+  refused above `max_thread_depth` (default 3). Row written and `conversation.created`
+  emitted **before** the first turn is scheduled.
+- **Pinned notes** (`conversations.pinned_notes`, json list; `conversation/pins.py` is
+  the one reader and writer): the notes a conversation keeps in slot [5] every turn,
+  each capped at `pinned_note_chars` (6,000) with a visible marker. Pinned by the thread
+  through `knowledge_read(path, pin=true)` (unpinned with `pin=false`), by the spawning
+  conversation at spawn, and by the person in the thread panel (`PATCH` `pinned_notes`).
+  A pin to a missing note is refused. Knowledge resolution (§8.3) skips pinned paths.
+- **Context**: slot [5] every turn is the goal, the current status fields, then the pinned
+  notes.
 - **Status**: one reader and one writer (`conversation/status.py`). `status_update(fields)`
-  rewrites the note's block, or for a task appends a `status` event to its own
-  transcript (`content` = one-line summary, `meta = {fields, owner}`; merged with the
-  previous event, never replayed to the model). The now board, the status line and the
-  thread panel read through the same call; the safety net (§6.3 step 5) guarantees at
-  most one turn of staleness either way.
+  appends a `status` event to the thread's own transcript (`content` = one-line summary,
+  `meta = {fields, owner}`; merged with the previous event, never replayed to the model).
+  The now board, the status line and the thread panel read through the same call; the
+  person edits it through `PUT /conversations/{id}/status`; the safety net (§6.3 step 5)
+  guarantees at most one turn of staleness.
 - **Events to parent**: on state change (`blocked`, `waiting`, `done`, `failed`) the
   runner writes an inbox row to `parent_id` with a header (`[blocked]`, `[stopped without
   finishing]`, `[finished]`, `[failed]`) and a summary, plus an `item`
   (policy from settings: thread events default *interrupt* → notification). The parent
   verifies by judgment (charter §5.7); nothing else fires.
-- **Finish** (`conversation.finish(summary, walkthrough)`): writes the walkthrough as a
-  linked note `projects/<name>/walkthrough-YYYY-MM-DD.md` (what changed, how verified,
-  artifact ids of test output) — or, for a task, appends it as a section
-  `## <title> (<id>)` to the daily note `log/YYYY-MM-DD.md` (created on first use) —
-  sets status `done`, emits to parent.
+- **Finish** (`conversation.finish(summary, walkthrough)`): appends the walkthrough (what
+  changed, how verified, artifact ids of test output) as a section `## <title> (<id>)`
+  to the daily note `log/YYYY-MM-DD.md` (created on first use), records that note's path
+  in `conversations.walkthrough`, sets status `done`, emits to parent. Linking the
+  section from a project note is the model's knowledge work, not the harness's.
 - **User in a thread**: the same surface calls as the desk; user messages set priority 0
   for that turn.
 - **Turn end without finish** (decided 2026-09-20): a thread turn that ends with plain
@@ -546,10 +540,9 @@ writes back (the factor is a property of model + content, so the preset is its h
   says `[stopped without finishing]`, not `[needs input]` (2026-09-22): the harness
   cannot tell a question from a report, and three of four finished threads in the game
   test ended with a report instead of `finish`; the UI labels the status the same way.
-- **Sub-threads** (2026-09-22): a thread may spawn threads down to `max_thread_depth`
-  for independent parts of a larger project, each with its own project note or as a
-  task; `create_thread` refuses a sub-thread on its parent's scope note (two writers on
-  one status block).
+- **Sub-threads**: a thread may spawn threads down to `max_thread_depth` for independent
+  parts of a larger effort, each with its own goal, status and pins. Nothing is shared
+  by construction, so nothing needs refusing.
 - **Archival**: maintenance archives `done`/`failed` threads idle for
   `thread_archive_days` (14). Archived threads stay searchable (FTS) and reopenable.
 
@@ -564,7 +557,7 @@ writes back (the factor is a property of model + content, so the preset is its h
 | — | *end of cache-friendly prefix* | | |
 | [7] | `summary` (if any), fenced `<context from="harness">` | user, right after the prefix | changes only on fold |
 | [8] | Live events since `summary_cutoff`, replayed in order; `thinking`/`system`/`status` kinds skipped; evictions applied. A `user` event's `meta.images` become data URLs on its message; a `tool_result` with images stays text (one `[image <id> attached to this result]` marker per image) and is followed, after the step's last tool message, by a user-role *follower* carrying the images (`prompts/context/tool-image-note.md`) — tool-role messages cannot carry image parts. Evicted results lose their images with their content. | assistant / user / tool | stable within a turn |
-| [5]+[6] | Desk: the **now board** (pending approvals, unseen items, running threads with one-line status). Thread: the **project note** including status block, or for a task the goal + its status fields. Then a **Filesystem** block: the conversation's effective roots (global + its own, the first being what relative paths resolve against), the projects root where new project folders are created, and the protected paths, one line each. Then `now: 2026-09-20 14:02 (America/…)` + threads: `[steps remaining: N]`. One fenced `<context from="harness">` block | user, immediately before this turn's messages | volatile |
+| [5]+[6] | Desk: the **now board** (pending approvals, unseen items, running threads with one-line status). Thread: the goal + its status fields. Both: the **pinned notes** (`# Pinned notes`, each capped at `pinned_note_chars`). Then a **Filesystem** block: the conversation's effective roots (global + its own, the first being what relative paths resolve against) and the protected paths, one line each. Then `now: 2026-09-20 14:02 (America/…)` + threads: `[steps remaining: N]`. One fenced `<context from="harness">` block | user, immediately before this turn's messages | volatile |
 | [9] | Resolved entities for this input (§8.2–8.3), wrapped `<knowledge may_be_irrelevant="true">…</knowledge>`; ephemeral, never persisted | user | volatile |
 | [10] | Claimed inbox messages as user-role messages (with their images), then the turn's own assistant / tool messages and image followers | user / assistant / tool | volatile |
 
@@ -606,8 +599,8 @@ Input: the claimed user text (not tool results, not model output).
 2. **Embedding**: if fewer than `preload_max_entities` (3) matched, embed the input and
    take notes with cosine ≥ `retrieval_threshold` (0.55) up to the cap, excluding
    `core/`.
-3. Threads additionally always have their `scope_note` (slot [5]), so resolution
-   there fills only the remainder.
+3. Pinned notes are already in slot [5], so resolution skips them and fills only the
+   remainder.
 The model has `knowledge_search` for everything else; resolution is a cheap head start,
 not a gate (charter §2.4). `Index.resolve` and `Index.search` are async because step 2
 embeds the query; `preload`, `core_blocks` and the graph helpers are synchronous.
@@ -622,7 +615,7 @@ for more. Never inject `core/` here (already in slot [3]).
 | Tool | Args | Notes |
 |---|---|---|
 | `knowledge_search` | `query`, `type?`, `k=8` | fused: FTS5 rank + cosine, RRF; returns path, title, snippet |
-| `knowledge_read` | `path`, `offset?`, `limit?` | full note or line slice; one page of `tool_output_cap` chars with a paging footer, never spilled (`paged`) |
+| `knowledge_read` | `path`, `offset?`, `limit?`, `pin?` | full note or line slice; one page of `tool_output_cap` chars with a paging footer, never spilled (`paged`) |
 | `knowledge_write` | `path`, `op: create|append|replace|rethink`, `content`, `old?` (replace), `frontmatter?` | `replace` = exact `old`→`content` (like fs_edit); `rethink` = whole-body rewrite, requires `reason`, logged as a `knowledge.rethink` item on the now board; stamps `modified`; rejects relative dates; commits to git (`loom: <op> <path>`) |
 | `knowledge_links` | `path`, `direction: out|in` | neighbours |
 | `procedure_load` | `name` | SKILL.md body (L2); scripts stay on disk |
@@ -763,8 +756,8 @@ Registry = native tools + MCP tools (prefixed `mcp_<server>_<tool>`) + connector
 | `http` | GET/POST/… with headers/body; secret templating; an image response is returned as the image | no (GET treated read-only) | classify |
 | `screenshot` | capture a monitor, the whole virtual screen, a region or a window (by title, Windows) as an image; `scale` downsizes; via PowerShell/System.Drawing on Windows, `screencapture` on macOS, `grim`/`gnome-screenshot`/`import`/`scrot` on Linux — no dependency | yes | allow |
 | `knowledge_*`, `procedure_load`, `transcript_search`, `artifact_recall` | §8.4 | mixed | allow (core/ → ask) |
-| `status_update` | publish the thread's status: the scope note's block, or `status` events in a task's transcript; threads only (`kinds`) | no | allow |
-| `conversation_create / send / read / list / finish` | §6.7; `finish` is threads only (`kinds`) | read/list yes | allow |
+| `status_update` | publish the thread's status as a `status` event in its own transcript; threads only (`kinds`) | no | allow |
+| `conversation_create / send / read / list / finish` | §6.7; `create` takes `notes` to pin; `finish` is threads only (`kinds`) | read/list yes | allow |
 | `schedule_create / list / delete` | §11 | list yes | allow (caps enforced) |
 | `item_post` | put a notification/setup item on the now board | no | allow |
 | `secret_set` | store a secret the user pasted (value never echoed) | no | ask |
@@ -962,8 +955,8 @@ the UI's board panel. Turns produced by triggers run at priority 1.
 
 ### 12.1 REST (prefix `/api`; as built 2026-09-20)
 ```
-GET  /conversations?kind&status&include_archived   POST /conversations {goal, scope_note?|project_name?, aliases?, roots?, preset?, title?, parent_id?, excerpt?}
-GET  /conversations/{id}                PATCH /conversations/{id} {title?, preset?, step_budget?, clear_preset?}
+GET  /conversations?kind&status&include_archived   POST /conversations {goal, notes?, roots?, preset?, title?, parent_id?, excerpt?}
+GET  /conversations/{id}                PATCH /conversations/{id} {title?, preset?, step_budget?, clear_preset?, pinned_notes?}
 GET  /conversations/{id}/events?after&before&limit&kinds&tail   (tail=1 → the newest `limit`, ascending; the UI's first page)
 POST /conversations/{id}/messages {content, images?: [image_id]}  → 202 {inbox_id}; 400 empty (no text and no images) or unknown image id; 409 when no model is configured
 POST /conversations/{id}/images  (raw image bytes; Content-Type image/*) → {id, mime, bytes}; 415 not an image, 413 over image_max_mb
@@ -978,7 +971,6 @@ GET  /vault/tree                        GET  /vault/note?path   PUT /vault/note 
 GET  /vault/search?q&type&k             GET  /vault/history?path   GET /vault/recent-changes?n   GET /vault/diff?sha&path
 POST /vault/revert {commit, path?}      GET  /vault/graph?center&depth   GET /vault/core   GET /vault/wanted
 GET  /vault/procedures                  POST /vault/procedures/{name}/approve
-GET  /vault/status?path                 PUT  /vault/status {path, fields}
 GET  /settings  PATCH /settings {key: value}          (values + schema + groups; all-or-nothing validation)
 GET/POST /providers  GET/PATCH/DELETE /providers/{name}   POST /providers/{name}/probe
 GET/POST /presets    GET/PATCH/DELETE /presets/{name}     POST /presets/{name}/test
@@ -992,7 +984,7 @@ GET  /connectors  GET/PATCH /connectors/{name} {enabled?, config?}   POST /conne
 GET/POST /schedules  GET/PATCH/DELETE /schedules/{id}   POST /schedules/{id}/run
 GET  /maintenance    POST /maintenance/run
 GET  /system/health  /system/version  /system/queue  /system/logs?since&level&limit → {records}
-GET  /system/setup   POST /system/setup {provider?, model, embedding_model?, timezone, projects_root, openrouter?}
+GET  /system/setup   POST /system/setup {provider?, model, embedding_model?, timezone, openrouter?}
 POST /system/reindex                    POST /system/open {path}  (folder in the OS file manager; APP_HOME or allowed roots only)
 GET  /system/promote/plan?ref   POST /system/promote {ref, acknowledge_protected}   POST /system/rollback
 GET  /system/promote/log   GET /system/snapshots   GET /system/supervisor   POST /system/restart
@@ -1071,11 +1063,10 @@ remembered in `localStorage` so a reload does not flash the default look.
   queue indicator, model role in use.
 - **Threads**. List (status, goal, last update, depth tree). Thread view = same
   conversation component + a **Status/plan panel** rendering the status as an editable
-  form for every thread (`GET`/`PUT /conversations/{id}/status`, captioned "in the
-  project note" or "in the transcript"), links to walkthroughs (the project folder's
-  notes, or for a task the `log/` notes naming it) and artifacts, "open project folder"
-  and "spawned by" links; a task shows "none (task)" for its scope note. Create-thread
-  dialog: goal, scope note (optional; search/create — empty spawns a task), roots, role.
+  form (`GET`/`PUT /conversations/{id}/status`), the **pinned notes** (links; unpin; add
+  by path → `PATCH pinned_notes`), a link to the walkthrough (`conversations.walkthrough`,
+  the daily-log note) and artifacts, and "spawned by" links. Create-thread dialog: goal,
+  notes to pin (optional), roots, role.
 - **Vault**. Tree by type; note view/edit (Markdown editor with wikilink completion and
   frontmatter form); backlinks and outgoing links; search (fused); **Recent changes**
   (git log with diff and revert); wanted notes (dangling links); core block fill meters;
@@ -1096,7 +1087,7 @@ remembered in `localStorage` so a reload does not flash the default look.
   *run maintenance now* button (`POST /maintenance/run`, live via `maintenance.progress`).
 
 ### 13.2 Settings inventory (all UI-visible; groups map to `config.py` dataclasses)
-- **General**: display name, timezone, bind address, LAN token, projects root, theme
+- **General**: display name, timezone, bind address, LAN token, theme
   (system/light/dark), palette (default/slate/warm/forest/nord/mono).
 - **Models**: three tabs. *Providers* (CRUD: name, kind, base URL, credential from the
   secret picker, default params, concurrency, enabled; probe button lists live
@@ -1111,8 +1102,8 @@ remembered in `localStorage` so a reload does not flash the default look.
   using, and a thread's create dialog and detail panel let the user pick one.
 - **Conversation**: step budgets (desk/thread), `compact_threshold`,
   `forced_compactions_per_turn`, `model_error_retries`, `reasoning_replay` +
-  `reasoning_replay_max_chars`, `tool_output_cap`, artifact retention,
-  `thread_archive_days`, `max_thread_depth`.
+  `reasoning_replay_max_chars`, `tool_output_cap`, `pinned_note_chars`, artifact
+  retention, `thread_archive_days`, `max_thread_depth`.
 - **Knowledge**: `preload_budget_tokens`, `preload_max_entities`,
   `retrieval_threshold`, `core_block_chars`, vault poll interval, maintenance idle
   seconds and nightly time, curation similarity threshold, auto-commit external edits.
@@ -1244,7 +1235,7 @@ the `promote` tool returns the same sentence rather than pretending.
 prompts/system.md            soul + operating rules (memory discipline, ladder, when to spawn,
                              verification by judgment, no relative dates, evidence in walkthroughs)
 prompts/kind-desk.md         desk-specific: now board semantics, routing to threads
-prompts/kind-thread.md       thread-specific: status block duty, finish + walkthrough, budget line
+prompts/kind-thread.md       thread-specific: status duty, pins, finish + walkthrough, budget line
 prompts/tools/<tool>.md      one description per native tool (loaded into the registry)
 prompts/classify.md          permission judge
 prompts/summarize.md         compaction fold
@@ -1312,8 +1303,8 @@ UI: `react`, `react-dom`, `vite`, `typescript`, `tailwindcss`, one Markdown rend
    slots [3][4][9] live.
 3. **Web UI v1** — desk, streaming, tool rows, approvals, vault browser/editor/search/
    recent changes, settings (all groups that exist by now), system page.
-4. **Threads** — conversation tools, spawn payload, status block + `status_update` +
-   safety net, events to parent, finish + walkthrough, depth cap, budget line,
+4. **Threads** — conversation tools, spawn payload, `status_update` + safety net,
+   pinned notes, events to parent, finish + walkthrough, depth cap, budget line,
    threads UI + status panel.
 5. **Integrations** — MCP client (stdio + HTTP), MCP settings UI, connector loader +
    config forms, secrets store + picker, setup items, connector note template.
