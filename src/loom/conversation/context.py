@@ -205,10 +205,30 @@ CONTEXT_OPEN = '<context from="harness">'
 CONTEXT_CLOSE = "</context>"
 
 
+def filesystem_block(app, conv: dict[str, Any]) -> str:  # type: ignore[no-untyped-def]
+    """Slot [6]: the roots this conversation may touch and the paths that always ask.
+    Until 2026-09-21 the model learned its roots only by failing against them (a desk
+    guessed `projects/`, listed the artifacts folder, tried a Linux path, then asked for
+    the home directory); mutable state belongs here, not in the soul."""
+    from ..tools import fs_guard
+
+    paths = fs_guard.describe(app, conv)
+    lines = ["# Filesystem"]
+    roots = paths.get("roots") or []
+    if roots:
+        lines.append("roots (relative paths resolve against the first): " + ", ".join(roots))
+    else:
+        lines.append("roots: (none — every file access will ask)")
+    protected = paths.get("protected") or []
+    if protected:
+        lines.append("protected (always ask): " + ", ".join(protected))
+    return "\n".join(lines)
+
+
 def volatile_message(app, conv: dict[str, Any], steps_remaining: int | None = None) -> dict[str, Any]:  # type: ignore[no-untyped-def]
     """Slots [5]–[6] as one user-role block, fenced so the model can tell harness
     context from the person's words."""
-    parts = [now_board(app) if conv["kind"] == "desk" else scope_block(app, conv)]
+    parts = [now_board(app) if conv["kind"] == "desk" else scope_block(app, conv), filesystem_block(app, conv)]
     line = now_line(app)
     if conv["kind"] == "thread" and steps_remaining is not None:
         line += f"\n[steps remaining: {steps_remaining}]"

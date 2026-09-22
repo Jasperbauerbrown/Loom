@@ -655,6 +655,10 @@ sessions do not re-litigate.
   (the plan, and where a loop's seed sits); the desk prompt says to send a failed
   verification back to the thread rather than debugging it itself. A stream-level
   repetition brake was proposed and left for the person to decide.
+- **2026-09-21** - The volatile harness block lists the conversation's allowed roots
+  (first = where relative paths resolve) and protected paths every step. The model had
+  been learning them only by failing against them; roots are mutable state, so they
+  ride in the context block, not the soul.
 - **2026-09-21** — First visual QA pass by screenshot (headless Chromium against a
   `--fake` server, every screen, both themes, all palettes). Behavioural choices it
   settled: inbox rows from threads, schedules and connectors render as grey bubbles

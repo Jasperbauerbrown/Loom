@@ -378,3 +378,22 @@ async def test_reasoning_replay_keeps_the_tail_of_long_reasoning(app, fake, tmp_
     assert replayed.endswith("END-OF-THOUGHT reads the file")
     assert len(replayed) <= len(marker) + 1 + 60
     assert replayed.count("PLAN") < 20  # the 40-token head is gone; only the tail's few remain
+
+
+async def test_context_block_lists_the_roots_and_protected_paths(app, fake, tmp_path):
+    """Slot [6]: the model sees where it may work instead of learning it by failing."""
+    from loom.tools import fs_guard
+
+    desk = app.desk_id()
+    extra = tmp_path / "extra-root"
+    extra.mkdir()
+    fs_guard.add_root(app, str(extra), added_by="test")
+    fs_guard.add_protected(app, str(extra / "secrets.env"))
+    fake.script(Scripted(content="ok"))
+    conversation.post(app, desk, "where can you write?")
+    await _run(app, desk)
+    block = _ctx_block([c for c in fake.calls if c.purpose == "turn"][-1])
+    assert "# Filesystem" in block
+    assert "roots (relative paths resolve against the first): " in block
+    assert fs_guard.normalise(str(app.vault_dir)) in block and fs_guard.normalise(str(extra)) in block
+    assert "protected (always ask): " in block and "secrets.env" in block
