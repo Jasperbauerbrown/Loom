@@ -183,6 +183,17 @@ def now_board(app) -> str:  # type: ignore[no-untyped-def]
             doing = ""
         label = t["title"] or t["goal"][:60]
         lines.append(f'- thread "{label}" ({t["id"]}): {t["status"]}' + (f" — {doing[:120]}" if doing else ""))
+    store = getattr(app, "processes", None)
+    if store is not None:
+        # Background processes (03 §9.4): what is up, for how long, and whose it is.
+        from .. import processes as _processes
+
+        for p in store.list(status="running"):
+            owner = app.conversation(p["conversation_id"]) or {}
+            owner_title = owner.get("title") or owner.get("goal", "")[:60] or p["conversation_id"]
+            lines.append(
+                f'- process "{p["title"]}" ({p["id"]}): running {_processes.duration(p)}, pid {p["pid"]}, in "{owner_title}"'
+            )
     if not lines:
         return "# Now board\n(empty)"
     return "# Now board\n" + "\n".join(lines)

@@ -10,6 +10,7 @@ ROUTERS: list[str] = [
     "loom.server.routers.permissions",
     "loom.server.routers.secrets",
     "loom.server.routers.items",
+    "loom.server.routers.processes",
     "loom.server.routers.vault",
     "loom.server.routers.maintenance",
     "loom.server.routers.integrations",

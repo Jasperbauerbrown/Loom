@@ -42,6 +42,7 @@ class App:
     # Attached by packages in install(): typed as Any so packages can land independently.
     secrets: Any = None  # loom.secrets.Store
     artifacts: Any = None  # loom.artifacts.Store
+    processes: Any = None  # loom.processes.Processes
     vault: Any = None  # loom.knowledge.vault.Vault
     index: Any = None  # loom.knowledge.index.Index
     watcher: Any = None  # loom.knowledge.watcher.Watcher
@@ -131,6 +132,7 @@ class App:
 INSTALL_ORDER: list[str] = [
     "loom.secrets",
     "loom.artifacts",
+    "loom.processes",
     "loom.tools.native",
     "loom.knowledge",
     "loom.knowledge.maintenance",

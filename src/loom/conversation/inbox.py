@@ -81,6 +81,9 @@ def render(app, row: dict[str, Any]) -> str:  # type: ignore[no-untyped-def]
         return f'[schedule "{meta.get("title") or source.split(":", 1)[1]}"]\n{content}'
     if source.startswith("connector:"):
         return f"[connector {source.split(':', 1)[1]}]\n{content}"
+    if source.startswith("process:"):
+        # A background process ended (or was stopped by the person): 03 §9.4.
+        return f'[process "{meta.get("title") or source.split(":", 1)[1]}" {meta.get("event") or "ended"}]\n{content}'
     if source == "system":
         return f"[system]\n{content}"
     return f"[{source}]\n{content}"

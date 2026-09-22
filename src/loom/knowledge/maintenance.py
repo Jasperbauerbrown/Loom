@@ -487,6 +487,11 @@ class Maintenance:
                 report["pruned_artifacts"] = self.app.artifacts.prune_archived()
             except Exception as exc:
                 report["errors"].append(f"prune: {type(exc).__name__}: {exc}")
+        if getattr(self.app, "processes", None) is not None:
+            try:
+                report["pruned_processes"] = self.app.processes.prune_archived()
+            except Exception as exc:
+                report["errors"].append(f"prune processes: {type(exc).__name__}: {exc}")
 
         # `auto_commit_external_edits` off means the pass commits nothing at all: the
         # safety net stages the whole worktree, so running it would auto-commit the very

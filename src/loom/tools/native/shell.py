@@ -19,11 +19,11 @@ import asyncio
 import logging
 import os
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Any
 
 from ... import prompts
+from ...processes import kill_tree
 from ..fs_guard import normalise
 from ..registry import Tool, ToolContext, ToolResult
 
@@ -68,24 +68,10 @@ def resolve_shell(app: Any) -> list[str]:
 
 
 def _kill_tree(proc: asyncio.subprocess.Process) -> None:
-    """Kill the process and everything it started. Best effort; already-dead is fine."""
+    """Kill the process and everything it started (shared helper in `loom.processes`)."""
     if proc.returncode is not None:
         return
-    if os.name == "nt":
-        try:
-            subprocess.run(
-                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                capture_output=True,
-                timeout=10,
-                check=False,
-            )
-            return
-        except Exception as exc:  # pragma: no cover - platform dependent
-            log.debug("taskkill failed (%s); falling back to kill", exc)
-    try:
-        proc.kill()
-    except ProcessLookupError:  # pragma: no cover
-        pass
+    kill_tree(proc.pid)
 
 
 async def shell_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
@@ -103,6 +89,22 @@ async def shell_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     extra = args.get("env")
     if isinstance(extra, dict):
         env.update({str(k): str(v) for k, v in extra.items()})
+
+    if args.get("background"):
+        # A program that must keep running (03 §9.6): a row, a log file, a watcher; the
+        # call returns at once and the conversation hears about the exit later.
+        row = await app.processes.start(ctx.conversation_id, command, cwd, env=env, title=str(args.get("title") or ""))
+        if row.get("status") != "running":
+            return ToolResult.error(row.get("error") or "could not start the process", process_id=row.get("id"))
+        pid_ = row["id"]
+        return ToolResult(
+            content=(
+                f'started process {pid_} "{row["title"]}" (pid {row["pid"]}); log: {row["log_path"]}\n'
+                f'Read its output with process(action="logs", id="{pid_}"), end it with process(action="stop", id="{pid_}"). '
+                "You will get a message in this conversation when it exits."
+            ),
+            meta={"process_id": pid_, "pid": row["pid"], "cwd": cwd},
+        )
 
     timeout = float(args.get("timeout_s") or app.settings.get("conversation.tool_timeout_shell_s"))
     argv = resolve_shell(app) + [command]
@@ -164,6 +166,8 @@ def tools() -> list[Tool]:
                     "timeout_s": {"type": "number", "description": "Seconds before the process tree is killed."},
                     "env": {"type": "object", "description": "Extra environment variables."},
                     "stdin": {"type": "string", "description": "Text piped to the process."},
+                    "background": {"type": "boolean", "description": "Start it as a background process and return at once; manage it with the process tool."},
+                    "title": {"type": "string", "description": "Short label for a background process."},
                 },
                 "required": ["command"],
             },
