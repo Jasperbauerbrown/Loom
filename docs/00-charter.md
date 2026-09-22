@@ -773,3 +773,25 @@ sessions do not re-litigate.
   background process's job lets `stop` reach reparented descendants while the backend
   that started it runs; and the pre-filter no longer grants a command that names a
   protected path (it still never denies: the classifier judges it).
+- **2026-09-22** — The harness block is a per-turn snapshot, and the only per-step text is
+  the step counter, moved to the end. It had been rebuilt on every step and carried
+  `[steps remaining: N]`, so each step invalidated the prompt cache immediately before the
+  turn's own messages and re-prefilled everything the turn had accumulated: quadratic on a
+  long thread turn. Now `assemble` builds the fenced block once, `messages()` reuses that
+  exact string, and a thread's step counter rides a small trailing block after the turn's
+  messages (the desk has none). Within a turn everything up to the turn's messages is
+  byte-stable and the turn is append-only. The cost is deliberate: the now board, the
+  clock, the status and the pinned notes are as of turn start, so a thread that pins a
+  note or writes its status mid-turn sees it in the block next turn, with the content in
+  its own transcript meanwhile. The three things that still break the cache mid-turn are
+  known and accepted: a roots change, a forced compaction, and `tool_search` widening the
+  tool list (schemas sit at the very front, so that one invalidates everything).
+- **2026-09-22** — The shell flavour's quirks live in `prompts/context/shell-<flavour>.md`
+  and are composed into the `shell` tool's description at registration, not injected into
+  the harness block every turn. Model-facing prose belongs in `prompts/` (a hard rule that
+  a hardcoded `FLAVOUR_HINTS` dict had just broken), the tool's own description is where
+  the model is already looking when it writes a command, and tool schemas are cached. The
+  rule "never stop Loom, kill its process tree, or bind over its address" moved there too:
+  it is a rule, not a fact, and the block had been repeating it every turn. Because the
+  description is composed once at registration, `permissions.shell_flavour` is now
+  restart-required, so the setting and `resolve_shell` can never disagree.

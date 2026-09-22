@@ -564,9 +564,10 @@ note, and a thread without one was a "task". Every thread is now that.
 | — | *end of cache-friendly prefix* | | |
 | [7] | `summary` (if any), fenced `<context from="harness">` | user, right after the prefix | changes only on fold |
 | [8] | Live events since `summary_cutoff`, replayed in order; `thinking`/`system`/`status` kinds skipped; evictions applied. A `user` event's `meta.images` become data URLs on its message; a `tool_result` with images stays text (one `[image <id> attached to this result]` marker per image) and is followed, after the step's last tool message, by a user-role *follower* carrying the images (`prompts/context/tool-image-note.md`) — tool-role messages cannot carry image parts. Evicted results lose their images with their content. | assistant / user / tool | stable within a turn |
-| [5]+[6] | Desk: the **now board** (pending approvals, unseen items, running threads with one-line status, then one line per running background process). Thread: the goal + its status fields. Both: the **pinned notes** (`# Pinned notes`, each capped at `pinned_note_chars`). Then a **Filesystem** block: the conversation's effective roots (global + its own, the first being what relative paths resolve against) and the protected paths, one line each; then a `loom:` line naming this backend (the address it serves, its pid, its home — never stop or bind over it) and a `shell:` line naming the flavour commands run under with its quirks (Git Bash: `//F`-style switches, `/dev/null` not `nul`) — mutable facts the model once guessed at (2026-09-22). Then `now: 2026-09-20 14:02 (America/…)` + threads: `[steps remaining: N]`. One fenced `<context from="harness">` block | user, immediately before this turn's messages | volatile |
+| [5]+[6] | Desk: the **now board** (pending approvals, unseen items, running threads with one-line status, then one line per running background process). Thread: the goal + its status fields. Both: the **pinned notes** (`# Pinned notes`, each capped at `pinned_note_chars`). Then a **Filesystem** block: the conversation's effective roots (global + its own, the first being what relative paths resolve against) and the protected paths, one line each; then a `loom:` line naming this backend — the address it serves, its pid, its home — so the model can tell its own process from anything else it finds (2026-09-22). Then `now: 2026-09-20 14:02 (America/…)`. One fenced `<context from="harness">` block, **built once per turn and reused verbatim for every step** (2026-09-22) | user, after the history and before this turn's messages | per turn, not per step |
 | [9] | Resolved entities for this input (§8.2–8.3), wrapped `<knowledge may_be_irrelevant="true">…</knowledge>`; ephemeral, never persisted | user | volatile |
 | [10] | Claimed inbox messages as user-role messages (with their images), then the turn's own assistant / tool messages and image followers | user / assistant / tool | volatile |
+| [11] | Threads only: `[steps remaining: N]` in its own fenced block, **after** the turn's messages — the one thing that changes per step, isolated so the turn stays cached. The desk has no step line and therefore no block | user, last | per step |
 
 Images on the wire: inside Loom `content` is always a string and images ride an
 in-memory `images` key of data URLs. `models.client.messages_for` renders them per
@@ -579,8 +580,21 @@ Each image counts as `image_tokens × 4` characters in every estimate (`ChatRequ
 
 Exactly one system message, first (decided 2026-09-20: Qwen 3.x chat templates reject a
 system message anywhere else). Slots [1]–[4] are byte-stable across turns (no dates,
-sorted keys) for Ollama's prompt cache; the summary and history extend the cached
-prefix within a turn; everything volatile sits after them, nearest the query.
+sorted keys) for Ollama's prompt cache; the summary and history extend the cached prefix
+within a turn.
+
+**Within a turn nothing before the turn's own messages moves** (decided 2026-09-22). The
+harness block used to be rebuilt on every step and to carry the step counter, so every
+step invalidated the cache immediately before the turn's messages and re-prefilled
+everything the turn had accumulated — quadratic on a long thread turn. `assemble` now
+builds the block once, `messages()` reuses that exact string, and the counter rides slot
+[11] at the end. The trade is deliberate and visible: the now board, the clock, the status
+and the pinned notes are a snapshot from turn start, so a thread that pins a note or
+writes its status mid-turn sees it in the block next turn, with the content in its own
+transcript meanwhile. For a thread the last message is therefore the budget block, not the
+person's words. Three things still break the cache mid-turn, all of them known: a roots or
+protected-path change, a forced compaction, and `tool_search` widening the tool list —
+schemas sit at the very front, so that one invalidates everything.
 
 ## 8. Knowledge
 
@@ -759,7 +773,7 @@ Registry = native tools + MCP tools (prefixed `mcp_<server>_<tool>`) + connector
 | `fs_search` | regex/grep with context | yes | allow |
 | `fs_write` | create/overwrite (guarded) | no | allow (within roots) |
 | `fs_edit` | exact `old`→`new` replace, must be unique | no | allow (within roots) |
-| `shell` | one command line, `cwd` in roots, env passthrough minus secrets, timeout, output cap; `background=true` (+ `title`) starts a supervised long-running process instead and returns its id, pid and log path at once (§9.6); Windows: cmd.exe or Git Bash per setting; everything a foreground call starts ends with the call (kill-on-close Job Object on Windows, process group elsewhere) | no | classify (pre-filter first) |
+| `shell` | one command line, `cwd` in roots, env passthrough minus secrets, timeout, output cap; `background=true` (+ `title`) starts a supervised long-running process instead and returns its id, pid and log path at once (§9.6); Windows: cmd.exe or Git Bash per setting (restart-required), whose quirks are appended to this tool's description from `prompts/context/shell-<flavour>.md` at registration rather than injected into the harness block every turn (2026-09-22); everything a foreground call starts ends with the call (kill-on-close Job Object on Windows, process group elsewhere) | no | classify (pre-filter first) |
 | `process` | `list` / `logs` / `stop` for background processes (§9.6); `logs` is the tail by default, paged forward with a footer (`paged`, never spilled) | list, logs yes | allow |
 | `http` | GET/POST/… with headers/body; secret templating; an image response is returned as the image | no (GET treated read-only) | classify |
 | `screenshot` | capture a monitor, the whole virtual screen, a region or a window (by title, Windows) as an image; `scale` downsizes; via PowerShell/System.Drawing on Windows, `screencapture` on macOS, `grim`/`gnome-screenshot`/`import`/`scrot` on Linux — no dependency | yes | allow |
@@ -1392,7 +1406,9 @@ UI: `react`, `react-dom`, `vite`, `typescript`, `tailwindcss`, one Markdown rend
 
 ## 21. Implementation questions (decided 2026-09-20; see charter decision log)
 - Ollama: native `/api/chat` for the `ollama` provider kind; no probe.
-- Windows shell flavour: `auto` → Git Bash if present, else cmd.exe; setting exposed.
+- Windows shell flavour: `auto` → Git Bash if present, else cmd.exe; setting exposed, and
+  restart-required because the flavour's quirks are composed into the `shell` tool's
+  description at registration (§9.2).
 - Now board: all running threads, one line each, capped by `now_board_max_threads` (10).
 - UI Markdown: `marked` + scratch wikilink extension + allowlist sanitiser.
 
