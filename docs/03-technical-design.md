@@ -564,7 +564,7 @@ note, and a thread without one was a "task". Every thread is now that.
 | — | *end of cache-friendly prefix* | | |
 | [7] | `summary` (if any), fenced `<context from="harness">` | user, right after the prefix | changes only on fold |
 | [8] | Live events since `summary_cutoff`, replayed in order; `thinking`/`system`/`status` kinds skipped; evictions applied. A `user` event's `meta.images` become data URLs on its message; a `tool_result` with images stays text (one `[image <id> attached to this result]` marker per image) and is followed, after the step's last tool message, by a user-role *follower* carrying the images (`prompts/context/tool-image-note.md`) — tool-role messages cannot carry image parts. Evicted results lose their images with their content. | assistant / user / tool | stable within a turn |
-| [5]+[6] | Desk: the **now board** (pending approvals, unseen items, running threads with one-line status, then one line per running background process). Thread: the goal + its status fields. Both: the **pinned notes** (`# Pinned notes`, each capped at `pinned_note_chars`). Then a **Filesystem** block: the conversation's effective roots (global + its own, the first being what relative paths resolve against) and the protected paths, one line each. Then `now: 2026-09-20 14:02 (America/…)` + threads: `[steps remaining: N]`. One fenced `<context from="harness">` block | user, immediately before this turn's messages | volatile |
+| [5]+[6] | Desk: the **now board** (pending approvals, unseen items, running threads with one-line status, then one line per running background process). Thread: the goal + its status fields. Both: the **pinned notes** (`# Pinned notes`, each capped at `pinned_note_chars`). Then a **Filesystem** block: the conversation's effective roots (global + its own, the first being what relative paths resolve against) and the protected paths, one line each; then a `loom:` line naming this backend (the address it serves, its pid, its home — never stop or bind over it) and a `shell:` line naming the flavour commands run under with its quirks (Git Bash: `//F`-style switches, `/dev/null` not `nul`) — mutable facts the model once guessed at (2026-09-22). Then `now: 2026-09-20 14:02 (America/…)` + threads: `[steps remaining: N]`. One fenced `<context from="harness">` block | user, immediately before this turn's messages | volatile |
 | [9] | Resolved entities for this input (§8.2–8.3), wrapped `<knowledge may_be_irrelevant="true">…</knowledge>`; ephemeral, never persisted | user | volatile |
 | [10] | Claimed inbox messages as user-role messages (with their images), then the turn's own assistant / tool messages and image followers | user / assistant / tool | volatile |
 
@@ -759,7 +759,7 @@ Registry = native tools + MCP tools (prefixed `mcp_<server>_<tool>`) + connector
 | `fs_search` | regex/grep with context | yes | allow |
 | `fs_write` | create/overwrite (guarded) | no | allow (within roots) |
 | `fs_edit` | exact `old`→`new` replace, must be unique | no | allow (within roots) |
-| `shell` | one command line, `cwd` in roots, env passthrough minus secrets, timeout, output cap; `background=true` (+ `title`) starts a supervised long-running process instead and returns its id, pid and log path at once (§9.6); Windows: cmd.exe or Git Bash per setting | no | classify (pre-filter first) |
+| `shell` | one command line, `cwd` in roots, env passthrough minus secrets, timeout, output cap; `background=true` (+ `title`) starts a supervised long-running process instead and returns its id, pid and log path at once (§9.6); Windows: cmd.exe or Git Bash per setting; everything a foreground call starts ends with the call (kill-on-close Job Object on Windows, process group elsewhere) | no | classify (pre-filter first) |
 | `process` | `list` / `logs` / `stop` for background processes (§9.6); `logs` is the tail by default, paged forward with a footer (`paged`, never spilled) | list, logs yes | allow |
 | `http` | GET/POST/… with headers/body; secret templating; an image response is returned as the image | no (GET treated read-only) | classify |
 | `screenshot` | capture a monitor, the whole virtual screen, a region or a window (by title, Windows) as an image; `scale` downsizes; via PowerShell/System.Drawing on Windows, `screencapture` on macOS, `grim`/`gnome-screenshot`/`import`/`scrot` on Linux — no dependency | yes | allow |
@@ -820,7 +820,10 @@ Split on `&&`, `||`, `;`, `|` respecting quotes. For each stage: first token (af
 type head tail less more wc grep rg find where which echo pwd printenv git-status
 git-log git-diff git-show git-branch python--version node--version npm-ls uv-pip-list`
 with `git status` etc. matched as `git` + first arg), and no `>`/`>>`/`2>` redirection,
-and no backticks or `$(`. All stages pass → allow. Otherwise → classifier. Parse
+and no backticks or `$(`, and no word that, taken as a path relative to the shell's
+working directory, is a protected path or sits under one (a `$VAR`/`%VAR%` path it
+cannot resolve counts as one: 2026-09-22, `cat ~/.loom/secrets.json` was granted while
+the fs tools would have asked). All stages pass → allow. Otherwise → classifier. Parse
 failure → classifier. Nothing here denies.
 
 ### 9.5 Classifier
@@ -868,12 +871,23 @@ marked `exited` with an unknown exit code; pid dead → `lost`; `starting` (cras
 between the row and the spawn) → `failed`. Nothing is restarted and nothing is posted
 for a reconciled row; the board simply stops listing it.
 
+Containment (2026-09-22): on Windows every spawn goes into a Job Object through
+`ctypes`, no `pywin32`. The foreground shell's job is kill-on-close, so everything a
+foreground call started ends with the call, timeout or not — `taskkill /T` follows
+parent links, and a `node … &` orphan whose bash had exited kept a port for hours. A
+background process's job is not kill-on-close (the child must outlive a restart), but
+while the handle lives `stop` terminates the job and reaches reparented descendants; a
+restart loses the handle (a Job Object is a handle, not a row) and `stop` falls back to
+the pid tree. Elsewhere the foreground shell starts its own session and the timeout
+kills the group. Every Job Object call is best effort: a sandbox that refuses one is
+logged and the old behaviour continues.
+
 Deliberately left out, each a knob to add when something needs it: a restart policy
-(Hydra had never / on_failure / always; Loom restarts nothing on its own), Windows Job
-Objects for containment and memory caps (they need `pywin32`, §19), and log rotation (a
-rotating writer would have to sit on a pipe, see above; the log grows until the
-conversation's artifacts are pruned, and `list` shows its size so a chatty child is
-visible). Rows of archived conversations are pruned with their artifacts.
+(Hydra had never / on_failure / always; Loom restarts nothing on its own), Job Object
+memory caps, and log rotation (a rotating writer would have to sit on a pipe, see
+above; the log grows until the conversation's artifacts are pruned, and `list` shows
+its size so a chatty child is visible). Rows of archived conversations are pruned with
+their artifacts.
 
 ## 10. Connectors and MCP
 
@@ -1345,8 +1359,8 @@ Backend runtime: `fastapi`, `uvicorn`, `httpx`, `pyyaml`, `keyring`, `tzdata`. D
 builds), `asyncio`, `json`, `re`, `array`/`math.sumprod`, `subprocess`, `shlex`.
 Not used, deliberately: SQLAlchemy/alembic (hand SQL), LiteLLM/openai SDK (one HTTP
 shape), LanceDB/numpy (brute-force cosine), APScheduler/croniter (80-line parser),
-watchfiles (polling), GitPython (git CLI), cryptography (see §4.5), pywin32 (Job Objects
-for background processes, §9.6).
+watchfiles (polling), GitPython (git CLI), cryptography (see §4.5), pywin32 (the Job
+Objects of §9.6 are reached through `ctypes`).
 UI: `react`, `react-dom`, `vite`, `typescript`, `tailwindcss`, one Markdown renderer
 (`marked` or `react-markdown`), dev `vitest`. No state library, no component library.
 

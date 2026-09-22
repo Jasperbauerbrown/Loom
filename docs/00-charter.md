@@ -761,3 +761,15 @@ sessions do not re-litigate.
   pipe would kill them on the first write after a restart, a file does not — so a
   restart reconciles the rows (alive → re-attached and polled, dead → `lost`) instead
   of restarting anything.
+- **2026-09-22** — Three fixes from the first live use of background processes, when
+  the desk tried to start the Music-Bridge bot: it could not tell Loom's own port from
+  the bot's, Git Bash rewrote its `taskkill /F` as a path and `2>nul` wrote a file, an
+  orphaned `node … &` from an earlier timed-out call kept the bot's port for an hour,
+  and `cat ~/.loom/secrets.json` sailed through the pre-filter. Decisions: the harness
+  block names Loom itself (address, pid, home) and the shell flavour with its quirks —
+  mutable facts, so the context block and not the soul; every foreground shell call runs
+  in a kill-on-close Job Object on Windows (through `ctypes`, no new dependency; a
+  process group elsewhere), so everything a call started ends with the call, and a
+  background process's job lets `stop` reach reparented descendants while the backend
+  that started it runs; and the pre-filter no longer grants a command that names a
+  protected path (it still never denies: the classifier judges it).
