@@ -253,7 +253,9 @@ updated: 2026-09-20T14:02Z
 ```
 Written only through the `status_update` tool (§9.2), which formats the block; the
 user may edit it in the UI or Obsidian, and the thread re-reads it every turn (§7 slot
-[5]). This block is the plan (charter §5.3, takeaways §2).
+[5]). `knowledge_write` refuses a write that adds or alters the block, so the tool and
+the person's editor are its only writers (2026-09-22: two live notes had hand-written
+blocks with an artifact id as owner). This block is the plan (charter §5.3, takeaways §2).
 
 **Procedures** are Agent Skills: `SKILL.md` with `name` + `description` frontmatter;
 body loaded on demand via `procedure_load`; scripts run through `shell`, never read into
@@ -269,6 +271,14 @@ Tool output longer than `tool_output_cap` (default 8,000 chars) is written to
 `[artifact <id>: N chars — artifact_recall(id, offset, limit) for more]`. Artifacts are
 never deleted while their conversation exists; archived conversations' artifacts are
 pruned by maintenance after `artifact_retention_days` (default 90).
+
+**Paged tools** (2026-09-22). Tools that page their own output — `fs_read`, `knowledge_read` and
+`artifact_recall` — are marked `paged` in the registry and are never spilled: their page
+is `tool_output_cap` characters (the default and the clamp for any larger `limit`) and
+the paging footer rides on top, so a paged result may exceed the cap by one footer line.
+Everything else is bounded by the dispatcher. Before this, a recall page plus its footer
+was itself over the cap and was spilled into a new artifact, so a model could never read
+past the first page of anything; the Godot-debug thread looped on that for fifty calls.
 
 **Images** (2026-09-21). Image bytes — uploaded by the person, returned by `fs_read`,
 `http` or `screenshot` — are stored beside the spills as
@@ -518,7 +528,8 @@ writes back (the factor is a property of model + content, so the preset is its h
   thread panel read through the same call; the safety net (§6.3 step 5) guarantees at
   most one turn of staleness either way.
 - **Events to parent**: on state change (`blocked`, `waiting`, `done`, `failed`) the
-  runner writes an inbox row to `parent_id` with a header and a summary, plus an `item`
+  runner writes an inbox row to `parent_id` with a header (`[blocked]`, `[stopped without
+  finishing]`, `[finished]`, `[failed]`) and a summary, plus an `item`
   (policy from settings: thread events default *interrupt* → notification). The parent
   verifies by judgment (charter §5.7); nothing else fires.
 - **Finish** (`conversation.finish(summary, walkthrough)`): writes the walkthrough as a
@@ -531,7 +542,14 @@ writes back (the factor is a property of model + content, so the preset is its h
 - **Turn end without finish** (decided 2026-09-20): a thread turn that ends with plain
   text (a question, a report, or the wrap-up after the step budget) sets status
   `waiting_input` and forwards that text to the parent as a thread event. The parent
-  decides by judgment whether to answer, redirect, or involve the person.
+  decides by judgment whether to answer, redirect, or involve the person. The header
+  says `[stopped without finishing]`, not `[needs input]` (2026-09-22): the harness
+  cannot tell a question from a report, and three of four finished threads in the game
+  test ended with a report instead of `finish`; the UI labels the status the same way.
+- **Sub-threads** (2026-09-22): a thread may spawn threads down to `max_thread_depth`
+  for independent parts of a larger project, each with its own project note or as a
+  task; `create_thread` refuses a sub-thread on its parent's scope note (two writers on
+  one status block).
 - **Archival**: maintenance archives `done`/`failed` threads idle for
   `thread_archive_days` (14). Archived threads stay searchable (FTS) and reopenable.
 
@@ -546,7 +564,7 @@ writes back (the factor is a property of model + content, so the preset is its h
 | — | *end of cache-friendly prefix* | | |
 | [7] | `summary` (if any), fenced `<context from="harness">` | user, right after the prefix | changes only on fold |
 | [8] | Live events since `summary_cutoff`, replayed in order; `thinking`/`system`/`status` kinds skipped; evictions applied. A `user` event's `meta.images` become data URLs on its message; a `tool_result` with images stays text (one `[image <id> attached to this result]` marker per image) and is followed, after the step's last tool message, by a user-role *follower* carrying the images (`prompts/context/tool-image-note.md`) — tool-role messages cannot carry image parts. Evicted results lose their images with their content. | assistant / user / tool | stable within a turn |
-| [5]+[6] | Desk: the **now board** (pending approvals, unseen items, running threads with one-line status). Thread: the **project note** including status block, or for a task the goal + its status fields. Then a **Filesystem** block: the conversation's effective roots (global + its own, the first being what relative paths resolve against) and the protected paths, one line each. Then `now: 2026-09-20 14:02 (America/…)` + threads: `[steps remaining: N]`. One fenced `<context from="harness">` block | user, immediately before this turn's messages | volatile |
+| [5]+[6] | Desk: the **now board** (pending approvals, unseen items, running threads with one-line status). Thread: the **project note** including status block, or for a task the goal + its status fields. Then a **Filesystem** block: the conversation's effective roots (global + its own, the first being what relative paths resolve against), the projects root where new project folders are created, and the protected paths, one line each. Then `now: 2026-09-20 14:02 (America/…)` + threads: `[steps remaining: N]`. One fenced `<context from="harness">` block | user, immediately before this turn's messages | volatile |
 | [9] | Resolved entities for this input (§8.2–8.3), wrapped `<knowledge may_be_irrelevant="true">…</knowledge>`; ephemeral, never persisted | user | volatile |
 | [10] | Claimed inbox messages as user-role messages (with their images), then the turn's own assistant / tool messages and image followers | user / assistant / tool | volatile |
 
@@ -604,7 +622,7 @@ for more. Never inject `core/` here (already in slot [3]).
 | Tool | Args | Notes |
 |---|---|---|
 | `knowledge_search` | `query`, `type?`, `k=8` | fused: FTS5 rank + cosine, RRF; returns path, title, snippet |
-| `knowledge_read` | `path`, `offset?`, `limit?` | full note or line slice |
+| `knowledge_read` | `path`, `offset?`, `limit?` | full note or line slice; one page of `tool_output_cap` chars with a paging footer, never spilled (`paged`) |
 | `knowledge_write` | `path`, `op: create|append|replace|rethink`, `content`, `old?` (replace), `frontmatter?` | `replace` = exact `old`→`content` (like fs_edit); `rethink` = whole-body rewrite, requires `reason`, logged as a `knowledge.rethink` item on the now board; stamps `modified`; rejects relative dates; commits to git (`loom: <op> <path>`) |
 | `knowledge_links` | `path`, `direction: out|in` | neighbours |
 | `procedure_load` | `name` | SKILL.md body (L2); scripts stay on disk |
@@ -727,14 +745,16 @@ model-queue priority, which the classifier inherits), `meta` (the dispatcher wri
 and `extras` (per-turn scratch; `tool_search` puts the names it exposed in
 `extras["exposed"]`).
 Registry = native tools + MCP tools (prefixed `mcp_<server>_<tool>`) + connector tools
-(prefixed `<connector>_<tool>`). All are exposed every turn unless the count exceeds
+(prefixed `<connector>_<tool>`). Each tool declares the conversation `kinds` that see it (default both);
+`conversation_finish` and `status_update` are thread-only and never reach the desk
+(2026-09-22). All are exposed every turn unless the count exceeds
 `tool_expose_max` (48), in which case native tools stay and the rest are reachable via
 `tool_search(query)` which returns matching definitions to load for the rest of the turn.
 
 ### 9.2 Native tool inventory (decided) and default policies
 | Tool | Purpose | readOnly | Default policy |
 |---|---|---|---|
-| `fs_read` | file or line slice; 8k cap; paging footer; an image file (png/jpeg/webp/gif under `image_max_mb`) is returned as the image | yes | allow |
+| `fs_read` | file or line slice; one page of `tool_output_cap` chars with a paging footer, never spilled (`paged`); an image file (png/jpeg/webp/gif under `image_max_mb`) is returned as the image | yes | allow |
 | `fs_list` | glob under a root | yes | allow |
 | `fs_search` | regex/grep with context | yes | allow |
 | `fs_write` | create/overwrite (guarded) | no | allow (within roots) |
@@ -743,8 +763,8 @@ Registry = native tools + MCP tools (prefixed `mcp_<server>_<tool>`) + connector
 | `http` | GET/POST/… with headers/body; secret templating; an image response is returned as the image | no (GET treated read-only) | classify |
 | `screenshot` | capture a monitor, the whole virtual screen, a region or a window (by title, Windows) as an image; `scale` downsizes; via PowerShell/System.Drawing on Windows, `screencapture` on macOS, `grim`/`gnome-screenshot`/`import`/`scrot` on Linux — no dependency | yes | allow |
 | `knowledge_*`, `procedure_load`, `transcript_search`, `artifact_recall` | §8.4 | mixed | allow (core/ → ask) |
-| `status_update` | publish the thread's status: the scope note's block, or `status` events in a task's transcript | no | allow |
-| `conversation_create / send / read / list / finish` | §6.7 | read/list yes | allow |
+| `status_update` | publish the thread's status: the scope note's block, or `status` events in a task's transcript; threads only (`kinds`) | no | allow |
+| `conversation_create / send / read / list / finish` | §6.7; `finish` is threads only (`kinds`) | read/list yes | allow |
 | `schedule_create / list / delete` | §11 | list yes | allow (caps enforced) |
 | `item_post` | put a notification/setup item on the now board | no | allow |
 | `secret_set` | store a secret the user pasted (value never echoed) | no | ask |

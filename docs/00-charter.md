@@ -691,3 +691,45 @@ sessions do not re-litigate.
   `screenshot` tool captures through the OS (PowerShell/System.Drawing, `screencapture`,
   `grim`…) rather than a new dependency; uploads are raw bodies, not multipart, for the
   same reason.
+- **2026-09-22** — A capability test (a desk-driven game build across seven threads)
+  exposed a harness bug: `artifact_recall` pages and full `fs_read` pages were exactly
+  the spill cap plus a footer, so the dispatcher spilled every page into a fresh artifact
+  and a model could never read past the first page (one thread made ~50 identical
+  recalls, 63 artifacts, until cancelled). Decision: a tool that pages its own output
+  declares `paged`; the dispatcher never spills it; its page is `tool_output_cap` and
+  the footer rides on top. One mechanism, derived from the one setting. The
+  repeated-identical-call brake stays deferred; the step budget remains the only stop.
+- **2026-09-22** — A thread turn that ends in plain text is reported to its parent and
+  on the board as *stopped without finishing*, not *needs input*. The status value
+  `waiting_input` is unchanged (the thread does resume on a message); the words were
+  wrong: three of four finished threads in the test ended with a report instead of
+  `conversation_finish`, and every surface said they were waiting on the person. The
+  harness cannot tell a question from a report from a yield and does not try; the
+  thread prompt now says what a text ending means and what to do instead.
+- **2026-09-22** — Tools declare the conversation kinds that see them; `conversation_finish`
+  and `status_update` are thread-only. The desk had called finish on itself twice and
+  been told "the desk never finishes".
+- **2026-09-22** — Sub-threading stays (a thread may split a larger project into
+  sub-threads within `max_thread_depth`), but a sub-thread never shares its parent's
+  scope note: `conversation_create` refuses it. Two threads writing one status block
+  produced duplicate blocks and a confused desk. The thread prompt now says the goal is
+  the thread's own to do, and when a sub-thread is the right split.
+- **2026-09-22** — The status block has one writer, enforced: `knowledge_write` refuses
+  any edit that would change or introduce a status block and names `status_update`.
+  Models had been hand-editing blocks, copying an artifact id into `owner=`.
+- **2026-09-22** — The model's text on a tool-calling step (its mid-turn narration) was
+  persisted as `tool_call.meta.text` but the UI dropped it once the step landed; it
+  survived only in reasoning traces. The transcript now renders it as an assistant
+  bubble above the step's tool rows. No new tool: the channel already existed, and
+  `conversation_send` to the parent already carries a thread's mid-turn message to its
+  caller.
+- **2026-09-22** — The harness block names the projects root next to the allowed roots.
+  `general.projects_root` had pointed at a folder that did not exist, so every new
+  project note carried a bad root, threads improvised locations (one inside this repo)
+  and the person redirected them three times. Roots are mutable state; they ride in the
+  context block, not in a core note.
+- **2026-09-22** — The soul says verified means executed, and that an unexecutable claim
+  is labelled unverified; and that a missing program is looked for and its location
+  recorded before giving up. In the test the desk reported "39 tests passing" from a
+  file listing, and no thread or desk turn ever launched Godot, whose binary sat in
+  Downloads; a one-character scene-header typo went unnoticed through two rewrites.

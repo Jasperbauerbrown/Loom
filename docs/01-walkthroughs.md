@@ -52,7 +52,7 @@ when first asked and created it.
 | Thread (worker role) reads code, implements, runs tests, commits | tools, shell `classify` | `git push` is external → ask |
 | Thread edits files under the project path | filesystem guard | **GAP → how does a project path become an allowed root?** knowledge notes must not be able to widen access |
 | Thread rewrites the status section of `music-bot.md` at milestones | §5.4 | |
-| Thread needs a decision ("random from queue or whole library?") | thread event *needs input* → desk turn | **GAP → default policy per event class**; user answers on the desk and the desk forwards into the thread inbox, or opens the thread |
+| Thread needs a decision ("random from queue or whole library?") | thread event *stopped without finishing* → desk turn | **GAP → default policy per event class**; user answers on the desk and the desk forwards into the thread inbox, or opens the thread |
 | Thread finishes → event → desk turn → notification | §5.7 | |
 | Consolidation: thread writes the new feature + learned conventions into the entity | | |
 | Later: "make it skip recently played" | desk routes to the same thread | **GAP → finished threads stay addressable**; archived by maintenance after inactivity |
@@ -115,7 +115,7 @@ Each is folded into `00-charter.md` at the cited section.
 6. **Conversation tools** (§5.3): the desk (and any conversation) has `conversation.create /
    send / read / list` — the surface contract exposed as tools. Spawn payload = goal +
    scope + a model-selected excerpt; never the whole window.
-7. **Default event policies** (§5.7): *needs input* → interrupt; *finished* → interrupt;
+7. **Default event policies** (§5.7): *stopped without finishing* → interrupt; *finished* → interrupt;
    *blocked/failed* → interrupt; schedule and connector events → queue unless the
    creator set otherwise. All UI-editable.
 8. **Thread lifecycle** (§5.3): done threads remain addressable and can be resumed;
