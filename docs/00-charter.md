@@ -659,6 +659,12 @@ sessions do not re-litigate.
   (first = where relative paths resolve) and protected paths every step. The model had
   been learning them only by failing against them; roots are mutable state, so they
   ride in the context block, not the soul.
+- **2026-09-21** - The test suite wrote secrets to the real Windows Credential Manager
+  under Loom's service; the keyring library's move-to-compound step then landed the
+  person's fresh OpenRouter key on a stale lowercase twin (targets are case-insensitive)
+  once per test run, and every read fell back to the revoked key. Tests now get a
+  dict-backed keyring from the `app` fixture (a hard rule in CLAUDE.md), and secret
+  names are case-insensitive in Loom, existing spelling first.
 - **2026-09-21** — First visual QA pass by screenshot (headless Chromium against a
   `--fake` server, every screen, both themes, all palettes). Behavioural choices it
   settled: inbox rows from threads, schedules and connectors render as grey bubbles

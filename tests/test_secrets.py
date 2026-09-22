@@ -168,3 +168,15 @@ def test_redact_is_safe_on_empty_and_clean_text(keyring_store):
     keyring_store.set("TOKEN", "abcd1234")
     assert keyring_store.redact("") == ""
     assert keyring_store.redact("nothing here") == "nothing here"
+
+
+def test_secret_names_are_case_insensitive(keyring_store):
+    """A twin differing only by case must update the existing secret, not shadow it."""
+    store = keyring_store
+    store.set("OpenRouter_API_Key", "first")
+    store.set("openrouter_api_key", "second")
+    assert store.list_names() == ["OpenRouter_API_Key"]
+    assert store.get("OPENROUTER_API_KEY") == "second"
+    assert store.get("OpenRouter_API_Key") == "second"
+    assert store.delete("openrouter_api_key") is True
+    assert store.list_names() == [] and store.get("OpenRouter_API_Key") is None

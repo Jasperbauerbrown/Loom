@@ -119,8 +119,21 @@ class Store:
         _write_json(self.index_path, sorted(set(names)), private=False)
 
     # -- API --------------------------------------------------------------------
+    def _canonical(self, name: str) -> str:
+        """Secret names are case-insensitive. Windows credential targets are, and a twin
+        that differed only by case (`openrouter_api_key` beside `OpenRouter_API_Key`)
+        shadowed the person's real key for a day (2026-09-21). The spelling already in
+        the store wins; a new name keeps the spelling it was given."""
+        lowered = (name or "").lower()
+        known = self._read_index() if self._backend == "keyring" else list(self._read_file())
+        for existing in known:
+            if existing.lower() == lowered:
+                return existing
+        return name
+
     def get(self, name: str) -> str | None:
         self._ensure_backend()
+        name = self._canonical(name)
         if self._backend == "keyring":
             try:
                 return _keyring_module.get_password(SERVICE, name)  # type: ignore[union-attr]
@@ -134,6 +147,7 @@ class Store:
         if not isinstance(value, str):
             raise ValueError("secret value must be a string")
         self._ensure_backend()
+        name = self._canonical(name)
         if self._backend == "keyring":
             try:
                 _keyring_module.set_password(SERVICE, name, value)  # type: ignore[union-attr]
@@ -148,6 +162,7 @@ class Store:
     def delete(self, name: str) -> bool:
         """True if the secret existed. Missing is not an error."""
         self._ensure_backend()
+        name = self._canonical(name)
         existed = False
         if self._backend == "keyring":
             try:

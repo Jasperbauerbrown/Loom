@@ -37,10 +37,31 @@ def fake() -> FakeModelClient:
     return FakeModelClient()
 
 
+class FakeKeyring:
+    """Dict-backed keyring double. Every test gets one: the real Windows Credential
+    Manager is case-insensitive on target names, and the suite writing TOKEN/API_KEY
+    rows under Loom's service made the keyring library "move" the person's real
+    OpenRouter key onto a stale twin, once per test run, for a whole day (2026-09-21)."""
+
+    def __init__(self) -> None:
+        self.data: dict[tuple[str, str], str] = {}
+
+    def get_password(self, service, name):
+        return self.data.get((service, name))
+
+    def set_password(self, service, name, value):
+        self.data[(service, name)] = value
+
+    def delete_password(self, service, name):
+        self.data.pop((service, name), None)
+
+
 @pytest.fixture
-def app(home: Path, fake: FakeModelClient):
+def app(home: Path, fake: FakeModelClient, monkeypatch: pytest.MonkeyPatch):
+    from loom import secrets as secrets_mod
     from loom.app import build_app
 
+    monkeypatch.setattr(secrets_mod, "_keyring_module", FakeKeyring())
     a = build_app(home, models=fake)
     _configure_fake_model(a)
     yield a

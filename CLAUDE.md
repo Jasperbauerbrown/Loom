@@ -40,7 +40,8 @@ decisions in the charter's decision log with a date.
 - **Fail closed.** Unknown tool or unset policy behaves as `ask`. Nothing static ever
   *denies* a shell command (the pre-filter may only grant).
 - **Model-facing prose lives in `prompts/*.md`.** Never hardcode it.
-- **Tests never call a live model.** The fake model client is the test harness.
+- **Tests never call a live model or the machine's credential store.** The fake model
+  client and the conftest fake keyring are the test harness.
 - **No lint/type tooling uninvited.** UI type-checks via `tsc` during build.
 
 ## Commands (as designed; keep this block true as the repo takes shape)

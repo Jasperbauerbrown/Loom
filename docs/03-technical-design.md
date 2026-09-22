@@ -287,6 +287,10 @@ permissions and a persistent warning banner in Settings. *Deviation from charter
 fallback is not encrypted; the stdlib has no AEAD cipher and importing `cryptography`
 for one file violates the dependency rule. Documented, UI-visible.
 
+Secret names are case-insensitive (Windows credential targets are; a twin differing
+only by case once shadowed the real key), and the existing spelling wins. Tests never
+touch the machine's credential store: the `app` fixture installs a dict-backed keyring.
+
 Values never reach the model: tool arguments and MCP env values may contain
 `{{secret:NAME}}`, substituted by the dispatcher immediately before execution and
 redacted (`{{secret:NAME}}` restored) in the persisted `tool_call` event.
