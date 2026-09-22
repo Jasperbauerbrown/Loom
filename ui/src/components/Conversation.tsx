@@ -171,6 +171,7 @@ function sourceLabel(source: string, meta: Record<string, unknown>): string {
   if (source.startsWith("conversation:")) return `from ${String(meta.kind ?? "thread")}`;
   if (source.startsWith("schedule:")) return "from schedule";
   if (source.startsWith("connector:")) return `from ${source.slice("connector:".length)}`;
+  if (source.startsWith("process:")) return `from process${meta.title ? ` "${String(meta.title)}"` : ""}`;
   if (source === "system") return "from system";
   return "";
 }

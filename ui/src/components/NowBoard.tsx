@@ -6,7 +6,8 @@ import { store, useStore } from "../lib/store";
 import type { Approval, Conversation, Item } from "../lib/types";
 import { navigate } from "../lib/router";
 import { relativeTime, statusLabel, statusTitle, truncate } from "../lib/format";
-import { Badge, Button, Empty } from "./ui";
+import { Badge, Button, Collapsible, Empty } from "./ui";
+import { ProcessList, isLive, sortProcesses } from "./ProcessList";
 
 function Group({ title, count, children }: { title: string; count: number; children: React.ReactNode }) {
   return (
@@ -124,11 +125,18 @@ export function NowBoard() {
     (s) => Number(s.settings?.values["conversation.now_board_max_threads"] ?? 10),
     Object.is,
   );
+  // Running processes of every owner, plus what the desk itself ran lately (03 §9.4).
+  const processes = useStore(
+    (s) => sortProcesses(Object.values(s.processes)),
+    (a, b) => a.length === b.length && a.every((x, i) => x === b[i]),
+  );
+  const deskId = useStore((s) => Object.values(s.conversations).find((c) => c.kind === "desk")?.id, Object.is);
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
     void store.loadItems();
     void store.loadApprovals();
+    void store.loadProcesses();
     const t = setInterval(() => setTick((n) => n + 1), 60000); // keep relative times honest
     return () => clearInterval(t);
   }, []);
@@ -138,6 +146,8 @@ export function NowBoard() {
   const queued = items.filter((i) => !i.seen_at && i.kind !== "setup");
   const seen = items.filter((i) => i.seen_at);
   const needsYou = approvals.length + setupItems.length;
+  const running = processes.filter(isLive);
+  const recent = processes.filter((p) => !isLive(p) && p.conversation_id === deskId).slice(0, 5);
 
   return (
     <aside className="h-full overflow-y-auto border-l border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-900/50">
@@ -167,6 +177,17 @@ export function NowBoard() {
           threads.slice(0, maxThreads).map((c) => <ThreadLine key={c.id} conversation={c} />)
         )}
       </Group>
+
+      {running.length > 0 || recent.length > 0 ? (
+        <Group title="Processes" count={running.length}>
+          <ProcessList rows={running} showOwner empty="Nothing running." />
+          {recent.length > 0 ? (
+            <Collapsible summary={`Recent on the desk (${recent.length})`} className="mt-1 px-1">
+              <ProcessList rows={recent} empty="" />
+            </Collapsible>
+          ) : null}
+        </Group>
+      ) : null}
 
       <Group title="Queued" count={queued.length}>
         {queued.length === 0 ? <Empty>Nothing queued.</Empty> : queued.map((i) => <ItemLine key={i.id} item={i} />)}

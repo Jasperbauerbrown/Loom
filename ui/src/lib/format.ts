@@ -109,3 +109,21 @@ export function normaliseNotePath(raw: string): string {
   if (!p.toLowerCase().endsWith(".md")) p = `${p}.md`;
   return p;
 }
+
+/** Elapsed time between two ISO stamps (the second defaults to now): "12s", "3m 12s",
+ *  "2h 05m", "3d 4h". For a process row: uptime while it runs, duration once it ended. */
+export function duration(startIso: string | null | undefined, endIso?: string | null): string {
+  if (!startIso) return "";
+  const parse = (iso: string) => Date.parse(iso.endsWith("Z") || /[+-]\d\d:\d\d$/.test(iso) ? iso : `${iso}Z`);
+  const start = parse(startIso);
+  const end = endIso ? parse(endIso) : Date.now();
+  if (Number.isNaN(start) || Number.isNaN(end)) return "";
+  const s = Math.max(0, Math.round((end - start) / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${String(s % 60).padStart(2, "0")}s`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${String(m % 60).padStart(2, "0")}m`;
+  const d = Math.floor(h / 24);
+  return `${d}d ${h % 24}h`;
+}

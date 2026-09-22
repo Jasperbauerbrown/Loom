@@ -522,3 +522,34 @@ export interface SupervisorStatus {
   last_error?: string;
   port?: number;
 }
+
+// -- background processes (03 §9.4, 2026-09-22) -------------------------------------
+
+export type ProcessStatus = "starting" | "running" | "exited" | "stopped" | "failed" | "lost";
+
+/** A long-running program the model started with `shell(background=true)`: a row
+ *  written before the spawn, supervised while the backend runs, reconciled on start. */
+export interface ProcessRow {
+  id: string;
+  conversation_id: string;
+  title: string;
+  command: string;
+  cwd: string;
+  pid: number | null;
+  status: ProcessStatus;
+  exit_code: number | null;
+  error: string | null;
+  log_path: string;
+  log_bytes?: number;
+  started_at: string;
+  ended_at: string | null;
+}
+
+/** One window of a process log. Without `offset` the backend returns the tail. */
+export interface ProcessLogPage {
+  id: string;
+  offset: number;
+  end: number;
+  total: number;
+  text: string;
+}

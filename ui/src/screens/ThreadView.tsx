@@ -12,6 +12,7 @@ import { Badge, Button, Confirm, Empty, FieldRow, Section, Spinner, Textarea } f
 import { Conversation } from "../components/Conversation";
 import { ConversationHeader } from "../components/ConversationHeader";
 import { NotePicker } from "../components/NotePicker";
+import { ProcessList, sortProcesses } from "../components/ProcessList";
 
 const STATUS_FIELDS: { key: keyof StatusFields; label: string; multiline?: boolean }[] = [
   { key: "state", label: "State" },
@@ -187,6 +188,17 @@ function ArtifactsList({ id }: { id: string }) {
   );
 }
 
+function ProcessesPanel({ id }: { id: string }) {
+  const rows = useStore(
+    (s) => sortProcesses(Object.values(s.processes).filter((p) => p.conversation_id === id)),
+    (a, b) => a.length === b.length && a.every((x, i) => x === b[i]),
+  );
+  useEffect(() => {
+    void store.loadProcesses();
+  }, [id]);
+  return <ProcessList rows={rows} empty="No processes. The thread starts one with shell(background=true)." />;
+}
+
 export function ThreadView({ id }: { id: string }) {
   const conversation = useStore((s) => s.conversations[id], Object.is);
   const parent = useStore((s) => (conversation?.parent_id ? s.conversations[conversation.parent_id] : undefined));
@@ -263,6 +275,9 @@ export function ThreadView({ id }: { id: string }) {
           <WalkthroughLink conversation={conversation} />
         </Section>
 
+        <Section title="Processes">
+          <ProcessesPanel id={id} />
+        </Section>
         <Section title="Artifacts">
           <ArtifactsList id={id} />
         </Section>

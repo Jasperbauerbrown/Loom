@@ -2,6 +2,8 @@
 // JSON in, JSON out, `{"detail": ...}` errors raised as ApiError and surfaced as toasts.
 
 import type {
+  ProcessLogPage,
+  ProcessRow,
   Approval,
   Artifact,
   Connector,
@@ -213,6 +215,14 @@ export const api = {
       `/artifacts/${id}`,
       params,
     ),
+
+  // -- background processes (03 §9.4) -------------------------------------------
+  processes: (params?: { conversation_id?: string; status?: string }) =>
+    get<{ processes: ProcessRow[] }>("/processes", params).then((r) => r.processes ?? []),
+  process: (id: string) => get<ProcessRow>(`/processes/${id}`),
+  processLogs: (id: string, params?: { offset?: number; limit?: number }) =>
+    get<ProcessLogPage>(`/processes/${id}/logs`, params),
+  stopProcess: (id: string) => post<ProcessRow>(`/processes/${id}/stop`),
 
   // -- approvals / items -----------------------------------------------------
   approvals: (params?: { status?: string }) => get<Approval[]>("/approvals", params),

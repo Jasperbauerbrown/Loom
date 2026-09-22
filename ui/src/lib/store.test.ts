@@ -379,3 +379,39 @@ describe("tool result images", () => {
     expect(none.toolCalls.c2.result?.images).toBeUndefined();
   });
 });
+
+describe("background processes", () => {
+  const row = {
+    id: "01P1",
+    conversation_id: CID,
+    title: "dev server",
+    command: "npm run dev",
+    cwd: "C:/x",
+    pid: 4242,
+    status: "running",
+    exit_code: null,
+    error: null,
+    log_path: "C:/x/proc_01P1.log",
+    started_at: "2026-09-22T10:00:00Z",
+    ended_at: null,
+  };
+
+  it("upserts rows by id across the four events", () => {
+    let state = feed([ev("process.started", row)]);
+    expect(state.processes["01P1"]).toMatchObject({ status: "running", pid: 4242 });
+    state = feed([ev("process.exited", { ...row, status: "exited", exit_code: 0, ended_at: "2026-09-22T10:05:00Z" })], state);
+    expect(state.processes["01P1"]).toMatchObject({ status: "exited", exit_code: 0, title: "dev server" });
+    expect(Object.keys(state.processes)).toHaveLength(1);
+  });
+
+  it("keeps fields an event leaves out", () => {
+    let state = feed([ev("process.started", row)]);
+    state = feed([ev("process.stopped", { id: "01P1", status: "stopped", conversation_id: CID })], state);
+    expect(state.processes["01P1"]).toMatchObject({ status: "stopped", command: "npm run dev", pid: 4242 });
+  });
+
+  it("ignores a process event without an id", () => {
+    const state = feed([ev("process.failed", { status: "failed" })]);
+    expect(state).toBe(initialState);
+  });
+});

@@ -9,6 +9,7 @@
 import { useRef, useSyncExternalStore } from "react";
 import { api, ApiError } from "./api";
 import type {
+  ProcessRow,
   Approval,
   BusEvent,
   Connector,
@@ -92,6 +93,8 @@ export interface State {
   mcpServers: McpServer[];
   connectors: Connector[];
   schedules: Schedule[];
+  /** background processes by id (03 §9.6); running ones feed the now board */
+  processes: Record<string, ProcessRow>;
   secrets: SecretsInfo | null;
 
   queue: QueueState;
@@ -140,6 +143,7 @@ export const initialState: State = {
   mcpServers: [],
   connectors: [],
   schedules: [],
+  processes: {},
   secrets: null,
   queue: { depth: 0, running: [] },
   health: null,
@@ -585,6 +589,17 @@ export function reduce(state: State, event: BusEvent): State {
       return { ...state, maintenanceProgress: lines, maintenance, maintenanceStale: stage.stage === "done" };
     }
 
+    case "process.started":
+    case "process.exited":
+    case "process.stopped":
+    case "process.failed":
+    case "process.lost": {
+      // The row is the whole truth; every transition carries it (03 §9.6).
+      const row = data as ProcessRow;
+      if (!row || !row.id) return state;
+      return { ...state, processes: { ...state.processes, [row.id]: { ...state.processes[row.id], ...row } } };
+    }
+
     case "schedule.created":
     case "schedule.updated": {
       const row = data as Schedule;
@@ -815,6 +830,16 @@ export class Store {
     }));
   }
 
+  async loadProcesses() {
+    const rows = await this.guardOptional(() => api.processes());
+    if (!rows) return;
+    this.set((s) => {
+      const processes: Record<string, ProcessRow> = {};
+      for (const row of rows) processes[row.id] = row;
+      return { ...s, processes };
+    });
+  }
+
   async loadSchedules() {
     const schedules = await this.guardOptional(() => api.schedules());
     if (!schedules) return;
@@ -872,6 +897,7 @@ export class Store {
       this.loadConversations(),
       this.loadApprovals(),
       this.loadItems(),
+      this.loadProcesses(),
       this.loadSystem(),
     ]);
   }

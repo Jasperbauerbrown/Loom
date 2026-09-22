@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactionLabel, normaliseNotePath, statusLabel, statusTitle } from "./format";
+import { compactionLabel, duration, normaliseNotePath, statusLabel, statusTitle } from "./format";
 
 describe("statusLabel", () => {
   it("shows a thread that ended its turn without finishing as stopped, with a gloss", () => {
@@ -42,5 +42,17 @@ describe("normaliseNotePath", () => {
   });
   it("is empty for empty input", () => {
     expect(normaliseNotePath("   ")).toBe("");
+  });
+});
+
+describe("duration", () => {
+  it("formats seconds, minutes, hours and days", () => {
+    expect(duration("2026-09-22T10:00:00Z", "2026-09-22T10:00:12Z")).toBe("12s");
+    expect(duration("2026-09-22T10:00:00Z", "2026-09-22T10:03:12Z")).toBe("3m 12s");
+    expect(duration("2026-09-22T10:00:00Z", "2026-09-22T12:05:00Z")).toBe("2h 05m");
+    expect(duration("2026-09-22T10:00:00Z", "2026-09-25T14:00:00Z")).toBe("3d 4h");
+  });
+  it("is empty without a start", () => {
+    expect(duration(null)).toBe("");
   });
 });
