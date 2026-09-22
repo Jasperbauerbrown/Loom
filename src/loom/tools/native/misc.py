@@ -62,7 +62,8 @@ async def artifact_recall_handler(ctx: ToolContext, args: dict[str, Any]) -> Too
     artifact_id = str(args.get("id") or "").strip()
     if not artifact_id:
         return ToolResult.error("id is empty")
-    text = store.read(artifact_id, int(args.get("offset") or 0), int(args.get("limit") or 8000))
+    limit = args.get("limit")
+    text = store.read(artifact_id, int(args.get("offset") or 0), int(limit) if limit else None)
     if text.startswith("error: "):
         return ToolResult(content=text, ok=False, meta={"id": artifact_id})
     return ToolResult(content=text, meta={"id": artifact_id})
@@ -104,12 +105,13 @@ def tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "id": {"type": "string", "description": "Artifact id from the result footer."},
-                    "offset": {"type": "integer", "default": 0},
-                    "limit": {"type": "integer", "default": 8000},
+                    "offset": {"type": "integer", "default": 0, "description": "Character offset to start at."},
+                    "limit": {"type": "integer", "description": "Characters to return; default and maximum are the tool output cap."},
                 },
                 "required": ["id"],
             },
             handler=artifact_recall_handler,
             read_only=True,
+            paged=True,
         ),
     ]

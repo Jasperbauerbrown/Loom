@@ -3,6 +3,6 @@ Read a stored artifact: the full output of an earlier tool call that was too lon
 Arguments:
 - `id` (string, required): the artifact id from the `[artifact …]` footer of the earlier result.
 - `offset` (integer, optional, default 0): character offset to start at.
-- `limit` (integer, optional, default 8000): how many characters to return.
+- `limit` (integer, optional): how many characters to return. The default, and the maximum, is the configured tool output cap; a larger request is clamped to it.
 
-Returns that slice, with a footer naming the next offset when more remains. Page through it rather than asking for everything: artifacts can be very large.
+Returns that slice in full, with a footer naming the next offset when more remains. The footer's offset is exact: pass it back to continue. Page through an artifact rather than asking for everything: artifacts can be very large.

@@ -222,9 +222,15 @@ class Store:
             log.warning("artifact %s unreadable: %s", artifact_id, exc)
             return None
 
-    def read(self, artifact_id: str, offset: int = 0, limit: int = 8000) -> str:
-        """A character slice with a paging footer. Missing artifact → an error string;
-        the tool turns it into an error result."""
+    def page_cap(self) -> int:
+        """The page size every paged tool uses: `conversation.tool_output_cap`."""
+        return int(self.app.settings.get("conversation.tool_output_cap"))
+
+    def read(self, artifact_id: str, offset: int = 0, limit: int | None = None) -> str:
+        """A character slice with a paging footer. The page is at most `tool_output_cap`
+        characters (the default, and the clamp for any larger `limit`); the footer rides
+        on top, and the dispatcher never spills a paged result. Missing artifact → an
+        error string; the tool turns it into an error result."""
         row = self.get(artifact_id)
         if row is None:
             return f"error: no artifact {artifact_id}"
@@ -233,7 +239,8 @@ class Store:
             return f"error: artifact {artifact_id} file is missing ({row['path']})"
         total = len(content)
         offset = max(0, int(offset))
-        limit = max(1, int(limit))
+        cap = self.page_cap()
+        limit = cap if limit is None else max(1, min(int(limit), cap))
         chunk = content[offset : offset + limit]
         end = offset + len(chunk)
         if offset >= total and total:

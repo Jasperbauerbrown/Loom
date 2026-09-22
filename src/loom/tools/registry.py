@@ -78,6 +78,15 @@ class Tool:
     timeout_s: float | None = None  # None → dispatcher picks by source/kind
     source: str = "native"  # native | mcp:<server> | connector:<name>
     deferred: bool = False  # true when hidden behind tool_search this turn (set by registry.expose)
+    # A tool that pages its own output to `conversation.tool_output_cap` (fs_read,
+    # knowledge_read, artifact_recall). The dispatcher never spills a paged tool's result: spilling a
+    # page re-created the artifact it was reading, and a model could never get past the
+    # first page (the Godot-debug loop, 2026-09-22).
+    paged: bool = False
+    # Conversation kinds that see the tool. Thread-only tools (conversation_finish,
+    # status_update) are not offered to the desk, which otherwise called them and was
+    # told "the desk never finishes" (2026-09-22).
+    kinds: tuple[str, ...] = ("desk", "thread")
 
     def is_read_only(self, args: dict[str, Any] | None = None) -> bool:
         """Effective read-only for one call: the static hint, or the per-call test."""

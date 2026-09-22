@@ -22,7 +22,6 @@ from ...artifacts import image_dimensions, sniff_image
 from ..fs_guard import normalise
 from ..registry import Tool, ToolContext, ToolResult
 
-READ_CHAR_CAP = 8000
 SEARCH_MAX_BYTES = 2 * 1024 * 1024
 BINARY_SNIFF = 8192
 
@@ -104,7 +103,10 @@ def _read_image(path: Path, mime: str, cap: int) -> ToolResult:
     )
 
 
-def _read_sync(path: Path, offset: int, limit: int, image_cap: int = 10 * 1024 * 1024) -> ToolResult:
+def _read_sync(path: Path, offset: int, limit: int, image_cap: int = 10 * 1024 * 1024, char_cap: int = 8000) -> ToolResult:
+    """`char_cap` is the page: `conversation.tool_output_cap`, the same number the
+    dispatcher spills at. fs_read is a paged tool, so the dispatcher leaves its result
+    alone and the footer rides on top of the page."""
     if path.is_dir():
         return ToolResult.error(f"{path} is a directory; use fs_list")
     if not path.exists():
@@ -132,9 +134,16 @@ def _read_sync(path: Path, offset: int, limit: int, image_cap: int = 10 * 1024 *
     chunk = lines[offset : offset + max(1, limit)]
     text = "\n".join(chunk)
     capped = False
-    if len(text) > READ_CHAR_CAP:
-        text = text[:READ_CHAR_CAP]
+    if len(text) > char_cap:
+        text = text[:char_cap]
         chunk = text.splitlines()
+        # The cut usually lands mid-line. Drop that partial line so the footer's next
+        # offset points at it and the next page starts on it whole; before this the
+        # rest of the line was silently skipped between pages. A single line longer
+        # than the cap is kept cut, or the read would never advance.
+        if len(chunk) > 1 and not text.endswith("\n"):
+            chunk = chunk[:-1]
+            text = "\n".join(chunk)
         capped = True
     end = offset + len(chunk)
     if not chunk:
@@ -152,8 +161,9 @@ async def fs_read_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     path = _resolve(ctx, str(args["path"]))
     offset = int(args.get("offset") or 0)
     limit = int(args.get("limit") or 400)
-    cap = int(ctx.app.settings.get("conversation.image_max_mb")) * 1024 * 1024
-    return _with_base_hint(ctx, str(args["path"]), await asyncio.to_thread(_read_sync, path, offset, limit, cap))
+    image_cap = int(ctx.app.settings.get("conversation.image_max_mb")) * 1024 * 1024
+    char_cap = int(ctx.app.settings.get("conversation.tool_output_cap"))
+    return _with_base_hint(ctx, str(args["path"]), await asyncio.to_thread(_read_sync, path, offset, limit, image_cap, char_cap))
 
 
 # ---------------------------------------------------------------------------------
@@ -370,6 +380,7 @@ def tools() -> list[Tool]:
             handler=fs_read_handler,
             read_only=True,
             path_params=("path",),
+            paged=True,
         ),
         Tool(
             name="fs_list",

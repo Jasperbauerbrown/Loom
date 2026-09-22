@@ -221,7 +221,10 @@ async def execute(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) 
             content = app.secrets.redact(content)
         except Exception as exc:
             log.warning("redaction failed: %r", exc)
-    if app.artifacts is not None:
+    if app.artifacts is not None and not tool.paged:
+        # A paged tool (fs_read, artifact_recall) already sized its page to the cap; its
+        # footer rides on top. Spilling it would re-create the artifact it was reading
+        # and the model could never get past the first page (2026-09-22).
         content, artifact_id = app.artifacts.bound(ctx.conversation_id, ctx.event_id, content)
         if artifact_id:
             result.meta["artifact_id"] = artifact_id
