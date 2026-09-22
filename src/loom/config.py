@@ -225,7 +225,7 @@ FIELDS: list[Field] = [
     Field("knowledge.auto_commit_external_edits", "bool", True, "Auto-commit external edits", "Commit Obsidian/user edits to the vault repo on the next maintenance pass.", "toggle"),
     # Permissions (per-tool modes, roots, protected paths are rows)
     Field("permissions.shell_readonly_commands", "list", DEFAULT_SHELL_READONLY, "Shell read-only commands", "Pipeline stages whose first token is here run without a classifier call. Never denies.", "list"),
-    Field("permissions.shell_flavour", "enum", "auto", "Shell flavour", "auto = Git Bash if present, else cmd (Windows) or sh.", "select", choices=("auto", "gitbash", "cmd", "powershell", "sh")),
+    Field("permissions.shell_flavour", "enum", "auto", "Shell flavour", "auto = Git Bash if present, else cmd (Windows) or sh.", "select", choices=("auto", "gitbash", "cmd", "powershell", "sh"), restart=True),
     Field("permissions.classifier_role", "enum", "utility", "Classifier role", "Model role used for classify decisions; utility falls back to the conversation's role.", "select", choices=("utility", "desk", "worker", "maintenance")),
     Field("permissions.classifier_timeout_s", "int", 45, "Classifier timeout (s)", "A verdict that takes longer than this becomes an ask (one retry for a busy provider).", "number", min=5, max=600),
     # Triggers

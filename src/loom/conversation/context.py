@@ -4,14 +4,25 @@ Message layout sent to the model:
 
     [0] system  slots [1]–[4]: soul + kind prompt, tools line, core blocks, procedures
                 index. Byte-stable across turns (sorted, no dates) for the prompt cache.
-    [1] system  slots [5]–[7]: now board (desk) / goal + status (thread), pinned notes,
-                filesystem, now line +
-                steps remaining, summary. Rebuilt every step.
+    user       slot [7]: the compaction summary, if any.
     ...        slot [8]: live events replayed since `summary_cutoff`, evictions applied.
+    user       slots [5]–[6]: now board (desk) / goal + status (thread), pinned notes,
+                filesystem, now line. Built once per `Context` and reused verbatim for
+                every step of the turn (2026-09-22).
     user       slot [9]: <knowledge may_be_irrelevant="true"> pre-loaded entities, spliced
                 immediately before this turn's first user message. Ephemeral.
     user…      slot [10]: this turn's claimed inbox rows, then whatever the runner appends
                 (assistant steps with in-turn reasoning, tool results, mid-turn inbox).
+    user       the step budget, `[steps remaining: N]`, threads only — the one thing that
+                changes per step, so it sits last and the growing turn stays cached.
+
+Everything above the turn's own messages is therefore byte-stable *within* a turn: only
+the trailing budget line is re-prefilled each step. The cost of that is a snapshot: the
+now board, the goal and status, the pinned notes, the roots and the `now:` clock are as
+they were at turn start. A thread that pins a note or writes its status mid-turn sees
+the change in its next turn; meanwhile it has the note's text and its own status write
+in this turn's transcript. A mid-turn compaction rebuilds the `Context`, and that new
+`Context` legitimately snapshots afresh.
 """
 
 from __future__ import annotations
@@ -85,20 +96,32 @@ class Context:
     knowledge_text: str
     exposed: set[str] = field(default_factory=set)  # tool names loaded via tool_search this turn
     turn_start_event_id: int | None = None
+    _harness: dict[str, Any] | None = field(default=None, init=False, repr=False)
+
+    def harness(self, app) -> dict[str, Any]:  # type: ignore[no-untyped-def]
+        """The harness block, built on first use and reused verbatim for every step of
+        this turn. Rebuilding it per step is what used to break the cache: the whole
+        accumulated turn sat after it and was re-prefilled every time (2026-09-22)."""
+        if self._harness is None:
+            self._harness = volatile_message(app, self.conv)
+        return self._harness
 
     def messages(self, app, steps_remaining: int | None = None) -> list[dict[str, Any]]:  # type: ignore[no-untyped-def]
         """One system message (stable prefix), then the summary as a user-role context
-        block, the live history, the volatile context block (now board / scope note, now
-        line, steps) nearest the query, then this turn's messages. Exactly one system
-        message: chat templates (Qwen 3.x among them) reject a system message that is
-        not first, and everything volatile sitting after the history keeps the cached
-        prefix as long as possible (decided 2026-09-20)."""
+        block, the live history, the harness block, this turn's messages, and last the
+        step budget for a thread. Exactly one system message: chat templates (Qwen 3.x
+        among them) reject a system message that is not first (decided 2026-09-20). The
+        only part that changes between steps is the trailing budget line, so everything
+        before this turn's own messages stays byte-identical and cached (2026-09-22)."""
         out = [*self.prefix]
         if self.conv.get("summary"):
             out.append(summary_message(self.conv))
         out.extend(self.history)
-        out.append(volatile_message(app, self.conv, steps_remaining))
+        out.append(self.harness(app))
         out.extend(self.turn)
+        tail = steps_message(self.conv, steps_remaining)
+        if tail is not None:
+            out.append(tail)
         return out
 
     def tools(self, app, enabled: bool = True) -> list[Tool]:  # type: ignore[no-untyped-def]
@@ -241,13 +264,13 @@ CONTEXT_CLOSE = "</context>"
 
 
 def filesystem_block(app, conv: dict[str, Any]) -> str:  # type: ignore[no-untyped-def]
-    """Slot [6]: the roots this conversation may touch, the paths that always ask, what
-    Loom itself is (address, pid, home) and which shell runs commands, with its quirks.
-    Until 2026-09-21 the model learned its roots only by failing against them (a desk
-    guessed `projects/`, listed the artifacts folder, tried a Linux path, then asked for
-    the home directory); on 2026-09-22 it could not tell its own port from a music bot's
-    and lost an hour to Git Bash rewriting `/F` as a path. Mutable state belongs here,
-    not in the soul."""
+    """Slot [6]: the roots this conversation may touch, the paths that always ask, and
+    what Loom itself is (address, pid, home). Until 2026-09-21 the model learned its
+    roots only by failing against them (a desk guessed `projects/`, listed the artifacts
+    folder, tried a Linux path, then asked for the home directory); on 2026-09-22 it
+    could not tell its own port from a music bot's. Mutable state belongs here, not in
+    the soul. The shell's own quirks travel with the `shell` tool's description, where
+    the model is already looking when it writes a command."""
     from ..tools import fs_guard
 
     paths = fs_guard.describe(app, conv)
@@ -261,7 +284,6 @@ def filesystem_block(app, conv: dict[str, Any]) -> str:  # type: ignore[no-untyp
     if protected:
         lines.append("protected (always ask): " + ", ".join(protected))
     lines.append(loom_line(app))
-    lines.append(shell_line(app))
     return "\n".join(lines)
 
 
@@ -273,31 +295,29 @@ def loom_line(app) -> str:  # type: ignore[no-untyped-def]
     port = int(getattr(app, "bind_port", 0) or app.settings.get("general.port"))
     shown = "127.0.0.1" if host in ("0.0.0.0", "::") else host
     home = str(app.home).replace("\\", "/")
-    return f"loom: this backend serves http://{shown}:{port} (pid {os.getpid()}); its home is {home}; never stop or bind over it"
+    return f"loom: this backend serves http://{shown}:{port} (pid {os.getpid()}); its home is {home}"
 
 
-def shell_line(app) -> str:  # type: ignore[no-untyped-def]
-    """The shell flavour commands run under, and what the model must know to use it."""
-    from ..tools.native import shell
-
-    flavour = shell.resolve_flavour(app)
-    hint = shell.flavour_hint(flavour)
-    return f"shell: {flavour}" + (f" — {hint}" if hint else "")
-
-
-def volatile_message(app, conv: dict[str, Any], steps_remaining: int | None = None) -> dict[str, Any]:  # type: ignore[no-untyped-def]
+def volatile_message(app, conv: dict[str, Any]) -> dict[str, Any]:  # type: ignore[no-untyped-def]
     """Slots [5]–[6] as one user-role block, fenced so the model can tell harness
-    context from the person's words."""
+    context from the person's words. Built once per turn; `Context.harness` memoises it."""
     parts = [now_board(app) if conv["kind"] == "desk" else goal_block(app, conv)]
     pinned = pinned_block(app, conv)
     if pinned:
         parts.append(pinned)
     parts.append(filesystem_block(app, conv))
-    line = now_line(app)
-    if conv["kind"] == "thread" and steps_remaining is not None:
-        line += f"\n[steps remaining: {steps_remaining}]"
-    parts.append(line)
+    parts.append(now_line(app))
     return {"role": "user", "content": f"{CONTEXT_OPEN}\n" + "\n\n".join(parts) + f"\n{CONTEXT_CLOSE}"}
+
+
+def steps_message(conv: dict[str, Any], steps_remaining: int | None) -> dict[str, Any] | None:
+    """The thread's step budget, alone in its own block at the very end of the prompt.
+    It is the only thing that differs between two steps of one turn, so isolating it
+    here leaves the whole prompt before it cacheable (2026-09-22). The desk has no
+    budget line and so no tail at all."""
+    if conv.get("kind") != "thread" or steps_remaining is None:
+        return None
+    return {"role": "user", "content": f"{CONTEXT_OPEN}\n[steps remaining: {steps_remaining}]\n{CONTEXT_CLOSE}"}
 
 
 def summary_message(conv: dict[str, Any]) -> dict[str, Any]:

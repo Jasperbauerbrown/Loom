@@ -235,6 +235,42 @@ async def test_shell_passes_env_and_stdin(app, ctx, project):
     assert "piped-in" in result.content
 
 
+# The flavour's quirks are prose in prompts/context/shell-<flavour>.md, appended to the
+# tool description at registration — not hardcoded, and not re-rendered into the harness
+# block every turn (2026-09-22).
+def test_shell_description_carries_the_flavour_quirks(app):
+    if shell_tool.find_git_bash() is None:
+        pytest.skip("Git Bash not installed; its quirks cannot be the resolved flavour")
+    app.settings.set(app.db, "permissions.shell_flavour", "gitbash")
+    text = shell_tool.describe(app)
+    assert "Shell flavour on this machine: gitbash." in text
+    assert "//F" in text and "/dev/null" in text
+
+
+def test_shell_description_omits_quirks_for_a_flavour_without_a_file(app):
+    app.settings.set(app.db, "permissions.shell_flavour", "sh")
+    text = shell_tool.describe(app)
+    assert text.rstrip().endswith("Shell flavour on this machine: sh.")
+    assert "//F" not in text
+
+
+def test_a_missing_flavour_file_is_empty_not_an_error():
+    assert shell_tool.flavour_prose("sh") == ""
+    assert shell_tool.flavour_prose("no-such-flavour") == ""
+    assert "//F" in shell_tool.flavour_prose("gitbash")
+
+
+def test_the_quirks_are_not_in_the_tools_prose_file():
+    from loom import prompts
+
+    assert "//F" not in prompts.load("tools/shell")
+    assert shell_tool.describe(None) == prompts.load("tools/shell")
+
+
+def test_registered_shell_tool_is_composed_with_the_flavour(app):
+    assert "Shell flavour on this machine:" in app.tools.get("shell").description
+
+
 # ---------------------------------------------------------------------------------
 # http
 # ---------------------------------------------------------------------------------

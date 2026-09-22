@@ -31,8 +31,13 @@ def _kinds(app, cid):
 
 
 def _context(req):
-    """The harness context block (now board / goal + status, pinned notes, now line)."""
-    blocks = [m["content"] for m in req.messages if m["role"] == "user" and m["content"].startswith("<context")]
+    """The harness context block (now board / goal + status, pinned notes, now line).
+    A thread's `[steps remaining: N]` is its own trailing block since 2026-09-22."""
+    blocks = [
+        m["content"]
+        for m in req.messages
+        if m["role"] == "user" and str(m.get("content", "")).startswith("<context") and "[steps remaining:" not in m["content"]
+    ]
     assert blocks, "no harness context block in the request"
     return blocks[-1]
 
@@ -184,7 +189,7 @@ async def test_walkthrough_music_bot(client, fake, tmp_path):
     thread_call = [c for c in fake.calls if c.conversation_id == t["id"] and c.purpose == "turn"][0]
     assert "# Goal\nAdd a play-random command" in _context(thread_call)
     assert "# Pinned notes\n\n## projects/music-bot.md\nNode Discord music bot." in _context(thread_call)
-    assert "[steps remaining:" in _context(thread_call)
+    assert thread_call.messages[-1]["content"].startswith('<context from="harness">\n[steps remaining:')
     # thread steps ran at background priority, desk turns at interactive priority
     prios = {c.conversation_id: p for c, p in zip(fake.calls, fake.priorities) if c.purpose == "turn"}
     assert prios[desk] == 0 and prios[t["id"]] == 1

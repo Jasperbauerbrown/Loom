@@ -25,10 +25,22 @@ def _collect(app):
 
 
 def _ctx_block(req):
-    """The harness context block (now board / goal + status, pinned notes, now line, steps)."""
-    blocks = [m["content"] for m in req.messages if m["role"] == "user" and m["content"].startswith("<context")]
+    """The harness context block (now board / goal + status, pinned notes, filesystem,
+    now line). Since 2026-09-22 a thread's `[steps remaining: N]` rides in its own block
+    at the very end — `_steps_tail` returns that one."""
+    blocks = [b for b in _ctx_blocks(req) if "[steps remaining:" not in b]
     assert blocks, "no harness context block in the request"
     return blocks[-1]
+
+
+def _ctx_blocks(req):
+    return [m["content"] for m in req.messages if m["role"] == "user" and str(m.get("content", "")).startswith("<context")]
+
+
+def _steps_tail(req):
+    """The trailing budget block, or None for the desk (which has no step budget)."""
+    tails = [b for b in _ctx_blocks(req) if "[steps remaining:" in b]
+    return tails[-1] if tails else None
 
 
 async def _run(app, cid):
@@ -185,7 +197,8 @@ async def test_thread_spawn_status_finish_notifies_parent(app, fake):
     block = _ctx_block(thread_req)
     assert "# Goal\nAdd play-random to the music bot" in block and "# Status\n(no status yet)" in block
     assert "# Pinned notes\n\n## projects/music-bot.md\nNode Discord music bot." in block
-    assert "[steps remaining:" in block
+    assert "[steps remaining:" not in block  # the budget is its own trailing block now
+    assert _steps_tail(thread_req) is not None and thread_req.messages[-1]["content"] == _steps_tail(thread_req)
 
 
 async def test_thread_without_status_write_gets_safety_net(app, fake):
@@ -442,15 +455,13 @@ async def test_reasoning_replay_keeps_the_tail_of_long_reasoning(app, fake, tmp_
     assert replayed.count("PLAN") < 20  # the 40-token head is gone; only the tail's few remain
 
 
-async def test_context_block_lists_the_roots_and_protected_paths(app, fake, tmp_path, monkeypatch):
+async def test_context_block_lists_the_roots_and_protected_paths(app, fake, tmp_path):
     """Slot [6]: the model sees where it may work instead of learning it by failing, and
-    what Loom itself is (address, pid, home) and which shell it commands — it once
-    mistook a music bot's port for its own and lost an hour to Git Bash rewriting `/F`
-    as a path (2026-09-22)."""
+    what Loom itself is (address, pid, home) — it once mistook a music bot's port for
+    its own (2026-09-22)."""
     import os
 
     from loom.tools import fs_guard
-    from loom.tools.native import shell
 
     desk = app.desk_id()
     extra = tmp_path / "extra-root"
@@ -458,7 +469,6 @@ async def test_context_block_lists_the_roots_and_protected_paths(app, fake, tmp_
     fs_guard.add_root(app, str(extra), added_by="test")
     fs_guard.add_protected(app, str(extra / "secrets.env"))
     app.bind_host, app.bind_port = "0.0.0.0", 8599  # what serve() records; a LAN bind shows the loopback address
-    monkeypatch.setattr(shell, "resolve_flavour", lambda app: "gitbash")
     fake.script(Scripted(content="ok"))
     conversation.post(app, desk, "where can you write?")
     await _run(app, desk)
@@ -468,15 +478,54 @@ async def test_context_block_lists_the_roots_and_protected_paths(app, fake, tmp_
     assert fs_guard.normalise(str(app.vault_dir)) in block and fs_guard.normalise(str(extra)) in block
     assert "protected (always ask): " in block and "secrets.env" in block
     assert "projects root" not in block  # the setting is gone (2026-09-22)
-    assert f"loom: this backend serves http://127.0.0.1:8599 (pid {os.getpid()}); its home is {str(app.home).replace(chr(92), '/')}; never stop or bind over it" in block
-    assert "shell: gitbash — Windows switches must be written //F, //FI, //PID (a single slash is rewritten as a path); redirect to /dev/null, never nul; 2>nul creates a file" in block
+    assert f"loom: this backend serves http://127.0.0.1:8599 (pid {os.getpid()}); its home is {str(app.home).replace(chr(92), '/')}" in block
+    # the shell's flavour and quirks travel with the tool description, not the block
+    assert "shell:" not in block
 
-    # Without a recorded bind the settings speak, and a flavour without quirks gets no hint.
+    # Without a recorded bind the settings speak.
     app.bind_host, app.bind_port = "", 0
-    monkeypatch.setattr(shell, "resolve_flavour", lambda app: "sh")
     line = context.loom_line(app)
     assert line.startswith(f"loom: this backend serves http://127.0.0.1:{int(app.settings.get('general.port'))} (pid ")
-    assert context.shell_line(app) == "shell: sh"
+
+
+async def test_harness_block_is_one_snapshot_per_turn_and_the_budget_is_the_only_tail(app, fake):
+    """The block is built once per Context and reused for every step; only the trailing
+    budget line differs between steps. Rebuilding it per step used to re-prefill the
+    whole accumulated turn (2026-09-22)."""
+    row = conversation.create_thread(app, goal="count things", created_by="user")
+    conv = app.conversation(row["id"])
+    ctx = context.assemble(app, conv, [], None)
+
+    first = ctx.messages(app, 60)
+    second = ctx.messages(app, 12)
+    assert first[:-1] == second[:-1]  # everything above the tail is byte-identical
+    assert first[-1]["content"].endswith("[steps remaining: 60]\n</context>")
+    assert second[-1]["content"].endswith("[steps remaining: 12]\n</context>")
+    assert "[steps remaining:" not in first[-2]["content"]
+
+    # the desk has no budget, so it has no tail at all
+    desk_ctx = context.assemble(app, app.conversation(app.desk_id()), [], None)
+    assert context.steps_message(app.conversation(app.desk_id()), 5) is None
+    assert "[steps remaining:" not in desk_ctx.messages(app, 5)[-1]["content"]
+
+
+async def test_a_turns_steps_share_a_cached_prefix(app, fake, tmp_path):
+    """The real cache property: each step's request, minus its budget tail, is a literal
+    prefix of the next step's request. Only the tail is ever re-prefilled."""
+    target = tmp_path / "a.txt"
+    target.write_text("hello", encoding="utf-8")
+    row = conversation.create_thread(app, goal="read a file twice", roots=[str(tmp_path)], created_by="user")
+    fake.script(
+        Scripted(content="", tool_calls=[("fs_read", {"path": str(target)})]),
+        Scripted(content="", tool_calls=[("fs_read", {"path": str(target)})]),
+        Scripted(content="done"),
+    )
+    await _run(app, row["id"])
+    calls = [c for c in fake.calls if c.conversation_id == row["id"] and c.purpose == "turn"]
+    assert len(calls) >= 3
+    for earlier, later in zip(calls, calls[1:]):
+        head = earlier.messages[:-1]  # drop this step's budget tail
+        assert later.messages[: len(head)] == head, "a step changed something the previous step had already sent"
 
 
 async def test_pinned_notes_render_in_slot_five_with_a_cap_and_a_missing_marker(app, fake):

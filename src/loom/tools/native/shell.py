@@ -2,7 +2,9 @@
 
 One command line, one process, one merged output stream, one exit code. The shell
 flavour is a setting: `auto` picks Git Bash on Windows when it is installed (so the same
-POSIX command lines work on every machine) and `cmd.exe` otherwise.
+POSIX command lines work on every machine) and `cmd.exe` otherwise. Each flavour's quirks
+live in `prompts/context/shell-<flavour>.md` and are appended to this tool's description
+at registration.
 
 A timeout kills the whole process tree, not just the shell — on Windows a killed
 `cmd.exe` leaves its children running, which is how a "timed out" build keeps holding a
@@ -46,14 +48,6 @@ def find_git_bash() -> str | None:
 
 FLAVOURS = ("gitbash", "cmd", "powershell", "sh")
 
-# What the model must know about a flavour to use it without failing against it. Git
-# Bash rewrites `/F`-style switches as paths and `2>nul` writes a file named nul (the
-# Music-Bridge incident, 2026-09-22). Rendered in the harness context block, not the
-# soul: the flavour is a setting.
-FLAVOUR_HINTS = {
-    "gitbash": "Windows switches must be written //F, //FI, //PID (a single slash is rewritten as a path); redirect to /dev/null, never nul; 2>nul creates a file",
-}
-
 
 def resolve_flavour(app: Any) -> str:
     """The effective flavour: the setting, with `auto` resolved and a missing Git Bash
@@ -67,8 +61,28 @@ def resolve_flavour(app: Any) -> str:
     return flavour if flavour in FLAVOURS else "sh"
 
 
-def flavour_hint(flavour: str) -> str:
-    return FLAVOUR_HINTS.get(flavour, "")
+def flavour_prose(flavour: str) -> str:
+    """What the model must know about this flavour to use it without failing against it,
+    from `prompts/context/shell-<flavour>.md`. A flavour with nothing to say has no file,
+    and that is not an error."""
+    name = f"context/shell-{flavour}"
+    return prompts.load(name) if prompts.exists(name) else ""
+
+
+def describe(app: Any = None) -> str:
+    """This tool's description: its own prose, then the flavour resolved on this machine
+    and its quirks. Composed at registration rather than rendered into the harness block
+    every turn — the quirks are static per flavour, and the tool schema is what the model
+    reads while it writes a command (2026-09-22). `permissions.shell_flavour` therefore
+    needs a restart: `resolve_shell` would change behaviour while a registered description
+    still named the old flavour."""
+    text = prompts.load("tools/shell")
+    if app is None:
+        return text
+    flavour = resolve_flavour(app)
+    header = f"Shell flavour on this machine: {flavour}."
+    prose = flavour_prose(flavour)
+    return f"{text}\n\n{header}\n{prose}" if prose else f"{text}\n\n{header}"
 
 
 def resolve_shell(app: Any) -> list[str]:
@@ -187,11 +201,11 @@ async def shell_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     return ToolResult(content=content, ok=(code == 0), meta={"exit_code": code, "cwd": cwd})
 
 
-def tools() -> list[Tool]:
+def tools(app: Any = None) -> list[Tool]:
     return [
         Tool(
             name="shell",
-            description=prompts.load("tools/shell"),
+            description=describe(app),
             parameters={
                 "type": "object",
                 "properties": {

@@ -16,10 +16,10 @@ from typing import Any
 from . import fs, http, misc, process, screen, shell
 
 
-def tools() -> list[Any]:
-    return [*fs.tools(), *shell.tools(), *process.tools(), *http.tools(), *screen.tools(), *misc.tools()]
+def tools(app: Any = None) -> list[Any]:
+    return [*fs.tools(), *shell.tools(app), *process.tools(), *http.tools(), *screen.tools(), *misc.tools()]
 
 
 def install(app: Any) -> None:
-    for tool in tools():
+    for tool in tools(app):
         app.tools.register(tool, replace=True)
