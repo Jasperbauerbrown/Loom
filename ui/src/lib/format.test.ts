@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { compactionLabel } from "./format";
+import { compactionLabel, statusLabel, statusTitle } from "./format";
+
+describe("statusLabel", () => {
+  it("shows a thread that ended its turn without finishing as stopped, with a gloss", () => {
+    expect(statusLabel("waiting_input")).toBe("stopped");
+    expect(statusTitle("waiting_input")).toMatch(/without finishing/);
+  });
+
+  it("spaces every other status and glosses only the ones that need it", () => {
+    expect(statusLabel("waiting_approval")).toBe("waiting approval");
+    expect(statusLabel("running")).toBe("running");
+    expect(statusLabel("done")).toBe("done");
+    expect(statusTitle("done")).toBeUndefined();
+  });
+});
 
 describe("compactionLabel", () => {
   it("names each compaction kind", () => {

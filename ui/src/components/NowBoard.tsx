@@ -5,7 +5,7 @@ import { api } from "../lib/api";
 import { store, useStore } from "../lib/store";
 import type { Approval, Conversation, Item } from "../lib/types";
 import { navigate } from "../lib/router";
-import { relativeTime, truncate } from "../lib/format";
+import { relativeTime, statusLabel, statusTitle, truncate } from "../lib/format";
 import { Badge, Button, Empty } from "./ui";
 
 function Group({ title, count, children }: { title: string; count: number; children: React.ReactNode }) {
@@ -88,8 +88,8 @@ function ThreadLine({ conversation }: { conversation: Conversation }) {
     <Line>
       <button className="w-full text-left" onClick={() => navigate(`/c/${conversation.id}`)}>
         <div className="flex items-center gap-2">
-          <Badge tone={conversation.status === "running" ? "sky" : "amber"}>
-            {conversation.status.replace("_", " ")}
+          <Badge tone={conversation.status === "running" ? "sky" : "amber"} title={statusTitle(conversation.status)}>
+            {statusLabel(conversation.status)}
           </Badge>
           <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">
             {conversation.title || conversation.goal || conversation.id}

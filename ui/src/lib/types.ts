@@ -58,7 +58,9 @@ export interface ConvEvent {
   conversation_id: string;
   kind: EventKind;
   content: string;
-  /** `images?: ImageRef[]` on user and tool_result rows; `inbox_id`/`source` on user rows */
+  /** `images?: ImageRef[]` on user and tool_result rows; `inbox_id`/`source` on user rows;
+   *  `text?: string` on tool_call rows: the model's narration before its calls, rendered
+   *  as an assistant bubble above the tool rows */
   meta: Record<string, unknown>;
   ts: string;
   /** client-side only: set while an assistant/thinking event is still streaming */

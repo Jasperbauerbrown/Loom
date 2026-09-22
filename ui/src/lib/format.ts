@@ -42,6 +42,22 @@ export function truncate(text: string, n: number): string {
   return `${text.slice(0, n)}…`;
 }
 
+/** The word a status badge shows. `waiting_input` is the runner's value for a thread
+ *  that ended its turn with plain text and did not call finish (03 §6.7); shown as
+ *  "waiting input" it read as "asked a question", which it usually had not — three of
+ *  four finished threads sat under that label (2026-09-22). Every other status is its
+ *  own name with the underscore spaced. */
+export function statusLabel(status: string): string {
+  return status === "waiting_input" ? "stopped" : status.replace("_", " ");
+}
+
+/** Tooltip for a status badge; only the statuses whose word needs a gloss have one. */
+export function statusTitle(status: string): string | undefined {
+  if (status === "waiting_input") return "ended its turn without finishing; send a message to continue";
+  if (status === "waiting_approval") return "paused on an approval request";
+  return undefined;
+}
+
 /** A one-line summary of tool arguments for a tool-call row. */
 export function argsSummary(args: unknown, max = 120): string {
   if (args === undefined || args === null) return "";

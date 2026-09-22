@@ -6,7 +6,7 @@ import { api } from "../lib/api";
 import { conversationList, store, useStore } from "../lib/store";
 import type { Conversation, ConversationStatus, VaultSearchHit } from "../lib/types";
 import { navigate } from "../lib/router";
-import { cls, relativeTime } from "../lib/format";
+import { cls, relativeTime, statusLabel, statusTitle } from "../lib/format";
 import { Badge, Button, Dialog, Empty, FieldRow, Input, Select, Textarea } from "../components/ui";
 import { IconPlus } from "../components/Icons";
 
@@ -283,7 +283,9 @@ export function Threads() {
               className="flex w-full items-center gap-3 border-b border-neutral-100 px-3 py-2 text-left last:border-0 hover:bg-neutral-50 dark:border-neutral-800/70 dark:hover:bg-neutral-800/50"
               style={{ paddingLeft: `${12 + indent * 20}px` }}
             >
-              <Badge tone={statusTone(row.status)}>{row.status.replace("_", " ")}</Badge>
+              <Badge tone={statusTone(row.status)} title={statusTitle(row.status)}>
+                {statusLabel(row.status)}
+              </Badge>
               <div className="min-w-0 flex-1">
                 <div className="truncate text-[13px] font-medium text-neutral-900 dark:text-neutral-100">
                   {row.title || row.goal || row.id}

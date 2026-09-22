@@ -6,7 +6,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, imageUrl } from "../lib/api";
 import { parseToolCalls, store, useStore } from "../lib/store";
 import type { ConvEvent, ImageRef, QueuedMessage, ToolCall } from "../lib/types";
-import { argsSummary, cls, compactionLabel, localTime, truncate } from "../lib/format";
+import { argsSummary, cls, compactionLabel, localTime, statusLabel, statusTitle, truncate } from "../lib/format";
 import { Badge, Button, Collapsible, JsonBlock, Spinner } from "./ui";
 import { Markdown } from "./Markdown";
 import { ArtifactDrawer } from "./ArtifactDrawer";
@@ -291,8 +291,18 @@ function EventView({
       );
     case "tool_call": {
       const specs = parseToolCalls(event);
+      // The model's narration before its calls ("Two big jobs. Spinning up threads…")
+      // is persisted as `meta.text` (runner.py). It streamed live and then vanished
+      // once the row landed, so mid-turn updates were only ever in reasoning traces
+      // (2026-09-22). Same bubble as an assistant message, above the tool rows.
+      const preamble = typeof meta.text === "string" ? meta.text.trim() : "";
       return (
         <>
+          {preamble ? (
+            <div className="my-3" data-testid="tool-call-preamble">
+              <Markdown source={preamble} />
+            </div>
+          ) : null}
           {specs.map((spec) => {
             const call: ToolCall = toolCalls[spec.id] ?? {
               call_id: spec.id,
@@ -345,7 +355,7 @@ export function StatusLine({ status }: { status: string }) {
   const tone =
     status === "running"
       ? "sky"
-      : status === "waiting_approval"
+      : status === "waiting_approval" || status === "waiting_input"
         ? "amber"
         : status === "failed"
           ? "red"
@@ -353,13 +363,13 @@ export function StatusLine({ status }: { status: string }) {
             ? "green"
             : "neutral";
   return (
-    <Badge tone={tone as any}>
+    <Badge tone={tone as any} title={statusTitle(status)}>
       {status === "running" ? (
         <span className="flex items-center gap-1">
           <Spinner /> running
         </span>
       ) : (
-        status.replace("_", " ")
+        statusLabel(status)
       )}
     </Badge>
   );

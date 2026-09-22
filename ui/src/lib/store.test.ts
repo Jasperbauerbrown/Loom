@@ -49,6 +49,30 @@ describe("streaming assistant events", () => {
     ]);
     expect(state.events[CID][0]).toMatchObject({ id: 9, content: "final" });
   });
+
+  it("keeps the narration before a tool call: the persisted tool_call row carries it as meta.text", () => {
+    // What streamed as content lands on the tool_call row's meta.text (runner.py); the
+    // transcript renders that above the tool rows, so the update does not vanish.
+    const state = feed([
+      ev("message.start", { role: "assistant" }),
+      ev("message.delta", { channel: "content", text: "Two big jobs. Spinning up threads." }),
+      ev("message.end", {
+        event_id: 11,
+        event: {
+          id: 11,
+          conversation_id: CID,
+          kind: "tool_call",
+          content: JSON.stringify([{ id: "c1", name: "conversation_create", arguments: { goal: "x" } }]),
+          meta: { text: "Two big jobs. Spinning up threads.", step: 1 },
+          ts: "t",
+        },
+      }),
+    ]);
+    expect(state.streaming[CID]).toBeUndefined();
+    expect(state.events[CID][0]).toMatchObject({ id: 11, kind: "tool_call" });
+    expect(state.events[CID][0].meta.text).toBe("Two big jobs. Spinning up threads.");
+    expect(state.toolCalls["c1"]).toMatchObject({ name: "conversation_create" });
+  });
 });
 
 describe("event.appended", () => {
