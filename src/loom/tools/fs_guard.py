@@ -160,6 +160,7 @@ class GuardOk:
 class GuardAsk:
     reason: str
     options: dict[str, Any] = field(default_factory=dict)
+    protected: bool = False  # a protected path always asks, even under desk auto-approve
 
 
 def _values(args: dict[str, Any], name: str) -> list[str]:
@@ -194,7 +195,7 @@ def check(app: Any, conversation: dict[str, Any] | None, tool: Tool, args: dict[
             path = normalise(raw, cwd=base)
             resolved.append(path)
             if is_protected(app, path):
-                return GuardAsk(reason=f"protected path {path}", options={})
+                return GuardAsk(reason=f"protected path {path}", options={}, protected=True)
             if not any(_under(path, root) for root in roots):
                 return GuardAsk(
                     reason=f"{path} is outside allowed roots",

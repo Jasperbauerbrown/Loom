@@ -5,6 +5,7 @@
 2 validate arguments   malformed        → error result ("resend the call")
 3 filesystem guard     outside/protected→ approval
 4 policy               allow | ask → approval | classify → pre-filter, then the judge
+                       (desk auto-approve: ask/classify/outside-roots → allow; protected still asks)
 5 secrets substitution into a private copy of the arguments
 6 execute with a timeout; every exception becomes an error result
 7 redact the output, bound it (spill to an artifact over the cap)
@@ -61,6 +62,33 @@ def _shell_cwd(app: Any, ctx: ToolContext, args: dict[str, Any]) -> str:
     base = roots[0] if roots else os.getcwd()
     cwd_arg = args.get("cwd")
     return fs_guard.normalise(str(cwd_arg), cwd=base) if cwd_arg else base
+
+
+AUTO_REASON = "desk auto-approve"
+
+
+def _auto_approved(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) -> bool:
+    """Desk auto-approve (`permissions.desk_auto_approve`): a desk call that would ask
+    or classify runs instead. Grant-only, like the pre-filter. Protected paths keep
+    asking: the fs guard's own ask, and a shell command that names one (or cannot be
+    parsed to tell) takes the ordinary path."""
+    if (ctx.conversation or {}).get("kind") != "desk":
+        return False
+    if not app.settings.get("permissions.desk_auto_approve"):
+        return False
+    if tool.name == "shell":
+        stages = shell_prefilter.split_stages(str(args.get("command") or ""))
+        if stages is None:
+            return False
+        words: list[str] = []
+        for stage in stages:
+            split = shell_prefilter.split_words(stage)
+            if split is None:
+                return False
+            words += split
+        if shell_prefilter.names_protected(words, fs_guard.protected_paths(app), _shell_cwd(app, ctx, args)):
+            return False
+    return True
 
 
 # ---------------------------------------------------------------------------------
@@ -143,12 +171,18 @@ async def dispatch(app: Any, ctx: ToolContext, call: ToolCall) -> ToolResult | A
         return ToolResult.error("invalid arguments: " + "; ".join(str(p) for p in problems) + "; resend the call")
 
     guard = fs_guard.check(app, ctx.conversation, tool, args)
+    if isinstance(guard, fs_guard.GuardAsk) and not guard.protected and _auto_approved(app, ctx, tool, args):
+        ctx.meta.update({"policy": "auto", "decision": "allow", "reason": AUTO_REASON})
+        return await execute(app, ctx, tool, args)
     if isinstance(guard, fs_guard.GuardAsk):
         ctx.meta.update({"policy": "ask", "decision": "ask", "reason": guard.reason})
         approval_id = approvals.create(app, ctx, call, guard.reason, dict(guard.options))
         return ApprovalNeeded(approval_id, guard.reason, dict(guard.options))
 
     mode, policy_key = permissions.decide(app, tool, args)
+    if mode != "allow" and _auto_approved(app, ctx, tool, args):
+        ctx.meta.update({"policy": "auto", "decision": "allow", "reason": AUTO_REASON})
+        return await execute(app, ctx, tool, args)
     reason = ""
     if mode == "classify":
         if tool.name == "shell" and shell_prefilter.is_readonly(

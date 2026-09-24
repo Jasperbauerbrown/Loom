@@ -199,6 +199,50 @@ async def test_a_path_class_row_beats_the_tool_row(app, ctx):
 
 
 # ---------------------------------------------------------------------------------
+# desk auto-approve
+# ---------------------------------------------------------------------------------
+async def test_desk_auto_approve_runs_an_ask_without_an_approval(app, ctx, echo):
+    permissions.set_policy(app, echo, "ask")
+    app.settings.set(app.db, "permissions.desk_auto_approve", True)
+    result = await dispatch.dispatch(app, ctx, _call("echo", {"text": "hi"}))
+    assert result.ok and echo.seen == [{"text": "hi"}]
+    assert ctx.meta == {"policy": "auto", "decision": "allow", "reason": "desk auto-approve"}
+    assert approvals.pending(app, app.desk_id()) == []
+
+
+async def test_desk_auto_approve_skips_the_classifier(app, ctx, fake):
+    app.settings.set(app.db, "permissions.desk_auto_approve", True)
+    result = await dispatch.dispatch(app, ctx, _call("shell", {"command": "mkdir build"}))
+    assert result.ok and fake.calls == []
+    assert ctx.meta["policy"] == "auto"
+
+
+async def test_desk_auto_approve_passes_a_path_outside_the_roots(app, ctx, tmp_path):
+    app.settings.set(app.db, "permissions.desk_auto_approve", True)
+    target = tmp_path / "outside" / "f.txt"
+    result = await dispatch.dispatch(app, ctx, _call("fs_write", {"path": str(target), "content": "x"}))
+    assert result.ok and target.read_text() == "x"
+
+
+async def test_desk_auto_approve_still_asks_for_protected_paths(app, ctx, fake):
+    app.settings.set(app.db, "permissions.desk_auto_approve", True)
+    outcome = await dispatch.dispatch(app, ctx, _call("fs_write", {"path": str(app.home / "secrets.json"), "content": "x"}))
+    assert isinstance(outcome, ApprovalNeeded) and "protected path" in outcome.reason
+    fake.on("classify", lambda req: Scripted(content='{"decision":"ask","reason":"reads secrets"}'))
+    outcome = await dispatch.dispatch(app, ctx, _call("shell", {"command": f"cat {app.home / 'secrets.json'}"}))
+    assert isinstance(outcome, ApprovalNeeded)
+
+
+async def test_desk_auto_approve_does_not_reach_threads(app, echo):
+    permissions.set_policy(app, echo, "ask")
+    app.settings.set(app.db, "permissions.desk_auto_approve", True)
+    thread = {**app.conversation(app.desk_id()), "kind": "thread"}
+    tctx = ToolContext(app=app, conversation=thread, call_id="call_1", event_id=11, request_text="x")
+    outcome = await dispatch.dispatch(app, tctx, _call("echo", {"text": "hi"}))
+    assert isinstance(outcome, ApprovalNeeded) and echo.seen == []
+
+
+# ---------------------------------------------------------------------------------
 # step 4: classify
 # ---------------------------------------------------------------------------------
 async def test_the_shell_prefilter_grants_without_calling_a_model(app, ctx, fake):

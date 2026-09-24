@@ -847,3 +847,11 @@ sessions do not re-litigate.
   render error: an `ErrorBoundary` around the routed screen (keyed on the route, so
   navigating away clears it) and a second around the shell, so a bad row costs the screen
   it broke, never the app.
+- **2026-09-24** — Desk auto-approve. One setting, `permissions.desk_auto_approve`
+  (default off), toggled from the desk header and Settings → Permissions. Under it, a
+  desk call that would ask or classify runs instead (`policy: "auto"` on the event), so
+  there is no classifier generation either. Grant-only, the same principle as the
+  pre-filter. Protected paths keep asking: the fs guard's protected ask, and a shell
+  command that names a protected path or cannot be parsed to tell, go down the ordinary
+  path. Threads are unaffected; they are where long unattended work lives, and a
+  desk-wide switch should not silently widen what they may do.

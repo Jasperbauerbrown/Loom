@@ -835,6 +835,12 @@ static can produce a denial.
 The guard's `add_root` option is the narrowest root that would let the call through:
 the path itself when it is a directory, its parent otherwise.
 
+*Desk auto-approve* (`permissions.desk_auto_approve`, 2026-09-24): in the desk only, a
+call the guard would ask about for being outside the roots, or whose mode is `ask` or
+`classify`, runs without an approval or a classifier call (`policy: "auto"`). A protected
+path still asks — the guard's own ask, and a shell command that names one or cannot be
+split to tell. Threads never see it.
+
 ### 9.4 Shell pre-filter (can only grant)
 Split on `&&`, `||`, `;`, `|` respecting quotes. For each stage: first token (after
 `env`-style assignments) ∈ `shell_readonly_commands` (setting; default: `ls dir cat
@@ -1205,8 +1211,8 @@ is the last line, not a licence: the shapes crossing the bus are one shape (§12
 - **Knowledge**: `preload_budget_tokens`, `preload_max_entities`,
   `retrieval_threshold`, `core_block_chars`, vault poll interval, maintenance idle
   seconds and nightly time, curation similarity threshold, auto-commit external edits.
-- **Permissions**: per-tool mode table (allow/ask/classify, grouped native / MCP /
-  connector), shell read-only command list, allowed roots, protected paths, shell
+- **Permissions**: desk auto-approve (also a toggle in the desk header), per-tool
+  mode table (allow/ask/classify, grouped native / MCP / connector), shell read-only command list, allowed roots, protected paths, shell
   flavour (cmd/Git Bash/PowerShell/sh), classifier role, classifier timeout (a verdict slower
   than this becomes an ask; one retry when the provider is busy).
 - **Integrations**: MCP servers (CRUD, test connection, refresh tools, env with secret
