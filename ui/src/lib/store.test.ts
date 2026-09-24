@@ -99,6 +99,28 @@ describe("tool calls", () => {
     expect(state.events[CID].map((e) => e.kind)).toEqual(["tool_call", "tool_result"]);
   });
 
+  it("keeps the persisted tool_call row (and its preamble) when tool.call follows", () => {
+    const state = feed([
+      ev("event.appended", {
+        id: 7,
+        conversation_id: CID,
+        kind: "tool_call",
+        content: JSON.stringify([
+          { id: "c3", name: "knowledge_write", arguments: {} },
+          { id: "c4", name: "fs_read", arguments: {} },
+        ]),
+        meta: { text: "I have enough to answer." },
+        ts: "t",
+      }),
+      ev("tool.call", { call_id: "c3", name: "knowledge_write", args: {}, policy: "allow", event_id: 7 }),
+      ev("tool.result", { call_id: "c3", ok: true, preview: "ok", event_id: 8 }),
+    ]);
+    const row = state.events[CID][0];
+    expect(row.meta.text).toBe("I have enough to answer.");
+    expect(JSON.parse(row.content)).toHaveLength(2);
+    expect(state.toolCalls["c3"]).toMatchObject({ policy: "allow" });
+  });
+
   it("indexes tool calls found in persisted events", () => {
     const state = feed([
       ev("event.appended", {

@@ -185,6 +185,11 @@ export function upsertEvent(list: ConvEvent[], event: ConvEvent): ConvEvent[] {
   return out;
 }
 
+/** Add a live stand-in row unless the persisted row with that id already arrived. */
+function insertIfAbsent(list: ConvEvent[], event: ConvEvent): ConvEvent[] {
+  return list.some((e) => e.id === event.id) ? list : upsertEvent(list, event);
+}
+
 export function mergeEvents(list: ConvEvent[], incoming: ConvEvent[]): ConvEvent[] {
   const byId = new Map<number, ConvEvent>();
   for (const e of list) byId.set(e.id, e);
@@ -433,7 +438,10 @@ export function reduce(state: State, event: BusEvent): State {
         meta: { policy: data.policy, reason: data.reason, call_id: data.call_id },
         ts: event.ts,
       };
-      const events = { ...state.events, [cid]: upsertEvent(list, ev) };
+      // The persisted `tool_call` row (event.appended) is the truth: it carries every
+      // call of the step and `meta.text`, the model's preamble. This synth row only
+      // stands in until it lands; overwriting it wiped the preamble (2026-09-24).
+      const events = { ...state.events, [cid]: insertIfAbsent(list, ev) };
       return {
         ...state,
         events,
@@ -473,7 +481,7 @@ export function reduce(state: State, event: BusEvent): State {
       const prev = state.toolCalls[data.call_id];
       return {
         ...state,
-        events: { ...state.events, [cid]: upsertEvent(list, ev) },
+        events: { ...state.events, [cid]: insertIfAbsent(list, ev) },
         toolCalls: {
           ...state.toolCalls,
           [data.call_id]: {
