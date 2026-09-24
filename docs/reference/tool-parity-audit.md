@@ -66,7 +66,8 @@ within §19 (no new runtime dependencies) unless it says otherwise.
 2. **Stale-write guard on `fs_write` and `fs_edit`.** Refuse when the file changed on
    disk since this conversation last read or wrote it (mtime + size recorded per
    conversation). This is not scaffolding for weak models: users edit the vault in
-   Obsidian at the same time, and Loom silently overwrites them today.
+   Obsidian and their own editors at the same time, and `fs_write` / `fs_edit` never check
+   whether the file changed since the model last saw it.
 3. **Multi-edit.** Add `fs_edit(edits=[{old,new,replace_all}])`, applied atomically in
    order, one diff. Later, an `apply_patch` that takes a unified diff across files
    (built on the same stdlib, `difflib`-level).
