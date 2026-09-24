@@ -453,7 +453,21 @@ export function Conversation({ id }: { id: string }) {
   useLayoutEffect(() => {
     const el = scroller.current;
     if (el && atBottom.current) el.scrollTop = el.scrollHeight;
-  }, [events, streaming, queued]);
+  }, [events, streaming, queued, approvals]);
+
+  // Content also grows without a store change: an approval card loading its detail,
+  // an image decoding. Follow any height change, not just new rows.
+  const content = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const inner = content.current;
+    if (!inner || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      const el = scroller.current;
+      if (el && atBottom.current) el.scrollTop = el.scrollHeight;
+    });
+    ro.observe(inner);
+    return () => ro.disconnect();
+  }, []);
 
   const onScroll = () => {
     const el = scroller.current;
@@ -501,6 +515,7 @@ export function Conversation({ id }: { id: string }) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto px-4 py-2">
+        <div ref={content}>
         {!historyComplete && events.length > 0 ? (
           <div className="py-2 text-center text-[11.5px] text-neutral-500">scroll up for earlier events</div>
         ) : null}
@@ -539,6 +554,7 @@ export function Conversation({ id }: { id: string }) {
         {approvalIds.map((approvalId) => (
           <ApprovalCard key={approvalId} id={approvalId} />
         ))}
+        </div>
       </div>
 
       <div className="border-t border-neutral-200 px-4 py-2.5 dark:border-neutral-800">
