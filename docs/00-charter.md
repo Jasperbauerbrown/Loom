@@ -855,3 +855,7 @@ sessions do not re-litigate.
   command that names a protected path or cannot be parsed to tell, go down the ordinary
   path. Threads are unaffected; they are where long unattended work lives, and a
   desk-wide switch should not silently widen what they may do.
+- **2026-09-24** — Tool parity with Claude Code and opencode
+  (`reference/tool-parity-audit.md`). Agreed: audit P1 #1–6 and P3, tracked in
+  `05-backlog.md`. Rejected: blocking subagents (asynchrony is what threads are for)
+  and a separate todo tool (the thread status is the plan). The rest of P2 is undecided.

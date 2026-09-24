@@ -10,6 +10,7 @@ the Loom repository; `CLAUDE.md` here moves to the repository root.
 | 3 | `04-soul.md` | The constraints the soul must keep (static prose, cache-stable prefix, line budgets). The prompts themselves live in `prompts/system.md`, `kind-desk.md`, `kind-thread.md`, the only model-facing text that says who Loom is. |
 | 4 | `01-walkthroughs.md` | The four example requests traced through the design; also the specification for the integration tests. |
 | 5 | `02-research-takeaways.md` | What was adopted, adapted and rejected from the field survey, with reasons. |
+| 6 | `05-backlog.md` | Agreed, concrete engineering work not yet built. |
 | ref | `reference/agentic-harnesses.md` | Survey of ~85 agentic harnesses (2026-09-17). |
 | ref | `reference/tool-parity-audit.md` | Tool surface vs Claude Code and opencode, ranked gap list (2026-09-24). |
 | ref | `reference/harness-study.md`, `reference/context-lifecycle.md` | Hydra's context-management write-ups; the source of the compaction, calibration and repair mechanics adopted in `03`. Paths inside refer to Hydra. |

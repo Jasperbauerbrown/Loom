@@ -57,6 +57,8 @@ Legend: ✅ parity or better · 🟡 partial · ❌ missing.
 
 ## 3. Gaps, ranked
 
+Agreed items are tracked in `../05-backlog.md`.
+
 Ranked by how much harness capability each unlocks per unit of work. Each item stays
 within §19 (no new runtime dependencies) unless it says otherwise.
 
@@ -89,12 +91,17 @@ within §19 (no new runtime dependencies) unless it says otherwise.
    **tool profile** per thread (`full` / `read_only`, the `explore` equivalent),
    enforced in the dispatcher as a kind-like filter. This makes "go look and report"
    one call instead of an asynchronous round-trip through the inbox.
+   **Rejected 2026-09-24:** asynchrony is the point of threads; a blocking subagent
+   would undo Loom's shape.
 
 **P2: parity on long work**
 
 8. **Plan list for both kinds.** A `todo(items=[{text,state}])` tool whose state is
    rendered in the UI and re-injected by `assemble`, so it survives compaction.
    `status_update` stays for thread reporting.
+   **Rejected 2026-09-24:** the thread status (goal / done / doing / next / blockers)
+   is already the plan, re-injected every turn (`02`), and the desk hands open-ended
+   work to a thread. A per-item list adds only finer ticking-off.
 9. **`ask_user(question, options[], multi)`.** It sets `waiting_input` and the UI
    renders the choices, the same flow as an approval. Threads need this most: today
    they can only post an item.
