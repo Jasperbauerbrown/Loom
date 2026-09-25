@@ -115,8 +115,13 @@ async def knowledge_write_handler(ctx: ToolContext, args: dict[str, Any]) -> Too
     path = str(args.get("path") or "")
     op = str(args.get("op") or "create").strip().lower()
     content = args.get("content")
+    if content is None and op == "replace":
+        # `replace` reads as old→new, and that is what a model sends (the raylib thread
+        # sent `old` + `new`, 2026-09-24). Accepting the alias costs a line; the prompt
+        # names both field names beside the op.
+        content = args.get("new")
     if content is None:
-        return ToolResult.error("content is required")
+        return ToolResult.error("content is required" + (" (or `new` for op=replace)" if op == "replace" else ""))
     frontmatter = args.get("frontmatter")
     if frontmatter is not None and not isinstance(frontmatter, dict):
         return ToolResult.error("frontmatter must be a mapping of keys to values")
@@ -260,6 +265,7 @@ def tools() -> list[Tool]:
                     },
                     "content": {"type": "string", "description": "Markdown to write. Absolute dates only."},
                     "old": {"type": "string", "description": "For replace: the exact text to swap out (must be unique)."},
+                    "new": {"type": "string", "description": "For replace: alias of content — the text that replaces old."},
                     "frontmatter": {
                         "type": "object",
                         "description": "Frontmatter keys to merge (aliases, tags, type, root).",
@@ -267,7 +273,9 @@ def tools() -> list[Tool]:
                     },
                     "reason": {"type": "string", "description": "For rethink: why the old note was wrong."},
                 },
-                "required": ["path", "op", "content"],
+                # `content` is required by every op but is checked in the handler, which
+                # is the one place that knows `new` is its alias under op=replace.
+                "required": ["path", "op"],
             },
             handler=knowledge_write_handler,
         ),

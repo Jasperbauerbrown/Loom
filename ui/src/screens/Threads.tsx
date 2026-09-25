@@ -7,7 +7,7 @@ import { conversationList, store, useStore } from "../lib/store";
 import type { Conversation, ConversationStatus } from "../lib/types";
 import { navigate } from "../lib/router";
 import { cls, relativeTime, statusLabel, statusTitle } from "../lib/format";
-import { Badge, Button, Dialog, Empty, FieldRow, Input, Select, Textarea } from "../components/ui";
+import { Badge, Button, Dialog, Empty, FieldRow, Input, Select, Textarea, Toggle } from "../components/ui";
 import { IconPlus } from "../components/Icons";
 import { NotePicker } from "../components/NotePicker";
 
@@ -69,6 +69,7 @@ function NewThreadDialog({ onClose }: { onClose: () => void }) {
   const [notes, setNotes] = useState<string[]>([]);
   const [roots, setRoots] = useState<string[]>([]);
   const [newRoot, setNewRoot] = useState("");
+  const [isolate, setIsolate] = useState(false);
   const [preset, setPreset] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -92,6 +93,7 @@ function NewThreadDialog({ onClose }: { onClose: () => void }) {
         goal: goal.trim(),
         notes: notes.length ? notes : undefined,
         roots: roots.length ? roots : undefined,
+        isolation: isolate && roots.length ? "worktree" : undefined,
         preset: preset || undefined,
       }),
     );
@@ -167,6 +169,13 @@ function NewThreadDialog({ onClose }: { onClose: () => void }) {
             ))}
           </ul>
         ) : null}
+      </FieldRow>
+
+      <FieldRow
+        label="Isolation"
+        help="Work in a git worktree branched from the first root (branch loom/<thread id>); the branch is how the work is handed back. The root must be inside a git repository."
+      >
+        <Toggle checked={isolate && roots.length > 0} onChange={setIsolate} disabled={roots.length === 0} label="Own git worktree" />
       </FieldRow>
 
       <FieldRow label="Preset" help="Model preset override; leave blank for the role default.">

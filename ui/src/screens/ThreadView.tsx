@@ -263,6 +263,21 @@ export function ThreadView({ id }: { id: string }) {
               </dd>
             </div>
           ) : null}
+          {conversation.worktree ? (
+            // Isolation (03 §6.7): the thread works in its own checkout on branch
+            // loom/<id>, not in the repository it was branched from. Archiving releases
+            // the checkout when it is clean and keeps the branch either way.
+            <div className="flex justify-between gap-2">
+              <dt className="shrink-0 text-neutral-500">Worktree</dt>
+              <dd
+                className="min-w-0 flex-1 text-right"
+                title={`${conversation.worktree} (branch loom/${conversation.id})`}
+              >
+                <div className="truncate font-mono">{conversation.worktree}</div>
+                <div className="truncate text-[11px] text-neutral-500">branch loom/{conversation.id}</div>
+              </dd>
+            </div>
+          ) : null}
         </dl>
 
         <Section title="Status">

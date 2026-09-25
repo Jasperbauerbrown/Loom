@@ -10,19 +10,22 @@ Arguments:
   it lives (`root` in the frontmatter is a fact you record, never a guess), how to run
   and check it, the decisions and why, and links to the `log/` sections that touched it.
   Nothing creates it for you; write it when you recognise the work will be returned to.
-- `op` (required): how to write.
-  - `create` — a new note. Fails if the path already exists.
-  - `append` — add to the end, after a blank line. The cheapest correct write.
-  - `replace` — swap `old` for `content`. `old` must appear exactly once; copy it from
-    the note verbatim, with enough surrounding text to be unique.
-  - `rethink` — replace the whole body. Requires `reason`, and is recorded on the user's
-    now board. Use it when the note's shape is wrong, not to fix a line.
-- `content` (required): the markdown body to write — no frontmatter block; that goes in
+- `op` (required): how to write, and which fields it reads.
+  - `create` — a new note, from `content`. Fails if the path already exists.
+  - `append` — add `content` to the end, after a blank line. The cheapest correct write.
+  - `replace` — swap `old` for `content` (`new` is accepted as the name for `content`
+    here). `old` must appear exactly once; copy it from the note verbatim, with enough
+    surrounding text to be unique.
+  - `rethink` — replace the whole body with `content`. Requires `reason`, and is
+    recorded on the user's now board. Use it when the note's shape is wrong, not to fix
+    a line.
+- `content` (required; under `op=replace`, `new` instead): the markdown body to write — no frontmatter block; that goes in
   the `frontmatter` argument (a leading `---` block here is folded into the frontmatter,
   never nested). Link other notes with `[[wikilinks]].`
   Dates must be absolute (`2026-09-20`), never "yesterday" or "next week" — a note
   outlives the conversation that wrote it.
 - `old` (required for `replace`): the exact existing text to swap out.
+- `new` (optional): another name for `content` under `op=replace`; send one or the other.
 - `frontmatter` (optional): a mapping merged into the note's frontmatter — `aliases`
   (the names the user says out loud: "the printer", "ender 3"), `tags`, `type`, `root`
   for a project (the folder it lives in, as found on disk). `title`, `type` and `modified` are filled in for you if you omit them.

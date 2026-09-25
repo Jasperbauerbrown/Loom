@@ -1,0 +1,1 @@
+isolated checkout: you work in {path}, a git worktree on branch {branch}. Commits here do not touch the checkout it was branched from, and that branch is how the work is handed back — so commit what you want kept.

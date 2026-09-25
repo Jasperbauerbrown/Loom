@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from ... import conversation as conv_pkg
 from ... import db
 from ...artifacts import IMAGE_MIMES, sniff_image
-from ...conversation import events, inbox, pins, status
+from ...conversation import events, inbox, pins, status, worktree
 from ...conversation.context import occupancy
 from ..deps import get_app
 
@@ -76,6 +76,8 @@ class CreateThread(BaseModel):
     title: str | None = None
     parent_id: str | None = None
     excerpt: str | None = None
+    isolation: str | None = None  # "none" (default) or "worktree" (03 §6.7): its own checkout
+    isolation_root: str | None = None  # which root the worktree branches from; the first by default
 
 
 @router.post("/conversations", status_code=201)
@@ -88,6 +90,7 @@ async def create_conversation(body: CreateThread, app=Depends(get_app)) -> dict[
         row = conv_pkg.create_thread(
             app, goal=body.goal, parent_id=body.parent_id, notes=body.notes,
             roots=body.roots, preset=body.preset, title=body.title, excerpt=body.excerpt, created_by="user",
+            isolation=body.isolation, isolation_root=body.isolation_root,
         )
     except conv_pkg.ThreadError as exc:
         raise HTTPException(400, str(exc))
@@ -282,7 +285,14 @@ async def archive(conversation_id: str, app=Depends(get_app)) -> dict[str, Any]:
     if row["status"] in ("running", "waiting_approval"):
         raise HTTPException(409, f"conversation is {row['status']}; cancel it first")
     events.set_status(app, conversation_id, "archived", archived_at=db.now_iso())
-    return _row(app, conversation_id)
+    # An isolated thread's checkout is released here (03 §6.7). `worktree.release` is the
+    # one codepath — maintenance's nightly archival calls the same function — and it
+    # never raises: the archive has happened, so a git failure is recorded, not returned.
+    message = worktree.release(app, _row(app, conversation_id))
+    out = _row(app, conversation_id)
+    if message:
+        out["worktree_message"] = message
+    return out
 
 
 @router.get("/conversations/{conversation_id}/occupancy")

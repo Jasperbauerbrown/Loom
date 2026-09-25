@@ -37,6 +37,11 @@ log = logging.getLogger(__name__)
 
 INTERRUPTED = "interrupted — result lost (the backend restarted while this call was running); rerun it if still needed"
 
+# A model call that failed after the wall clock ran far ahead of the monotonic clock was
+# spanned by a machine suspend (Modern Standby), not by a bad provider: retry it for free
+# (TD audit F7). On a platform whose `time.monotonic()` counts suspended time too the
+# drift stays ~0, the branch never fires, and the behaviour is exactly today's.
+
 
 @dataclass
 class TurnState:
@@ -49,6 +54,7 @@ class TurnState:
     forced_compactions: int = 0
     extras: dict[str, Any] = field(default_factory=dict)  # shared with every ToolContext this turn
     request_text: str = ""
+    last_assistant_text: str = ""  # the newest non-empty step text; the intent fallback
     last_result: Result | None = None
     last_request: ChatRequest | None = None
     finished: dict[str, Any] | None = None
@@ -180,6 +186,8 @@ async def _turn(app, state: TurnState) -> None:  # type: ignore[no-untyped-def]
             break  # failed; state.failed set, system event written
         state.steps += 1
         state.last_result = result
+        if result.content:
+            state.last_assistant_text = result.content
 
         if result.reasoning:
             ev = events.append(app, cid, "thinking", result.reasoning, {"step": state.steps})
@@ -215,7 +223,7 @@ async def _turn(app, state: TurnState) -> None:  # type: ignore[no-untyped-def]
             assistant_msg["reasoning"] = text
         ctx.turn.append(assistant_msg)
 
-        paused = await _dispatch_calls(app, state, ctx, ev, result.tool_calls)
+        paused = await _dispatch_calls(app, state, ctx, ev, result.tool_calls, result.content or "")
         if paused:
             state.paused = True
             return  # status is waiting_approval; resume re-enters at step 1
@@ -250,6 +258,7 @@ async def _call_model(app, state: TurnState, ctx: Context, rebuild, tools_enable
     role = conv["role"]
     preset = conv.get("preset")
     tried_fallback = False
+    suspends = 0
     while True:
         messages = strip_private(ctx.messages(app, steps_line))
         try:
@@ -262,9 +271,22 @@ async def _call_model(app, state: TurnState, ctx: Context, rebuild, tools_enable
             _system(app, state.cid, state.failed)
             return None
         state.last_request = request
+        mono0, wall0 = time.monotonic(), time.time()
         result = await _stream(app, state, request)
+        slept = (time.time() - wall0) - (time.monotonic() - mono0)
         if result.ok or state.cancelled:
             return result
+        # Suspend is a named event, not a provider fault: the wall clock ran ahead of the
+        # monotonic one while the machine was in standby, so the stream-idle watchdog fired
+        # on wake (TD audit F7). Retry for free — before the transient/overflow/fatal policy,
+        # so the attempt is not charged to `model_error_retries` — and bound it so a clock
+        # that keeps jumping cannot spin.
+        if slept >= float(app.settings.get("conversation.suspend_drift_s")) and suspends < int(app.settings.get("conversation.suspend_retries")):
+            suspends += 1
+            minutes = max(1, int(slept // 60))
+            log.info("model call on %s spanned a %s min suspend (%s); retrying", state.cid, minutes, result.error)
+            _system(app, state.cid, f"system resumed after {minutes} min; retrying")
+            continue
         if result.outcome == "transient" and attempts < retries:
             attempts += 1
             log.info("transient model error on %s, retrying (%s)", state.cid, result.error)
@@ -327,11 +349,22 @@ async def _stream(app, state: TurnState, request: ChatRequest) -> Result:  # typ
 
 # -- dispatch ----------------------------------------------------------------------------
 
-def _tool_ctx(app, state: TurnState, call_id: str, event_id: int | None) -> ToolContext:  # type: ignore[no-untyped-def]
+def _tool_ctx(app, state: TurnState, call_id: str, event_id: int | None, intent: str = "") -> ToolContext:  # type: ignore[no-untyped-def]
     return ToolContext(
         app=app, conversation=state.conv, call_id=call_id, event_id=event_id,
-        request_text=state.request_text, priority=state.priority, meta={}, extras=state.extras,
+        request_text=state.request_text, intent=intent, priority=state.priority, meta={}, extras=state.extras,
     )
+
+
+def _intent(app, state: TurnState, text: str) -> str:  # type: ignore[no-untyped-def]
+    """What the turn said it was doing when it made this step's calls. The classifier
+    reads it beside `request_text`, which for the desk is only the last user message
+    ("go ahead") — too thin to judge a command by (TD audit F1)."""
+    if text:
+        return text
+    if state.last_assistant_text:
+        return state.last_assistant_text
+    return _last_assistant_text(app, state.cid)
 
 
 def _is_read_only(app, call: ToolCall) -> bool:  # type: ignore[no-untyped-def]
@@ -347,12 +380,13 @@ def _is_read_only(app, call: ToolCall) -> bool:  # type: ignore[no-untyped-def]
         return False
 
 
-async def _dispatch_calls(app, state: TurnState, ctx: Context, event_id: int, calls: list[ToolCall]) -> bool:  # type: ignore[no-untyped-def]
+async def _dispatch_calls(app, state: TurnState, ctx: Context, event_id: int, calls: list[ToolCall], text: str = "") -> bool:  # type: ignore[no-untyped-def]
     """Run the calls of one step. Returns True if the turn must pause for approval."""
     cid = state.cid
     for c in calls:
         app.bus.emit("tool.call", {"call_id": c.id, "name": c.name, "args": c.arguments, "event_id": event_id}, cid)
-    ctxs = {c.id: _tool_ctx(app, state, c.id, event_id) for c in calls}
+    intent = _intent(app, state, text)
+    ctxs = {c.id: _tool_ctx(app, state, c.id, event_id, intent=intent) for c in calls}
     outcomes: dict[str, Any] = {}
     ro = [c for c in calls if _is_read_only(app, c)]
     if ro:
@@ -447,12 +481,22 @@ async def _repair(app, state: TurnState, paused: bool) -> str | bool:  # type: i
         return False
     state.request_text = _last_user_text(app, cid)
     state.priority = PRIORITY_INTERACTIVE if state.conv["kind"] == "desk" else PRIORITY_BACKGROUND
+    # A call executed after an approval carries the intent it was made with: the preamble
+    # the model wrote in the step that issued it, persisted on the tool_call event.
+    resumed_intent = tc["meta"].get("text") or ""
+    # …and the step it was made at. A resumed turn continues its budget rather than
+    # starting a fresh one (65 of 100 steps became "plenty of steps", TD audit F6). The
+    # INTERRUPTED branch below deliberately leaves `steps` at 0: a turn whose results were
+    # lost to a restart is not being resumed, it starts over.
+    resumed_step = int(tc["meta"].get("step") or 0)
     did = False
     for c in missing:
         appr = approvals.pending_for_call(app, cid, c.id)  # latest row for the call, any status
-        tctx = _tool_ctx(app, state, c.id, tc["id"])
+        tctx = _tool_ctx(app, state, c.id, tc["id"], intent=resumed_intent)
         if appr is not None and appr["status"] == "pending":
             return "waiting"
+        if appr is not None:
+            state.steps = max(state.steps, resumed_step)
         if appr is not None and appr["status"] == "allowed":
             tool = app.tools.get(c.name)
             result = await dispatch.execute(app, tctx, tool, c.arguments) if tool else ToolResult.error(f"unknown tool {c.name}")
@@ -461,6 +505,7 @@ async def _repair(app, state: TurnState, paused: bool) -> str | bool:  # type: i
             result = dispatch.denied_result()
             tctx.meta.update({"policy": "ask", "decision": "deny", "reason": "denied by user"})
         elif paused:
+            state.steps = max(state.steps, resumed_step)
             out = await dispatch.dispatch(app, tctx, c)
             if isinstance(out, dispatch.ApprovalNeeded):
                 _absorb_extras(state, Context(state.conv, [], [], [], [], ""))
@@ -530,7 +575,7 @@ def _finish_status(app, state: TurnState) -> None:  # type: ignore[no-untyped-de
     if state.finished is not None:
         final = "done" if state.finished.get("state", "done") == "done" else "failed"
         events.set_status(app, state.cid, final, finished_at=now, walkthrough=state.finished.get("walkthrough_path"))
-        _notify_parent(app, state, final, state.finished.get("summary") or "")
+        _notify_parent(app, state, final, state.finished.get("summary") or "", delivery=state.finished.get("delivery"))
     elif state.failed:
         events.set_status(app, state.cid, "failed")
         _notify_parent(app, state, "failed", state.failed)
@@ -542,7 +587,11 @@ def _finish_status(app, state: TurnState) -> None:  # type: ignore[no-untyped-de
         _notify_parent(app, state, "waiting", text)
 
 
-def _notify_parent(app, state: TurnState, event: str, text: str) -> None:  # type: ignore[no-untyped-def]
+def _notify_parent(app, state: TurnState, event: str, text: str, delivery: str | None = None) -> None:  # type: ignore[no-untyped-def]
+    """`text` is the short form (the finish summary): it is the now-board item, truncated.
+    `delivery`, when the caller has one, is the summary plus the finish evidence block —
+    the body the parent conversation actually reads, so the walkthrough reaches the desk
+    instead of only being filed (TD audit §3)."""
     conv = state.conv
     parent = conv.get("parent_id")
     title = conv.get("title") or (conv.get("goal") or "")[:60] or conv["id"]
@@ -554,7 +603,7 @@ def _notify_parent(app, state: TurnState, event: str, text: str) -> None:  # typ
     if parent:
         from . import post
 
-        post(app, parent, f"[{label}]\n{body}", source=f"conversation:{conv['id']}", meta={"title": title, "kind": "thread", "event": event})
+        post(app, parent, f"[{label}]\n{(delivery or text).strip()}", source=f"conversation:{conv['id']}", meta={"title": title, "kind": "thread", "event": event})
     policy = app.settings.get("triggers.policy_thread_event")
     items.post(
         app, "thread_event", f'Thread "{title}" {label}', body[:2000], conversation_id=conv["id"],
@@ -590,6 +639,18 @@ def _persist_claimed(app, state: TurnState, rows: list[dict[str, Any]], ctx: Con
 def _last_user_text(app, cid: str) -> str:  # type: ignore[no-untyped-def]
     last = events.last(app, cid, 1, kinds=["user"])
     return last[0]["content"] if last else ""
+
+
+def _last_assistant_text(app, cid: str) -> str:  # type: ignore[no-untyped-def]
+    """The last thing the model said in this conversation: an `assistant` event's content
+    or a `tool_call` event's preamble, whichever is later and non-empty. Bounded lookback —
+    a turn that starts with a bare tool call has no intent of its own, and an old one is
+    better than none, but it is not worth a transcript scan."""
+    for ev in reversed(events.last(app, cid, 20, kinds=["assistant", "tool_call"])):
+        text = (ev["content"] if ev["kind"] == "assistant" else ev["meta"].get("text")) or ""
+        if text.strip():
+            return text
+    return ""
 
 
 def _system(app, cid: str, text: str) -> None:  # type: ignore[no-untyped-def]

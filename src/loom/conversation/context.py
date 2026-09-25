@@ -36,7 +36,7 @@ from typing import Any
 
 from .. import db, items, prompts
 from ..tools.registry import Tool
-from . import events, inbox, pins, status
+from . import events, inbox, pins, status, worktree
 
 log = logging.getLogger(__name__)
 
@@ -283,6 +283,15 @@ def filesystem_block(app, conv: dict[str, Any]) -> str:  # type: ignore[no-untyp
     protected = paths.get("protected") or []
     if protected:
         lines.append("protected (always ask): " + ", ".join(protected))
+    if conv.get("worktree"):
+        # A thread spawned with isolation="worktree" (03 §6.7) works in its own checkout,
+        # which is already its first root; this line says why that path is not the repo
+        # it was branched from, and that the branch is the handback.
+        lines.append(
+            prompts.load("context/worktree")
+            .replace("{path}", str(conv["worktree"]))
+            .replace("{branch}", worktree.branch_for(conv["id"]))
+        )
     lines.append(loom_line(app))
     return "\n".join(lines)
 

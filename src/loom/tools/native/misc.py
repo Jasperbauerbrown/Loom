@@ -10,6 +10,7 @@ import json
 from typing import Any
 
 from ... import prompts
+from ...artifacts import IMAGE_ID_RE
 from ..registry import Tool, ToolContext, ToolResult
 
 
@@ -62,8 +63,29 @@ async def artifact_recall_handler(ctx: ToolContext, args: dict[str, Any]) -> Too
     artifact_id = str(args.get("id") or "").strip()
     if not artifact_id:
         return ToolResult.error("id is empty")
+
+    if IMAGE_ID_RE.match(artifact_id):
+        found = store.find_image_in_tree(ctx.conversation_id, artifact_id)
+        if found is None:
+            return ToolResult(
+                content=f"error: no image {artifact_id} in this conversation or a thread it spawned",
+                ok=False,
+                meta={"id": artifact_id},
+            )
+        path, mime = found
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            return ToolResult(content=f"error: image {artifact_id} unreadable: {exc}", ok=False, meta={"id": artifact_id})
+        note = " (offset/limit do not apply to an image)" if (args.get("offset") or args.get("limit")) else ""
+        return ToolResult(
+            content=f"[image {artifact_id}: {len(data)} bytes, {mime}]{note}",
+            meta={"id": artifact_id},
+            images=[{"data": data, "mime": mime}],
+        )
+
     limit = args.get("limit")
-    text = store.read(artifact_id, int(args.get("offset") or 0), int(limit) if limit else None)
+    text = store.read_in_tree(ctx.conversation_id, artifact_id, int(args.get("offset") or 0), int(limit) if limit else None)
     if text.startswith("error: "):
         return ToolResult(content=text, ok=False, meta={"id": artifact_id})
     return ToolResult(content=text, meta={"id": artifact_id})

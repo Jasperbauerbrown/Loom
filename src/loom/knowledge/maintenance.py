@@ -474,10 +474,11 @@ class Maintenance:
         return [r["id"] for r in rows]
 
     async def _housekeep(self, report: dict[str, Any]) -> None:
-        from ..conversation import events
+        from ..conversation import events, worktree
 
         for cid in self.archivable_threads():
             events.set_status(self.app, cid, "archived", archived_at=db.now_iso())
+            worktree.release(self.app, self.app.conversation(cid))  # never raises
             report["archived"] += 1
         if report["archived"]:
             self._progress("housekeep", f"archived {report['archived']} finished thread(s)")

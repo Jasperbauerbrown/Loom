@@ -6,6 +6,7 @@ model, so the desk spawns and talks to threads the same way a surface does.
 from __future__ import annotations
 
 import datetime as _dt
+import logging
 import re
 import zoneinfo
 from typing import Any
@@ -14,6 +15,8 @@ from .. import db, items, prompts
 from ..ids import ulid
 from ..tools.registry import Tool, ToolContext, ToolResult
 from . import compaction, events, pins, status
+
+log = logging.getLogger(__name__)
 
 
 class ThreadError(Exception):
@@ -32,11 +35,18 @@ def create_thread(  # type: ignore[no-untyped-def]
     notes: list[str] | None = None,
     role: str = "worker",
     created_by: str = "user",
+    isolation: str | None = None,
+    isolation_root: str | None = None,
 ) -> dict[str, Any]:
     """Persist the row, emit `conversation.created`, then post the goal (+ excerpt) to its
     inbox — the row exists before the first turn is scheduled. `notes` are vault paths
     pinned into the thread's context from its first turn: what the spawning conversation
-    already checked before deciding to spawn. A missing note refuses the spawn."""
+    already checked before deciding to spawn. A missing note refuses the spawn.
+
+    `isolation="worktree"` (03 §6.7, generalising §15.1) gives the thread its own git
+    checkout of the repository holding `isolation_root` (default: its first root). The
+    worktree *replaces* that root and leads the list: isolation means the thread cannot
+    reach the live checkout it branched from, and relative paths resolve inside its own."""
     goal = (goal or "").strip()
     if not goal:
         raise ThreadError("goal is required")
@@ -57,6 +67,31 @@ def create_thread(  # type: ignore[no-untyped-def]
     except pins.PinError as exc:
         raise ThreadError(str(exc)) from exc
     roots = [_norm(r) for r in (roots or []) if r]
+    from . import worktree as _worktree
+
+    # Everything that can be judged without touching the disk is judged first, so a
+    # refusal never leaves a row or a directory behind.
+    isolation = (isolation or "none").strip().lower()
+    if isolation not in ("none", "worktree"):
+        raise ThreadError(f"isolation must be 'none' or 'worktree', not {isolation!r}")
+    source_root: str | None = None
+    if isolation == "worktree":
+        if isolation_root:
+            source_root = _norm(isolation_root)
+            if not any(_worktree.same_path(source_root, r) for r in roots):
+                raise ThreadError(
+                    f"isolation_root {source_root} is not one of this thread's roots "
+                    f"({', '.join(roots) if roots else 'none'}); pass the repository in roots too"
+                )
+        elif roots:
+            source_root = roots[0]
+        else:
+            raise ThreadError("worktree isolation needs a root; pass the repository in roots")
+        if _worktree.repo_root(source_root) is None:
+            raise ThreadError(
+                f"{source_root} is not inside a git repository; worktree isolation needs one — "
+                "make it a repository with one commit, or spawn without isolation"
+            )
     cid = ulid()
     now = db.now_iso()
     title = (title or "").strip() or default_title(goal)
@@ -66,6 +101,19 @@ def create_thread(  # type: ignore[no-untyped-def]
             "VALUES (?, 'thread', ?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?)",
             (cid, parent_id, title, goal, db.dumps(pinned), db.dumps(roots), depth, role, preset, now, now),
         )
+    if source_root is not None:
+        # Persist before act: the row (worktree NULL) exists before git makes a checkout,
+        # so a crash mid-`worktree add` leaves something we can see rather than an orphan
+        # directory. The row is only completed once the checkout is really there.
+        try:
+            made = _worktree.create(app, cid, source_root)
+        except _worktree.WorktreeError as exc:
+            # Nothing has been emitted or posted yet, so nothing has seen this row.
+            with db.transaction(app.db):
+                app.db.execute("DELETE FROM conversations WHERE id=?", (cid,))
+            raise ThreadError(str(exc)) from exc
+        roots = [made["path"]] + [r for r in roots if not _worktree.same_path(r, source_root)]
+        events.update(app, cid, worktree=made["path"], roots=roots, updated_at=db.now_iso())
     row = events.public_row(app, cid)
     app.bus.emit("conversation.created", row, cid)
     body = f"Goal: {goal}"
@@ -122,6 +170,74 @@ def render_transcript(app, conv: dict[str, Any], limit: int = 30, before: int | 
     return "\n".join(head) + "\n\n" + body + tail
 
 
+# -- finish delivery (03 §6.7) -----------------------------------------------------------
+
+WALKTHROUGH_DELIVERY_CHARS = 8_000
+EVIDENCE_MAX_ITEMS = 40
+EVIDENCE_CAPTION_CHARS = 140
+_IMAGE_MARKER = re.compile(r"^\[image img_[0-9A-HJKMNP-TV-Z]{26} attached to this result\]$", re.MULTILINE)
+
+
+def _caption(text: str, fallback: str = "") -> str:
+    """The first line that says something, cut to a caption. Image markers and artifact
+    pointers are the harness's own words, not the tool's, so they never become one."""
+    for line in _IMAGE_MARKER.sub("", text or "").splitlines():
+        line = line.strip()
+        if line and not line.startswith("[artifact "):
+            return line[:EVIDENCE_CAPTION_CHARS]
+    return fallback
+
+
+def produced(app, conversation_id: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:  # type: ignore[no-untyped-def]
+    """`(artifacts, images)` this conversation produced, each `(id, caption)`, oldest
+    first. Artifacts come from their rows (the caption is the head's first line); images
+    have no rows, so they come from the `meta.images` refs of the transcript events that
+    carried them — a tool result, or a message the person attached them to."""
+    store = getattr(app, "artifacts", None)
+    artifacts: list[tuple[str, str]] = []
+    for row in (store.list(conversation_id) if store is not None else []):
+        artifacts.append((row["id"], _caption(row.get("head") or "", f"{row.get('bytes') or 0} bytes")))
+    images: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for e in events.list_events(app, conversation_id, limit=1_000_000):
+        refs = (e["meta"] or {}).get("images") or []
+        if not refs:
+            continue
+        name = e["meta"].get("name") or ("attached by the person" if e["kind"] == "user" else e["kind"])
+        caption = _caption(e.get("content") or "", name)
+        for ref in refs:
+            image_id = str(ref.get("id") if isinstance(ref, dict) else ref or "")
+            if image_id and image_id not in seen:
+                seen.add(image_id)
+                images.append((image_id, f"{name}: {caption}" if caption != name else name))
+    return artifacts, images
+
+
+def evidence_block(app, conv: dict[str, Any], walkthrough_path: str, walkthrough: str) -> str:  # type: ignore[no-untyped-def]
+    """What rides with the summary to the spawning conversation: the walkthrough section
+    just filed (path and text), then every artifact and image the thread produced, as an
+    id with a caption. The spawner's judgment is fed, not pointed at — the raylib thread
+    cited a screenshot the desk had no way to open, and the desk spent 43 minutes
+    re-deriving the work instead (tower-defense run, 2026-09-24)."""
+    text = walkthrough.strip()
+    if len(text) > WALKTHROUGH_DELIVERY_CHARS:
+        text = (
+            text[:WALKTHROUGH_DELIVERY_CHARS]
+            + f"\n[… {len(text) - WALKTHROUGH_DELIVERY_CHARS} more chars; knowledge_read(\"{walkthrough_path}\") for the rest]"
+        )
+    parts = [prompts.load("context/finish-evidence"), f"# Walkthrough — {walkthrough_path}\n{text}"]
+    artifacts, images = produced(app, conv["id"])
+    for label, rows in (("Artifacts", artifacts), ("Images", images)):
+        if not rows:
+            continue
+        shown = rows[:EVIDENCE_MAX_ITEMS]
+        lines = [f"# {label}"] + [f"- {i} — {c}" if c else f"- {i}" for i, c in shown]
+        if len(rows) > len(shown):
+            lines.append(f"[{len(rows) - len(shown)} more; the thread's transcript has them]")
+        parts.append("\n".join(lines))
+    return "\n\n".join(parts)
+
+
 def local_date(app) -> str:  # type: ignore[no-untyped-def]
     try:
         tz = zoneinfo.ZoneInfo(app.settings.get("general.timezone") or "UTC")
@@ -145,12 +261,19 @@ async def _create(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
             excerpt=args.get("excerpt"),
             notes=args.get("notes") or [],
             created_by=f"conversation:{ctx.conversation_id}",
+            isolation=args.get("isolation"),
+            isolation_root=args.get("isolation_root"),
         )
     except ThreadError as exc:
         return ToolResult.error(str(exc))
     pinned = pins.get(row)
+    isolated = ""
+    if row.get("worktree"):
+        from . import worktree as _worktree
+
+        isolated = f" It works in an isolated checkout at {row['worktree']} on branch {_worktree.branch_for(row['id'])}."
     return ToolResult(
-        f"created thread {row['id']} (\"{row['title']}\"); pinned: {', '.join(pinned) if pinned else 'none'}. "
+        f"created thread {row['id']} (\"{row['title']}\"); pinned: {', '.join(pinned) if pinned else 'none'}.{isolated} "
         "It will report back when it stops without finishing, is blocked, or finishes."
     )
 
@@ -229,7 +352,15 @@ async def _finish(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         status.write(app, conv, {"state": "done" if state == "done" else "blocked", "doing": "", "next": "", "done": summary}, owner=conv["id"])
     except Exception as exc:
         return ToolResult.error(f"could not write the walkthrough: {exc}")
-    ctx.extras["finish"] = {"state": state, "summary": summary, "walkthrough_path": note_path}
+    # The spawner gets the summary first and the evidence under it, in one message
+    # (03 §6.7): `delivery` is the inbox body, `summary` stays the one-line now-board
+    # item. Built here, where the walkthrough text is, so the runner only delivers it.
+    try:
+        delivery = f"{summary}\n\n{evidence_block(app, conv, note_path, walkthrough)}"
+    except Exception as exc:  # evidence is an aid, never the reason a finish fails
+        log.warning("finish evidence for %s failed: %r", conv["id"], exc)
+        delivery = summary
+    ctx.extras["finish"] = {"state": state, "summary": summary, "walkthrough_path": note_path, "delivery": delivery}
     ctx.extras["status_written"] = True
     return ToolResult(f"finished ({state}); walkthrough at {note_path}. This turn ends now.")
 
@@ -282,6 +413,8 @@ def tools() -> list[Tool]:
                 "preset": {"type": "string"},
                 "title": {"type": "string"},
                 "notes": {"type": "array", "items": {"type": "string"}, "description": "vault paths to pin into the thread's context every turn (the notes you checked before spawning); a missing note refuses the spawn"},
+                "isolation": {"type": "string", "enum": ["none", "worktree"], "description": "\"worktree\" gives the thread its own git checkout of the repository it works in, on branch loom/<thread id>; it cannot touch the live checkout"},
+                "isolation_root": {"type": "string", "description": "which of `roots` the worktree is made from; defaults to the first root"},
             }, ["goal"]),
             _create,
         ),

@@ -200,6 +200,40 @@ class Store:
         data, mime = got
         return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
 
+    # -- spawn-tree scoping -------------------------------------------------------
+    def visible_ids(self, conversation_id: str) -> list[str]:
+        """`conversation_id` and every conversation below it in the spawn tree (its
+        threads, their sub-threads, …). Never a sibling and never an ancestor: evidence
+        flows up to the conversation that spawned the work, not sideways."""
+        rows = self.app.db.execute(
+            "WITH RECURSIVE tree(id) AS ("
+            "  SELECT ? "
+            "  UNION "
+            "  SELECT c.id FROM conversations c JOIN tree t ON c.parent_id = t.id"
+            ") SELECT id FROM tree",
+            (conversation_id,),
+        ).fetchall()
+        return [r["id"] for r in rows]
+
+    def read_in_tree(self, conversation_id: str, artifact_id: str, offset: int = 0, limit: int | None = None) -> str:
+        """`read()` when the artifact belongs to `conversation_id` or a conversation below
+        it in the spawn tree; otherwise the same shape of error string as `read()`."""
+        row = self.get(artifact_id)
+        if row is None or row["conversation_id"] not in self.visible_ids(conversation_id):
+            return f"error: no artifact {artifact_id} in this conversation or a thread it spawned"
+        return self.read(artifact_id, offset, limit)
+
+    def find_image_in_tree(self, conversation_id: str, image_id: str) -> tuple[Path, str] | None:
+        """`(path, mime)` for an image stored by `conversation_id` or a conversation below
+        it in the spawn tree, else None."""
+        if not IMAGE_ID_RE.match(str(image_id or "")):
+            return None
+        for cid in self.visible_ids(conversation_id):
+            found = self.find_image(cid, image_id)
+            if found is not None:
+                return found
+        return None
+
     # -- read -------------------------------------------------------------------
     def get(self, artifact_id: str) -> dict[str, Any] | None:
         return db.row_to_dict(
