@@ -15,6 +15,14 @@ from tests.test_walkthroughs import _context, _kinds, _settle
 SERVER = str(Path(__file__).parent / "fake_mcp_server.py")
 
 
+def _days_ahead(n: int) -> str:
+    """A date n days from today: the scheduler refuses a one-shot in the past, so the
+    walkthrough's reminders cannot be fixed dates (this test broke on 2026-09-25)."""
+    import datetime as _dt
+
+    return (_dt.date.today() + _dt.timedelta(days=n)).isoformat()
+
+
 async def test_walkthrough_homework(client, fake):
     app = client.loom
     desk = app.desk_id()
@@ -77,8 +85,8 @@ async def test_walkthrough_homework(client, fake):
     # Follow-up: "remind me the day before each is due" → the model schedules explicitly.
     fake.script(
         Scripted(content="", tool_calls=[
-            ("schedule_create", {"spec": "at 2026-09-24T18:00", "payload": "Reminder: CS101 problem set due 2026-09-25 23:59.", "policy": "interrupt"}),
-            ("schedule_create", {"spec": "at 2026-09-25T18:00", "payload": "Reminder: CS101 essay on sorting due 2026-09-26.", "policy": "interrupt"}),
+            ("schedule_create", {"spec": f"at {_days_ahead(1)}T18:00", "payload": "Reminder: CS101 problem set due 2026-09-25 23:59.", "policy": "interrupt"}),
+            ("schedule_create", {"spec": f"at {_days_ahead(2)}T18:00", "payload": "Reminder: CS101 essay on sorting due 2026-09-26.", "policy": "interrupt"}),
         ]),
         Scripted(content="Set two reminders for the day before each due date."),
     )
