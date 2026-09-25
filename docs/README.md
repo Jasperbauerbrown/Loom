@@ -13,6 +13,7 @@ the Loom repository; `CLAUDE.md` here moves to the repository root.
 | 6 | `05-backlog.md` | Agreed, concrete engineering work not yet built. |
 | ref | `reference/agentic-harnesses.md` | Survey of ~85 agentic harnesses (2026-09-17). |
 | ref | `reference/tool-parity-audit.md` | Tool surface vs Claude Code and opencode, ranked gap list (2026-09-24). |
+| ref | `reference/tower-defense-run-audit.md` | After-action review of one real task run: where 136 minutes went, ranked findings, source of the "TD audit" backlog items (2026-09-24). |
 | ref | `reference/harness-study.md`, `reference/context-lifecycle.md` | Hydra's context-management write-ups; the source of the compaction, calibration and repair mechanics adopted in `03`. Paths inside refer to Hydra. |
 
 Conventions for editing these docs:
