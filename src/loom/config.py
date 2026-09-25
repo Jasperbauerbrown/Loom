@@ -165,6 +165,7 @@ GROUPS: dict[str, str] = {
     "conversation": "Conversation",
     "knowledge": "Knowledge",
     "permissions": "Permissions",
+    "tools": "Tools",
     "triggers": "Triggers",
     "system": "System",
 }
@@ -210,6 +211,9 @@ FIELDS: list[Field] = [
     Field("conversation.tool_timeout_shell_s", "int", 120, "Shell timeout (s)", "", "number", min=1, max=3600),
     Field("conversation.tool_timeout_http_s", "int", 60, "HTTP timeout (s)", "", "number", min=1, max=3600),
     Field("conversation.tool_timeout_mcp_s", "int", 300, "MCP tool timeout (s)", "", "number", min=1, max=3600),
+    Field("conversation.tool_timeout_max_s", "int", 900, "Tool timeout ceiling (s)", "A call's own timeout_s argument (shell, http) is honoured up to this.", "number", min=1, max=7200),
+    Field("conversation.suspend_drift_s", "int", 60, "Suspend detection (s)", "A failed model call whose wall clock ran this far ahead of the monotonic clock spanned a standby; it is retried without counting as an error.", "number", min=5, max=3600),
+    Field("conversation.suspend_retries", "int", 2, "Suspend retries", "Free retries per turn after a detected standby.", "number", min=0, max=10),
     Field("conversation.now_board_max_threads", "int", 10, "Now board: threads shown", "", "number", min=1, max=50),
     Field("conversation.shutdown_grace_s", "int", 10, "Shutdown grace (s)", "Time in-flight tool calls get to finish.", "number", min=0, max=120),
     # Knowledge
@@ -229,6 +233,11 @@ FIELDS: list[Field] = [
     Field("permissions.classifier_role", "enum", "utility", "Classifier role", "Model role used for classify decisions; utility falls back to the conversation's role.", "select", choices=("utility", "desk", "worker", "maintenance")),
     Field("permissions.desk_auto_approve", "bool", False, "Desk auto-approve", "The desk runs every call without asking or classifying. Protected paths still ask; threads are unaffected.", "toggle"),
     Field("permissions.classifier_timeout_s", "int", 45, "Classifier timeout (s)", "A verdict that takes longer than this becomes an ask (one retry for a busy provider).", "number", min=5, max=600),
+    # Tools
+    Field("tools.web_search_provider", "enum", "", "Web search provider", "Which index the web_search tool queries. SearXNG is self-hosted and needs no key; Brave, Exa and Tavily each need an API key. While this is empty the tool answers 'not configured' and says what to set.", "select", choices=("", "searxng", "brave", "exa", "tavily")),
+    Field("tools.web_search_url", "str", "", "SearXNG URL", "SearXNG only: the base URL of the instance, e.g. http://127.0.0.1:8888. Its JSON API must be enabled.", "text"),
+    Field("tools.web_search_secret", "str", "web_search", "API key secret name", "Brave, Exa and Tavily only: the name of the stored secret holding the key — not the key itself. Paste the key into Integrations → Secrets under this name, or ask Loom to store it.", "text"),
+    Field("tools.web_search_results", "int", 5, "Results per search", "How many results web_search returns when it is not asked for a number.", "number", min=1, max=20),
     # Triggers
     Field("triggers.policy_thread_event", "enum", "interrupt", "Thread events", "", "select", choices=("interrupt", "queue")),
     Field("triggers.policy_schedule", "enum", "queue", "Schedule firings", "", "select", choices=("interrupt", "queue")),

@@ -47,6 +47,7 @@ class ToolContext:
     call_id: str
     event_id: int | None = None  # the tool_call event, once persisted
     request_text: str = ""  # the claimed user text / thread goal, for classify and logs
+    intent: str = ""  # the turn's stated intent for this step: the assistant text before the call, else the last assistant text (the classifier reads it beside request_text)
     priority: int = 0  # model-queue priority of the turn that issued the call (0 interactive)
     meta: dict[str, Any] = field(default_factory=dict)  # dispatcher writes {policy, decision, reason}
     extras: dict[str, Any] = field(default_factory=dict)  # per-turn scratch (tool_search's "exposed")

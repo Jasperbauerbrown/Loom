@@ -5,10 +5,12 @@
 2 validate arguments   malformed        → error result ("resend the call")
 3 filesystem guard     outside/protected→ approval
 4 policy               allow | ask → approval | classify → pre-filter, then the judge
-                       (desk auto-approve: ask/classify/outside-roots → allow; protected still asks)
+                       (desk auto-approve: ask/classify/outside-roots → allow; protected still asks;
+                        a conversation grant — "allow this call for the conversation" — allows)
+4½ before-hooks        connectors may annotate, or turn the allow into an ask; never deny
 5 secrets substitution into a private copy of the arguments
 6 execute with a timeout; every exception becomes an error result
-7 redact the output, bound it (spill to an artifact over the cap)
+7 redact the output, bound it (spill to an artifact over the cap); after-hooks annotate
 ```
 
 Nothing else may call a handler. Every step failure has exactly one behaviour: an error
@@ -30,7 +32,7 @@ from .. import prompts
 from ..artifacts import sniff_image
 from ..models.types import ToolCall
 from ..secrets import SecretMissing
-from . import approvals, classify, fs_guard, permissions, shell_prefilter
+from . import approvals, classify, fs_guard, hooks, permissions, shell_prefilter
 from .registry import Tool, ToolContext, ToolResult
 
 log = logging.getLogger(__name__)
@@ -50,18 +52,6 @@ class ApprovalNeeded:
 def denied_result(reason: str = "denied by user") -> ToolResult:
     """What the model sees when an approval comes back denied."""
     return ToolResult(content=f"denied: {reason}", ok=False, meta={"denied": True})
-
-
-def _shell_cwd(app: Any, ctx: ToolContext, args: dict[str, Any]) -> str:
-    """The directory a shell command's relative paths resolve against: the `cwd`
-    argument against the first root, else the first root, else the process cwd — the
-    same choice the shell tool makes, so the pre-filter judges the paths it will see."""
-    import os
-
-    roots = fs_guard.effective_roots(app, ctx.conversation)
-    base = roots[0] if roots else os.getcwd()
-    cwd_arg = args.get("cwd")
-    return fs_guard.normalise(str(cwd_arg), cwd=base) if cwd_arg else base
 
 
 AUTO_REASON = "desk auto-approve"
@@ -86,7 +76,7 @@ def _auto_approved(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any])
             if split is None:
                 return False
             words += split
-        if shell_prefilter.names_protected(words, fs_guard.protected_paths(app), _shell_cwd(app, ctx, args)):
+        if shell_prefilter.names_protected(words, fs_guard.protected_paths(app), classify.command_cwd(app, ctx, args)):
             return False
     return True
 
@@ -143,7 +133,17 @@ def validate_args(tool: Tool, args: dict[str, Any]) -> list[str]:
 # ---------------------------------------------------------------------------------
 # Step 6: timeouts
 # ---------------------------------------------------------------------------------
-def timeout_for(app: Any, tool: Tool) -> float:
+def timeout_for(app: Any, tool: Tool, args: dict[str, Any] | None = None) -> float:
+    """The timeout for one call. A tool that declares a `timeout_s` argument (shell,
+    http) gets the value the model asked for, clamped by
+    `conversation.tool_timeout_max_s`; otherwise the tool's own or the per-kind setting."""
+    if "timeout_s" in ((tool.parameters or {}).get("properties") or {}):
+        try:
+            asked = 0.0 if isinstance((args or {}).get("timeout_s"), bool) else float((args or {}).get("timeout_s"))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            asked = 0.0  # junk is not an error: the default stands
+        if asked > 0:
+            return min(asked, float(app.settings.get("conversation.tool_timeout_max_s")))
     if tool.timeout_s:
         return float(tool.timeout_s)
     if tool.name == "shell":
@@ -173,7 +173,7 @@ async def dispatch(app: Any, ctx: ToolContext, call: ToolCall) -> ToolResult | A
     guard = fs_guard.check(app, ctx.conversation, tool, args)
     if isinstance(guard, fs_guard.GuardAsk) and not guard.protected and _auto_approved(app, ctx, tool, args):
         ctx.meta.update({"policy": "auto", "decision": "allow", "reason": AUTO_REASON})
-        return await execute(app, ctx, tool, args)
+        return await _run(app, ctx, call, tool, args)
     if isinstance(guard, fs_guard.GuardAsk):
         ctx.meta.update({"policy": "ask", "decision": "ask", "reason": guard.reason})
         approval_id = approvals.create(app, ctx, call, guard.reason, dict(guard.options))
@@ -182,14 +182,19 @@ async def dispatch(app: Any, ctx: ToolContext, call: ToolCall) -> ToolResult | A
     mode, policy_key = permissions.decide(app, tool, args)
     if mode != "allow" and _auto_approved(app, ctx, tool, args):
         ctx.meta.update({"policy": "auto", "decision": "allow", "reason": AUTO_REASON})
-        return await execute(app, ctx, tool, args)
+        return await _run(app, ctx, call, tool, args, policy_key)
+    if mode != "allow":
+        granted = permissions.conversation_grant(app, ctx.conversation_id, tool.name, args)
+        if granted:
+            ctx.meta.update({"policy": mode, "decision": "allow", "reason": granted})
+            return await _run(app, ctx, call, tool, args, policy_key)
     reason = ""
     if mode == "classify":
         if tool.name == "shell" and shell_prefilter.is_readonly(
             str(args.get("command") or ""),
             list(app.settings.get("permissions.shell_readonly_commands") or []),
             protected=fs_guard.protected_paths(app),
-            cwd=_shell_cwd(app, ctx, args),
+            cwd=classify.command_cwd(app, ctx, args),
         ):
             decision, reason = "allow", "read-only command (static pre-filter)"
         else:
@@ -204,6 +209,21 @@ async def dispatch(app: Any, ctx: ToolContext, call: ToolCall) -> ToolResult | A
         approval_id = approvals.create(app, ctx, call, ask_reason, options)
         return ApprovalNeeded(approval_id, ask_reason, options)
 
+    return await _run(app, ctx, call, tool, args, policy_key)
+
+
+async def _run(app: Any, ctx: ToolContext, call: ToolCall, tool: Tool, args: dict[str, Any], policy_key: str | None = None) -> ToolResult | ApprovalNeeded:
+    """Step 4½: the call is allowed; connector before-hooks may still turn it into an
+    ask or annotate it. Then steps 5–7."""
+    verdict = await hooks.before(app, ctx, tool, args)
+    if verdict.ask:
+        ask_reason = verdict.reason or f"{tool.name} requires approval (connector hook)"
+        ctx.meta.update({"decision": "ask", "reason": ask_reason})
+        options = {"policy_key": policy_key} if policy_key else {}
+        approval_id = approvals.create(app, ctx, call, ask_reason, options)
+        return ApprovalNeeded(approval_id, ask_reason, options)
+    if verdict.notes:
+        ctx.meta["hook_notes"] = list(verdict.notes)
     return await execute(app, ctx, tool, args)
 
 
@@ -246,9 +266,15 @@ async def execute(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) 
         except Exception as exc:  # a broken secrets backend must not raise into the turn
             return ToolResult.error(f"secret substitution failed: {exc}")
 
-    timeout = timeout_for(app, tool)
+    timeout = timeout_for(app, tool, private_args)
     try:
-        result = await asyncio.wait_for(tool.handler(ctx, private_args), timeout=timeout)
+        # A grace margin above the effective timeout, so a tool that bounds itself (shell
+        # kills its tree and returns what the command said first) gets to answer and this
+        # catches only a handler that ignored its own deadline. The message still names
+        # the effective timeout, which is the number the caller asked for.
+        result = await asyncio.wait_for(
+            tool.handler(ctx, private_args), timeout=timeout + min(30.0, max(1.0, 0.1 * timeout))
+        )
     except asyncio.TimeoutError:
         result = ToolResult.error(f"{tool.name} timed out after {timeout:g}s", timeout=True)
     except asyncio.CancelledError:
@@ -278,4 +304,8 @@ async def execute(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) 
         if artifact_id:
             result.meta["artifact_id"] = artifact_id
     result.content = content
+    try:
+        result = await hooks.after(app, ctx, tool, args, result)
+    except Exception as exc:  # a hook may annotate, never break the call
+        log.warning("after-hook raised: %r", exc)
     return result
