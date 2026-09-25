@@ -1,6 +1,8 @@
 """Filesystem guard: step 3 of the dispatcher pipeline (03 §9.3).
 
-One question, asked of every path argument of every tool: is this path inside an
+One question, asked of every path a call names — its `path_params` arguments, plus
+whatever a registered extractor finds inside them (`register_paths`, which is how
+fs_patch's paths, buried in a unified diff, are judged): is this path inside an
 allowed root, and is it protected? The guard never denies — it either passes or returns
 an `ask`, which the dispatcher turns into an approval the user answers. An "outside the
 roots" ask carries the root that would fix it, so answering `allow_always` widens the
@@ -20,7 +22,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from .. import db
 from .registry import Tool
@@ -172,6 +174,36 @@ def _values(args: dict[str, Any], name: str) -> list[str]:
     return []
 
 
+# A tool whose paths are not in its arguments (fs_patch's paths live inside the unified
+# diff it is handed) registers an extractor here, and the guard judges what it returns
+# exactly like a `path_params` value. `Tool.path_params` cannot express "the paths
+# inside a diff" and the registry is not the place to learn about diffs, so this is the
+# smallest general mechanism: one function per tool name, one judging loop for both.
+PathExtractor = Callable[[dict[str, Any]], list[str]]
+_EXTRA_PATHS: dict[str, PathExtractor] = {}
+
+
+def register_paths(tool_name: str, extractor: PathExtractor) -> None:
+    """`extractor(args) -> list[str]`: the paths this call names beyond `path_params`.
+    Idempotent; the fs package registers fs_patch's when its tools are built."""
+    _EXTRA_PATHS[tool_name] = extractor
+
+
+def extra_paths(tool_name: str, args: dict[str, Any]) -> list[str]:
+    """What the registered extractor finds, or nothing. An extractor that raises (a
+    patch that will not parse) yields no paths — and the handler refuses the call with
+    the same parse error, so nothing unguarded is ever written."""
+    extractor = _EXTRA_PATHS.get(tool_name)
+    if extractor is None:
+        return []
+    try:
+        found = extractor(args)
+    except Exception as exc:
+        log.warning("fs guard: path extractor for %s raised: %r", tool_name, exc)
+        return []
+    return [p for p in (found or []) if isinstance(p, str) and p.strip()]
+
+
 def _suggested_root(path: str) -> str:
     """The narrowest root that would let this call through: the file's directory, or the
     directory itself when the path is (or will be) one."""
@@ -182,25 +214,29 @@ def _suggested_root(path: str) -> str:
 
 
 def check(app: Any, conversation: dict[str, Any] | None, tool: Tool, args: dict[str, Any]) -> GuardOk | GuardAsk:
-    """Resolve every `path_params` argument and judge it. First problem wins, so the
-    user answers one question at a time."""
-    if not tool.path_params:
+    """Resolve every path this call names — its `path_params` arguments and whatever a
+    registered extractor finds inside them — and judge each the same way. First problem
+    wins, so the user answers one question at a time."""
+    raw_paths: list[str] = []
+    for name in tool.path_params:
+        raw_paths += _values(args, name)
+    raw_paths += extra_paths(tool.name, args)
+    if not raw_paths:
         return GuardOk()
     roots = effective_roots(app, conversation)
     base = args.get("cwd") if isinstance(args.get("cwd"), str) else None
     base = base or (roots[0] if roots else None)
     resolved: list[str] = []
-    for name in tool.path_params:
-        for raw in _values(args, name):
-            path = normalise(raw, cwd=base)
-            resolved.append(path)
-            if is_protected(app, path):
-                return GuardAsk(reason=f"protected path {path}", options={}, protected=True)
-            if not any(_under(path, root) for root in roots):
-                return GuardAsk(
-                    reason=f"{path} is outside allowed roots",
-                    options={"add_root": _suggested_root(path)},
-                )
+    for raw in raw_paths:
+        path = normalise(raw, cwd=base)
+        resolved.append(path)
+        if is_protected(app, path):
+            return GuardAsk(reason=f"protected path {path}", options={}, protected=True)
+        if not any(_under(path, root) for root in roots):
+            return GuardAsk(
+                reason=f"{path} is outside allowed roots",
+                options={"add_root": _suggested_root(path)},
+            )
     return GuardOk(paths=resolved)
 
 

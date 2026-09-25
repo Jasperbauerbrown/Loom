@@ -191,14 +191,14 @@ async def test_fs_read_over_the_cap_returns_one_page_and_is_never_spilled(app, t
 
     end = int(footer.split("offset=")[1].split(")")[0])
     second = await dispatch.execute(app, _ctx(app), tool, {"path": str(target), "offset": end})
-    assert second.ok and second.content.startswith(f"line {end:04d} ")
+    assert second.ok and second.content.startswith(f"{end + 1}\tline {end:04d} ")
     assert _artifact_count(app) == rows
 
     # No line is lost between pages: the cut lands mid-line, and that line must open
     # the next page whole (its tail used to be skipped silently, 2026-09-22).
     pages, offset = [], 0
     while True:
-        res = await dispatch.execute(app, _ctx(app), tool, {"path": str(target), "offset": offset})
+        res = await dispatch.execute(app, _ctx(app), tool, {"path": str(target), "offset": offset, "line_numbers": False})
         assert res.ok
         if "fs_read(path, offset=" not in res.content:
             pages.append(res.content)
@@ -227,3 +227,141 @@ async def test_a_tool_that_does_not_page_still_spills(app):
     assert result.meta.get("artifact_id")
     assert "artifact_recall" in result.content and len(result.content) < 1200
     assert _artifact_count(app) == rows + 1
+
+
+# -- spawn-tree scoping (2026-09-24) -------------------------------------------------
+# artifact_recall reads any conversation's artifact today; evidence should flow up the
+# spawn tree (desk <- thread <- sub-thread) but never sideways or downward.
+
+def _make_tree(app):
+    """desk -> thread -> sub_thread, plus an unrelated sibling of thread."""
+    from loom import conversation
+
+    desk = app.desk_id()
+    thread = conversation.create_thread(app, goal="do the work", parent_id=desk)["id"]
+    sub = conversation.create_thread(app, goal="sub work", parent_id=thread)["id"]
+    sibling = conversation.create_thread(app, goal="unrelated", parent_id=desk)["id"]
+    return desk, thread, sub, sibling
+
+
+def test_visible_ids_on_a_leaf_returns_just_itself(app):
+    desk, thread, sub, sibling = _make_tree(app)
+    assert app.artifacts.visible_ids(sub) == [sub]
+
+
+def test_visible_ids_includes_the_whole_subtree(app):
+    desk, thread, sub, sibling = _make_tree(app)
+    ids = set(app.artifacts.visible_ids(thread))
+    assert ids == {thread, sub}
+    assert sibling not in ids
+    assert desk not in ids
+
+
+def test_read_in_tree_reaches_child_and_grandchild_not_sibling_or_parent(app):
+    # sibling and thread are both direct children of desk, so they are true siblings of
+    # each other (neither is in the other's spawn tree); desk is thread's parent.
+    desk, thread, sub, sibling = _make_tree(app)
+    child_row = app.artifacts.spill(thread, None, "child text")
+    grandchild_row = app.artifacts.spill(sub, None, "grandchild text")
+    sibling_row = app.artifacts.spill(sibling, None, "sibling text")
+    desk_row = app.artifacts.spill(desk, None, "desk text")
+
+    assert app.artifacts.read_in_tree(desk, child_row["id"]) == "child text"
+    assert app.artifacts.read_in_tree(desk, grandchild_row["id"]) == "grandchild text"
+
+    expected_sibling_error = f"error: no artifact {sibling_row['id']} in this conversation or a thread it spawned"
+    expected_desk_error = f"error: no artifact {desk_row['id']} in this conversation or a thread it spawned"
+    # thread cannot read its sibling's artifact...
+    assert app.artifacts.read_in_tree(thread, sibling_row["id"]) == expected_sibling_error
+    # ...and cannot read its own parent's artifact (evidence flows up, not down)
+    assert app.artifacts.read_in_tree(thread, desk_row["id"]) == expected_desk_error
+
+    # a non-existent id gets the exact same message shape
+    assert app.artifacts.read_in_tree(desk, "NOPE") == "error: no artifact NOPE in this conversation or a thread it spawned"
+
+
+def test_find_image_in_tree_scopes_the_same_way(app):
+    desk, thread, sub, sibling = _make_tree(app)
+    child_img = app.artifacts.store_image(thread, b"\x89PNG\r\n\x1a\n" + b"x" * 40, "image/png")
+    sibling_img = app.artifacts.store_image(sibling, b"\x89PNG\r\n\x1a\n" + b"y" * 40, "image/png")
+
+    found = app.artifacts.find_image_in_tree(desk, child_img["id"])
+    assert found is not None
+    path, mime = found
+    assert mime == "image/png" and path.is_file()
+
+    # sibling is not below thread in the spawn tree
+    assert app.artifacts.find_image_in_tree(thread, sibling_img["id"]) is None
+    assert app.artifacts.find_image_in_tree(desk, "img_not_a_real_id") is None
+
+
+def _ctx_for(app, conversation_id: str, event_id: int = 1):
+    from loom.tools.registry import ToolContext
+
+    return ToolContext(app=app, conversation=app.conversation(conversation_id), call_id="c1", event_id=event_id)
+
+
+async def test_artifact_recall_handler_scopes_text_through_the_tree(app):
+    from loom.tools import dispatch
+
+    desk, thread, sub, sibling = _make_tree(app)
+    grandchild_row = app.artifacts.spill(sub, None, "grandchild text " * 5)
+    sibling_row = app.artifacts.spill(sibling, None, "sibling text")
+
+    tool = app.tools.get("artifact_recall")
+    # desk spawned thread which spawned sub: desk can read the grandchild's artifact.
+    ok = await dispatch.execute(app, _ctx_for(app, desk, 1), tool, {"id": grandchild_row["id"]})
+    assert ok.ok and ok.content.startswith("grandchild text")
+
+    # thread cannot read its sibling's artifact.
+    refused = await dispatch.execute(app, _ctx_for(app, thread, 2), tool, {"id": sibling_row["id"]})
+    assert not refused.ok
+    assert refused.content == (
+        f"error: no artifact {sibling_row['id']} in this conversation or a thread it spawned"
+    )
+
+
+async def test_artifact_recall_handler_returns_images_scoped_to_the_tree(app):
+    from loom.tools import dispatch
+
+    desk, thread, sub, sibling = _make_tree(app)
+    png_bytes = b"\x89PNG\r\n\x1a\n" + (b"\x00" * 32)
+    child_img = app.artifacts.store_image(thread, png_bytes, "image/png")
+    sibling_img = app.artifacts.store_image(sibling, png_bytes, "image/png")
+
+    tool = app.tools.get("artifact_recall")
+
+    ok = await dispatch.execute(app, _ctx_for(app, desk, 3), tool, {"id": child_img["id"]})
+    assert ok.ok
+    assert ok.meta.get("images")  # dispatch._store_images turns result.images into refs, keyed by conversation
+
+    # the handler itself must have produced the raw image bytes before dispatch stores
+    # them under the *calling* conversation; check that directly, bypassing dispatch.
+    from loom.tools.native.misc import artifact_recall_handler
+
+    direct = await artifact_recall_handler(_ctx_for(app, desk, 99), {"id": child_img["id"]})
+    assert direct.ok
+    assert direct.images == [{"data": png_bytes, "mime": "image/png"}]
+
+    refused = await artifact_recall_handler(_ctx_for(app, thread, 100), {"id": sibling_img["id"]})
+    assert not refused.ok
+    assert refused.content == f"error: no image {sibling_img['id']} in this conversation or a thread it spawned"
+
+
+async def test_artifact_recall_handler_reports_bad_ids_without_raising(app):
+    from loom.tools.native.misc import artifact_recall_handler
+    from loom.tools.registry import ToolContext
+
+    ctx = ToolContext(app=app, conversation=app.conversation(app.desk_id()), call_id="c-bad", event_id=1)
+
+    missing_text = await artifact_recall_handler(ctx, {"id": "NOPE"})
+    assert not missing_text.ok and missing_text.content.startswith("error: no artifact NOPE")
+
+    missing_image = await artifact_recall_handler(ctx, {"id": "img_not_a_real_id"})
+    assert not missing_image.ok
+    assert "img_not_a_real_id" in missing_image.content
+
+    row = app.artifacts.spill(app.desk_id(), None, "hi")
+    Path(row["path"]).unlink()
+    missing_file = await artifact_recall_handler(ctx, {"id": row["id"]})
+    assert not missing_file.ok and "file is missing" in missing_file.content

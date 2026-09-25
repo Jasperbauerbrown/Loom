@@ -36,18 +36,18 @@ async def run(app, ctx, name, args):
 async def test_fs_read_returns_the_whole_small_file(app, ctx, project):
     (project / "a.txt").write_text("one\ntwo\nthree", encoding="utf-8")
     result = await run(app, ctx, "fs_read", {"path": str(project / "a.txt")})
-    assert result.ok and result.content == "one\ntwo\nthree"
+    assert result.ok and result.content == "1\tone\n2\ttwo\n3\tthree"  # numbered by default
     assert result.meta["lines"] == 3
 
 
 async def test_fs_read_pages_with_a_footer(app, ctx, project):
     (project / "big.txt").write_text("\n".join(f"line {i}" for i in range(100)), encoding="utf-8")
     result = await run(app, ctx, "fs_read", {"path": str(project / "big.txt"), "offset": 0, "limit": 10})
-    assert result.content.startswith("line 0")
+    assert result.content.startswith("1\tline 0")
     assert "[lines 1–10 of 100; fs_read(path, offset=10) for more]" in result.content
 
     rest = await run(app, ctx, "fs_read", {"path": str(project / "big.txt"), "offset": 10, "limit": 10})
-    assert rest.content.startswith("line 10")
+    assert rest.content.startswith("11\tline 10")
 
 
 async def test_fs_read_reports_missing_binary_and_directories(app, ctx, project):
@@ -159,6 +159,7 @@ async def test_fs_write_refuses_to_create_directories_when_told_not_to(app, ctx,
 async def test_fs_edit_replaces_a_unique_occurrence_and_shows_a_diff(app, ctx, project):
     target = project / "a.py"
     target.write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")
+    await run(app, ctx, "fs_read", {"path": str(target)})  # the stale-write guard wants a read first
     result = await run(app, ctx, "fs_edit", {"path": str(target), "old": "b = 2", "new": "b = 22"})
     assert result.ok and "1 replacement" in result.content
     assert "-b = 2" in result.content and "+b = 22" in result.content
@@ -168,6 +169,7 @@ async def test_fs_edit_replaces_a_unique_occurrence_and_shows_a_diff(app, ctx, p
 async def test_fs_edit_requires_uniqueness_and_says_how_many_it_found(app, ctx, project):
     target = project / "a.py"
     target.write_text("x\nx\nx\n", encoding="utf-8")
+    await run(app, ctx, "fs_read", {"path": str(target)})
     result = await run(app, ctx, "fs_edit", {"path": str(target), "old": "x", "new": "y"})
     assert not result.ok and "appears 3 times" in result.content
     assert target.read_text(encoding="utf-8") == "x\nx\nx\n"
@@ -180,6 +182,7 @@ async def test_fs_edit_requires_uniqueness_and_says_how_many_it_found(app, ctx, 
 async def test_fs_edit_reports_text_it_cannot_find(app, ctx, project):
     target = project / "a.py"
     target.write_text("hello", encoding="utf-8")
+    await run(app, ctx, "fs_read", {"path": str(target)})
     result = await run(app, ctx, "fs_edit", {"path": str(target), "old": "goodbye", "new": "x"})
     assert not result.ok and "not found" in result.content
 

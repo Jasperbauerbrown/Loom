@@ -25,6 +25,7 @@ DEFAULT_TOOL_POLICIES: dict[str, str] = {
     "fs_search": "allow",
     "fs_write": "allow",
     "fs_edit": "allow",
+    "fs_patch": "allow",
     "shell": "classify",
     "process": "allow",
     "http": "classify",
