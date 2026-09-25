@@ -20,12 +20,20 @@ GET is reversible spends a generation to reach a foregone conclusion. It only ev
 relaxes `classify`, never an explicit `ask`, and nothing static can turn a row into a
 denial.
 
+A second grant-only shortcut is the person's, not the rules': a `call_grants` row
+("allow this call for the conversation", migration 0005) allows one tool with exactly
+one set of arguments, in one conversation. The dispatcher consults it after the modes
+above resolve to something other than `allow` and after the fs guard has had its say,
+so a protected path still asks and nothing is ever *denied* by a grant. The key is the
+conversation id alone: a thread's grant never reaches its parent or the desk.
+
 `policy_key` — the row that decided — travels with an approval so `allow_always`
 updates the rule that actually asked, not a broader one.
 """
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from .. import db
@@ -176,3 +184,24 @@ def list_policies(app: Any) -> list[dict[str, Any]]:
         )
     out.sort(key=lambda p: (p["source"], p["tool"]))
     return out
+
+
+def args_hash(args: dict[str, Any] | None) -> str:
+    """The identity of one call's arguments: sha256 of the canonical (sorted-key) JSON.
+    `db.dumps` is the same encoding the row stores, so a grant and the call it came
+    from hash alike."""
+    return hashlib.sha256(db.dumps(args or {}).encode("utf-8")).hexdigest()
+
+
+def conversation_grant(app: Any, conversation_id: str, tool: str, args: dict[str, Any] | None) -> str | None:
+    """"Allow this call for the conversation" (`call_grants`, migration 0005): the reason
+    string when this conversation has granted this tool with exactly these arguments,
+    else None. Nothing inherits — the key is the conversation id, so a thread's grant is
+    invisible to its parent and to the desk."""
+    row = app.db.execute(
+        "SELECT approval_id FROM call_grants WHERE conversation_id=? AND tool=? AND args_hash=?",
+        (conversation_id, tool, args_hash(args)),
+    ).fetchone()
+    if row is None:
+        return None
+    return f"allowed for this conversation (approval {row['approval_id']})"

@@ -1,10 +1,11 @@
 """The native-connector contract (03 §10.2, charter §5.8 tier 3).
 
-A connector is one concept with up to three facets:
+A connector is one concept with up to four facets:
 
     tools    capabilities the model may call        (`<connector>_<tool>`)
     events   things that happen and want a turn     (→ the event router, 03 §11.2)
     surface  another way for the user to talk       (the adapter contract, 03 §12.3)
+    hooks    a look at every tool call              (→ `loom.tools.hooks`, 03 §9.3 step 4½)
 
 A package under `<repo>/connectors/<name>/` exports `CONNECTOR = Connector(...)`. The
 contract is deliberately small: the assistant is expected to be able to write one for
@@ -21,8 +22,32 @@ CONNECTOR = Connector(
     events=SomeEventSource(),   # optional: .events(config) -> async iterator of Event
     surface=None,               # optional: .start(api, config) / .stop()
     setup=None,                 # optional: config -> a setup item's fields, or None
+    before_tool=None,           # optional: see below
+    after_tool=None,            # optional: see below
 )
+
+
+async def before_tool(api, config, ctx_summary, tool_name, args) -> dict | None:
+    "Called once a call has been allowed and before it executes."
+    return {"ask": True, "reason": "production database", "notes": ["read-only today"]}
+
+
+async def after_tool(api, config, ctx_summary, tool_name, args, result) -> dict | None:
+    "Called on every executed result, including one the runner ran after an approval."
+    return {"notes": ["remember to update the runbook"]}
 ```
+
+A hook **annotates or asks**; it can never deny (`{"decision": "deny"}` is logged and
+counted as an ask at most) and it can never change what executes: `args` is a copy and
+`ctx_summary` a plain dict built from the `ToolContext`, never the live object. A
+before-hook sees `{{secret:NAME}}` placeholders in `args`, never a substituted secret —
+substitution is step 5 of the dispatcher, after the hooks. Both may be `async def` or a
+plain function; each call is bounded by `loom.tools.hooks.HOOK_TIMEOUT_S`, and one that
+raises, times out or answers the wrong type is logged and ignored. `None` or `{}` means
+nothing to say, and unknown keys are ignored.
+
+`api` is the same `SurfaceApi` a surface gets: one is created per connector when it
+loads and closed when it is torn down.
 """
 
 from __future__ import annotations
@@ -62,6 +87,12 @@ class Surface(Protocol):
     async def stop(self) -> None: ...
 
 
+#: `before_tool(api, config, ctx_summary, tool_name, args)` → `{"ask", "reason", "notes"}`
+BeforeToolHook = Callable[..., Any]
+#: `after_tool(api, config, ctx_summary, tool_name, args, result)` → `{"notes"}`
+AfterToolHook = Callable[..., Any]
+
+
 @dataclass
 class Connector:
     name: str
@@ -71,6 +102,8 @@ class Connector:
     events: EventSource | None = None
     surface: Surface | None = None
     setup: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None
+    before_tool: BeforeToolHook | None = None  # annotate or ask before a call executes
+    after_tool: AfterToolHook | None = None  # annotate an executed result
 
     def tools_for(self, config: dict[str, Any]) -> list[Tool]:
         """Tools may depend on the config (one per configured account, say)."""
@@ -86,7 +119,22 @@ class Connector:
             out.append("events")
         if self.surface is not None:
             out.append("surface")
+        if self.before_tool is not None or self.after_tool is not None:
+            out.append("hooks")
         return out
+
+
+@dataclass
+class ConnectorHooks:
+    """One loaded connector's tool hooks, as `Loader.hooks()` hands them to
+    `loom.tools.hooks`. Only loaded connectors have a record: disabling or reloading
+    one takes its hooks with it."""
+
+    name: str
+    api: "SurfaceApi"
+    config: dict[str, Any] = field(default_factory=dict)
+    before: BeforeToolHook | None = None
+    after: AfterToolHook | None = None
 
 
 class SurfaceApi:
@@ -197,8 +245,11 @@ def missing_required(schema: dict[str, Any], config: dict[str, Any]) -> list[str
 
 
 __all__ = [
+    "AfterToolHook",
+    "BeforeToolHook",
     "Connector",
     "ConnectorError",
+    "ConnectorHooks",
     "Event",
     "EventSource",
     "Surface",

@@ -4,7 +4,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { pendingApprovals, store, useStore } from "../lib/store";
-import type { Approval } from "../lib/types";
+import type { Approval, ApprovalDecision } from "../lib/types";
 import { navigate } from "../lib/router";
 import { localTime, relativeTime } from "../lib/format";
 import { Button, Card, Collapsible, Empty, JsonBlock } from "../components/ui";
@@ -13,14 +13,14 @@ function ApprovalCard({ approval }: { approval: Approval }) {
   const conversation = useStore((s) => s.conversations[approval.conversation_id], Object.is);
   // Widening the roots is a deliberate, second click: unchecked by default (2026-09-21).
   const [addRoot, setAddRoot] = useState(false);
-  const [busy, setBusy] = useState<"allow" | "deny" | "allow_always" | null>(null);
+  const [busy, setBusy] = useState<ApprovalDecision | null>(null);
   const rootToAdd = approval.options?.add_root;
 
   useEffect(() => {
     if (!conversation) void store.loadConversation(approval.conversation_id);
   }, [approval.conversation_id, conversation]);
 
-  async function decide(decision: "allow" | "deny" | "allow_always") {
+  async function decide(decision: ApprovalDecision) {
     setBusy(decision);
     await store.guard(() =>
       api.decideApproval(approval.id, decision, decision === "allow_always" && rootToAdd ? addRoot : undefined),
@@ -77,6 +77,14 @@ function ApprovalCard({ approval }: { approval: Approval }) {
       <div className="flex justify-end gap-2">
         <Button variant="primary" size="sm" disabled={busy !== null} onClick={() => void decide("allow")}>
           Allow
+        </Button>
+        <Button
+          size="sm"
+          disabled={busy !== null}
+          title={`Run ${approval.tool} with exactly these arguments without asking again, in this conversation only.`}
+          onClick={() => void decide("allow_conversation")}
+        >
+          Allow for this conversation
         </Button>
         <Button size="sm" disabled={busy !== null} onClick={() => void decide("allow_always")}>
           Allow always

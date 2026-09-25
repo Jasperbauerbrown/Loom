@@ -1,19 +1,26 @@
 """Approvals: a permission question as durable, resumable state (02 §4, 03 §9.3).
 
 When the dispatcher cannot allow a call by itself it writes an `approvals` row, marks
-the conversation `waiting_approval`, emits `approval.requested`, and the turn ends. The
-question survives a restart because it is a row, not a future. When the user answers,
-`decide` records the answer, applies any "always" consequence, and wakes the
+the conversation `waiting_approval`, emits `approval.requested`, posts one notification
+item so a person away from the screen is told, and the turn ends. The question survives
+a restart because it is a row, not a future. When the user answers, `decide` records the
+answer, applies any "always" consequence, dismisses that notification, and wakes the
 conversation so the runner resumes from the persisted call.
+
+Three answers allow, at widening scope: `allow` this once; `allow_conversation`, which
+writes a `call_grants` row so this tool with exactly these arguments runs again without
+asking *in this conversation only* (03 §9.3, TD audit F1); `allow_always`, which edits
+the rule — the policy row that asked, or the root the guard suggested.
 
 Arguments are stored exactly as the model sent them — placeholders included. Secrets are
 substituted at step 5, after this point, so a value can never reach a row, an event or
 the UI.
 
 One internal action rides the same road: removing a protected path is itself an `ask`
-(03 §15.3). It is recorded as a call to the pseudo-tool `protected_paths_remove`; on
-`allow` this module performs the removal and does not wake anything, because no turn is
-waiting on it.
+(03 §15.3). It is recorded as a call to the pseudo-tool `protected_paths_remove`; on any
+allowing answer this module performs the removal and does not wake anything, because no
+turn is waiting on it. `allow_conversation` on it writes a grant nothing will ever read
+— the dispatcher never sees this pseudo-tool — and is not special-cased for that.
 """
 
 from __future__ import annotations
@@ -21,7 +28,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .. import db
+from .. import db, items
 from ..ids import ulid
 from ..models.types import ToolCall
 from . import fs_guard, permissions
@@ -29,7 +36,9 @@ from .registry import ToolContext
 
 log = logging.getLogger(__name__)
 
-DECISIONS = ("allow", "deny", "allow_always")
+# The three allowing answers in widening order — once, this conversation, always — and
+# the one denying answer. Anything else fails closed.
+DECISIONS = ("allow", "allow_conversation", "deny", "allow_always")
 INTERNAL_TOOL = "protected_paths_remove"
 
 
@@ -84,13 +93,28 @@ def create(
     )
     row = _row(app, approval_id)
     app.bus.emit("approval.requested", row, conversation_id)
+    # A pending card in a screen nobody is looking at is a question nobody hears: one
+    # notification item on the interrupt path, resolved when the answer comes (F1).
+    where = str(ctx.conversation.get("title") or ctx.conversation.get("goal") or conversation_id)
+    items.post(
+        app,
+        "notification",
+        f"Approval needed: {call.name}",
+        f"{where}: {reason}" if reason else where,
+        conversation_id=conversation_id,
+        source=f"approval:{approval_id}",
+        action={"kind": "open_conversation", "conversation_id": conversation_id},
+        notify=True,
+    )
     events.set_status(app, conversation_id, "waiting_approval")
     return approval_id
 
 
 def decide(app: Any, approval_id: str, decision: str, add_root: bool = False) -> dict[str, Any]:
-    """Answer an approval. `allow_always` widens exactly one rule: the root the guard
-    suggested (when `add_root`), otherwise the policy row that asked."""
+    """Answer an approval. `allow_conversation` widens nothing static: it writes one
+    `call_grants` row, so this tool with exactly these arguments runs again in this
+    conversation and nowhere else. `allow_always` widens exactly one rule: the root the
+    guard suggested (when `add_root`), otherwise the policy row that asked."""
     if decision not in DECISIONS:
         raise ValueError(f"unknown decision {decision!r}: expected one of {list(DECISIONS)}")
     row = _row(app, approval_id)
@@ -100,14 +124,20 @@ def decide(app: Any, approval_id: str, decision: str, add_root: bool = False) ->
         raise AlreadyDecided(f"approval {approval_id} is already {row['status']}")
 
     now = db.now_iso()
-    status = "allowed" if decision in ("allow", "allow_always") else "denied"
+    status = "denied" if decision == "deny" else "allowed"
     app.db.execute(
         "UPDATE approvals SET status=?, decision=?, decided_at=? WHERE id=?",
         (status, decision, now, approval_id),
     )
 
     options = row["options"]
-    if decision == "allow_always":
+    if decision == "allow_conversation":
+        app.db.execute(
+            "INSERT OR IGNORE INTO call_grants(conversation_id, tool, args_hash, approval_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (row["conversation_id"], row["tool"], permissions.args_hash(row["args"]), approval_id, now),
+        )
+    elif decision == "allow_always":
         suggested = options.get("add_root")
         if suggested and add_root:
             fs_guard.add_root(app, str(suggested), added_by=f"approval:{approval_id}")
@@ -117,6 +147,11 @@ def decide(app: Any, approval_id: str, decision: str, add_root: bool = False) ->
                 permissions.set_policy(app, str(key), "allow")
             else:
                 log.info("allow_always on %s: no policy row written (not a registered tool)", row["tool"])
+
+    # The question is answered, so its board entry is done: dismiss, not "seen" — the
+    # now board hides dismissed rows and keeps seen ones.
+    for item in items.by_source(app, f"approval:{approval_id}"):
+        items.dismiss(app, item["id"])
 
     updated = _row(app, approval_id) or row
     app.bus.emit("approval.resolved", updated, row["conversation_id"])

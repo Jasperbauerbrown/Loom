@@ -36,6 +36,9 @@ export interface Conversation {
   archived_at: string | null;
   /** The daily-log note holding the thread's walkthrough section, set by finish. */
   walkthrough: string | null;
+  /** The isolated git checkout this thread works in (03 §6.7), on branch `loom/<id>`;
+   *  null unless it was spawned with isolation="worktree". Archiving releases it. */
+  worktree: string | null;
   /** optional: doing-line from the thread's status, when the API provides it */
   status_line?: string | null;
 }
@@ -101,6 +104,10 @@ export interface ToolResult {
   ts?: string;
 }
 
+/** The answers an approval takes, widening left to right: once, this conversation only
+ *  (tool + exactly these arguments), the rule itself. Mirrors `approvals.DECISIONS`. */
+export type ApprovalDecision = "allow" | "allow_conversation" | "allow_always" | "deny";
+
 export interface Approval {
   id: string;
   conversation_id: string;
@@ -111,7 +118,7 @@ export interface Approval {
   reason: string;
   options: { add_root?: string } & Record<string, unknown>;
   status: "pending" | "allowed" | "denied";
-  decision: string | null;
+  decision: ApprovalDecision | null;
   decided_at: string | null;
   created_at: string;
 }

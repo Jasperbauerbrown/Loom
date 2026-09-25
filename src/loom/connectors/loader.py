@@ -9,7 +9,7 @@ Row status, one per class:
 
     disabled        `enabled = 0`
     needs_config    enabled, but a required setting in `config_schema` has no value
-    loaded          tools registered, event task running, surface started
+    loaded          tools registered, event task running, surface started, hooks live
     error           the package would not import, or its event task keeps failing
 
 A discovered connector starts `enabled = 1`: a package the user put in `connectors/` is
@@ -34,7 +34,7 @@ from typing import Any
 
 from .. import db
 from ..bootstrap import repo_root
-from .base import Connector, ConnectorError, Event, SurfaceApi, missing_required, validate_config
+from .base import Connector, ConnectorError, ConnectorHooks, Event, SurfaceApi, missing_required, validate_config
 from .mcp.manager import post_setup_item, tools_list, write_connector_note
 
 log = logging.getLogger(__name__)
@@ -50,7 +50,14 @@ class Loader:
         self.connectors: dict[str, Connector] = {}  # name → the imported CONNECTOR
         self.modules: dict[str, ModuleType] = {}
         self.surfaces: dict[str, tuple[Any, SurfaceApi]] = {}
+        self._hooks: dict[str, ConnectorHooks] = {}  # name → its tool hooks, while loaded
         self._attempts: dict[str, int] = {}
+
+    def hooks(self) -> list[ConnectorHooks]:
+        """The tool hooks of every loaded connector, in name order, for
+        `loom.tools.hooks` (03 §9.3 step 4½). Sorted so the notes a model sees come in
+        a stable order whatever the load order was."""
+        return [self._hooks[name] for name in sorted(self._hooks)]
 
     # -- discovery ---------------------------------------------------------------
     def dirs(self) -> list[Path]:
@@ -156,7 +163,8 @@ class Loader:
 
     async def apply(self, name: str) -> dict[str, Any] | None:
         """Bring one connector into the state its row asks for. The only path that
-        registers tools, starts the event task and starts the surface."""
+        registers tools, starts the event task, starts the surface and registers the
+        tool hooks."""
         row = self.row(name)
         if row is None:
             return None
@@ -190,6 +198,15 @@ class Loader:
             api = SurfaceApi(self.app, name)
             self.surfaces[name] = (connector.surface, api)
             self.app.spawn(f"connector:{name}:surface", self._surface(name, connector.surface, api, config))
+
+        if connector.before_tool is not None or connector.after_tool is not None:
+            self._hooks[name] = ConnectorHooks(
+                name=name,
+                api=SurfaceApi(self.app, name),  # its own, closed at teardown
+                config=config,
+                before=connector.before_tool,
+                after=connector.after_tool,
+            )
 
         if connector.setup is not None:
             try:
@@ -231,6 +248,9 @@ class Loader:
             task = self.app.tasks.get(f"connector:{name}:{suffix}")
             if task is not None and not task.done():
                 task.cancel()
+        record = self._hooks.pop(name, None)
+        if record is not None:
+            record.api.close()
         entry = self.surfaces.pop(name, None)
         if entry is not None:
             surface, api = entry

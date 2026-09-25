@@ -26,6 +26,8 @@ CONNECTOR = Connector(
     tools=[Tool(...)],          # or a callable: config -> list[Tool]
     events=MySource(),          # optional
     surface=MySurface(),        # optional
+    before_tool=my_before,      # optional: hook every tool call before it runs
+    after_tool=my_after,        # optional: annotate every result
     setup=lambda config: None,  # optional: {"title", "body"} when the user must act
 )
 ```
@@ -80,6 +82,26 @@ class MySurface:
 user_id)`, `subscribe(callback)` (every event of 03 §12.2; returns an unsubscribe),
 `answer_approval(id, decision)`, `list_conversations()`. Render what you understand and
 ignore the rest.
+
+### hooks
+
+```python
+async def my_before(api, config, ctx_summary, tool_name, args) -> dict | None:
+    return {"ask": True, "reason": "…", "notes": ["…"]}   # any key optional
+
+async def my_after(api, config, ctx_summary, tool_name, args, result) -> dict | None:
+    return {"notes": ["…"]}
+```
+
+A before-hook runs once the dispatcher has already allowed the call (03 §9.3 step
+4½) and may annotate it or turn the allow into an ask — never deny; a returned
+`deny` is logged and counted as an ask. An after-hook annotates the result. Hooks
+read copies (`args`, `config`, `result` = ok/content/meta) and a plain
+`ctx_summary` dict (conversation id/kind/goal, call id, intent, request text, policy,
+decision, reason); they see `{{secret:NAME}}` placeholders, never secrets, and cannot
+change what executes. One that raises, times out (`HOOK_TIMEOUT_S`, 10 s) or returns
+the wrong type is logged and skipped. Notes reach the model on the result's text as
+`[<connector>] <note>` lines. Declaring either adds `hooks` to the connector's facets.
 
 ### secrets
 

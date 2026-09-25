@@ -5,6 +5,9 @@ rethinks, tool `item_post`.
     items.post(app, kind, title, body="", conversation_id=None, source="", action=None,
                notify=False) -> row
     items.seen(app, id) / items.dismiss(app, id) / items.unseen(app) / items.get(app, id)
+    items.by_source(app, source) -> rows a writer posted under one `source` string, so
+        it can resolve its own item later (an approval dismisses its notification when
+        it is answered)
 
 `notify=True` additionally emits a `notification` event (the *interrupt* policy);
 `post` alone is the *queue* policy. Rows are written before the event is emitted.
@@ -73,6 +76,17 @@ def list_items(app, unseen_only: bool = False, include_dismissed: bool = False, 
 
 def unseen(app) -> list[dict[str, Any]]:  # type: ignore[no-untyped-def]
     return list_items(app, unseen_only=True)
+
+
+def by_source(app, source: str) -> list[dict[str, Any]]:  # type: ignore[no-untyped-def]
+    """Every item posted under one `source` string, oldest first, dismissed ones
+    included: how a writer finds the row it posted so it can resolve it."""
+    out = []
+    for r in app.db.execute("SELECT * FROM items WHERE source=? ORDER BY id", (source,)):
+        d = db.row_to_dict(r)
+        d["action"] = db.loads(d["action"], {})  # type: ignore[index]
+        out.append(d)
+    return out  # type: ignore[return-value]
 
 
 def _mark(app, item_id: str, column: str) -> dict[str, Any] | None:  # type: ignore[no-untyped-def]

@@ -5,6 +5,7 @@ import type {
   ProcessLogPage,
   ProcessRow,
   Approval,
+  ApprovalDecision,
   Artifact,
   Connector,
   Conversation,
@@ -156,6 +157,9 @@ export const api = {
     preset?: string;
     role?: string;
     parent_id?: string;
+    /** "worktree": the thread works in its own git checkout branched from `isolation_root` (the first root by default) */
+    isolation?: "none" | "worktree";
+    isolation_root?: string;
   }) => post<Conversation>("/conversations", body),
   /** Title, preset, step budget or the pinned-notes list; a missing note is a 400. */
   updateConversation: (
@@ -225,7 +229,7 @@ export const api = {
 
   // -- approvals / items -----------------------------------------------------
   approvals: (params?: { status?: string }) => get<Approval[]>("/approvals", params),
-  decideApproval: (id: string, decision: "allow" | "deny" | "allow_always", add_root?: boolean) =>
+  decideApproval: (id: string, decision: ApprovalDecision, add_root?: boolean) =>
     post<Approval>(`/approvals/${id}`, { decision, ...(add_root ? { add_root } : {}) }),
   items: (params?: { unseen?: boolean }) => get<Item[]>("/items", params),
   seenItem: (id: string) => post<Item>(`/items/${id}/seen`),

@@ -5,7 +5,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, imageUrl } from "../lib/api";
 import { parseToolCalls, store, useStore } from "../lib/store";
-import type { ConvEvent, ImageRef, QueuedMessage, ToolCall } from "../lib/types";
+import type { ApprovalDecision, ConvEvent, ImageRef, QueuedMessage, ToolCall } from "../lib/types";
 import { argsSummary, cls, compactionLabel, localTime, statusLabel, statusTitle, truncate } from "../lib/format";
 import { Badge, Button, Collapsible, JsonBlock, Spinner } from "./ui";
 import { Markdown } from "./Markdown";
@@ -123,7 +123,7 @@ function ApprovalCard({ id }: { id: string }) {
   const [busy, setBusy] = useState(false);
   if (!approval || approval.status !== "pending") return null;
   const root = approval.options?.add_root;
-  const decide = async (decision: "allow" | "deny" | "allow_always") => {
+  const decide = async (decision: ApprovalDecision) => {
     setBusy(true);
     // The backend widens the roots only on allow_always; the other decisions ignore it.
     await store.guard(() =>
@@ -154,6 +154,14 @@ function ApprovalCard({ id }: { id: string }) {
       <div className="mt-2 flex gap-2">
         <Button size="sm" variant="primary" disabled={busy} onClick={() => void decide("allow")}>
           Allow
+        </Button>
+        <Button
+          size="sm"
+          disabled={busy}
+          title={`Run ${approval.tool} with exactly these arguments without asking again, in this conversation only.`}
+          onClick={() => void decide("allow_conversation")}
+        >
+          Allow for this conversation
         </Button>
         <Button size="sm" disabled={busy} onClick={() => void decide("allow_always")}>
           Allow always
