@@ -140,6 +140,7 @@ choice. There is no setup screen and no wizard — nothing gates the app (decide
   artifacts/<conv_id>/proc_<id>.log    # background process output (§9.6)
   secrets.json                # fallback store only (§4.5)
   releases/<id>/              # git worktrees of the assistant's own repo (§15)
+  worktrees/<conv_id>/        # a thread's isolated checkout (§6.7 isolation), branch loom/<conv_id>
   current  previous           # release pointers (`previous` is what rollback returns to)
   snapshots/<ts>/state.db     # pre-promotion snapshots
   logs/backend.log            # rotating
@@ -171,8 +172,10 @@ conversations(id TEXT PK /*ULID*/, kind TEXT /*desk|thread*/, parent_id TEXT,
               step_budget INT, summary TEXT, summary_cutoff INT /*events.id*/,
               token_factor REAL, maint_watermark INT /*events.id*/,
               created_at, updated_at, finished_at, archived_at,
-              walkthrough TEXT /*log/ note the finish walkthrough landed in*/)
+              walkthrough TEXT /*log/ note the finish walkthrough landed in*/,
+              worktree TEXT /*isolated checkout path, NULL when none*/)
               -- 0002 (2026-09-22): pinned_notes + walkthrough replaced scope_note
+              -- 0006 (2026-09-24): worktree (§6.7 isolation)
 
 events(id INTEGER PK, conversation_id TEXT, kind TEXT
        /*user|assistant|tool_call|tool_result|thinking|system|compaction|status*/,
@@ -186,6 +189,13 @@ inbox(id INTEGER PK, conversation_id TEXT, source TEXT
 approvals(id TEXT PK, conversation_id TEXT, event_id INT /*the tool_call*/,
           tool TEXT, args TEXT, reason TEXT, options TEXT /*json e.g. add_root*/,
           status TEXT /*pending|allowed|denied*/, decided_at TEXT, created_at TEXT)
+          -- decision: allow | allow_conversation | allow_always | deny (§9.3)
+call_grants(conversation_id TEXT, tool TEXT, args_hash TEXT /*sha256 of db.dumps(args)*/,
+            approval_id TEXT, created_at TEXT, PK(conversation_id, tool, args_hash))
+            -- 0005 (2026-09-24): "allow this call for the conversation", §9.3
+file_reads(conversation_id TEXT, path TEXT /*normalised absolute*/, mtime_ns INT, size INT,
+           seen_at TEXT, wrote INT, PK(conversation_id, path))
+           -- 0004 (2026-09-24): the stale-write ledger behind fs_write/fs_edit/fs_patch, §9.2
 
 items(id TEXT PK, kind TEXT /*notification|setup|thread_event|schedule_result*/,
       title TEXT, body TEXT, conversation_id TEXT, source TEXT, action TEXT /*json*/,
@@ -424,7 +434,8 @@ id). So a message is never lost and never duplicated.
 0  lock conversation (per-id asyncio lock; if held → return)
 1  repair: if the transcript ends with tool_call(s) lacking tool_result:
      - if an approval for it is pending → return (wait)
-     - if approval decided → execute (or synthesise "denied by user") → persist results
+     - if approval decided → execute (or synthesise "denied by user") → persist results,
+       and the turn resumes at step N+1: N is the `tool_call` event's `meta.step`
      - else synthesise "interrupted — result lost" results               (takeaways §2)
 2  claim inbox → if empty and no repair happened → unlock, return
 3  status=running; ctx = assemble(conv, claimed)                            (§7)
@@ -437,7 +448,8 @@ id). So a message is never lost and never duplicated.
      f  dispatch tool calls                                                  (§9.3)
           read-only calls run concurrently (gather, results in call order);
           others sequentially; an `ask` → persist approval, status=waiting_approval,
-          emit approval.requested, unlock, RETURN (resume re-enters at step 1)
+          emit approval.requested, unlock, RETURN (resume re-enters at step 1 of the
+          turn outline, at step N+1 of the budget)
      g  persist tool_result events; append to ctx (bounded, spilled)
      h  claim inbox mid-turn → append as user messages
      i  brakes: in-flight estimate ≥ limit → force compact + rebuild ctx;
@@ -456,6 +468,31 @@ steps of the *same* turn, tail-capped at `reasoning_replay_max_chars` (4,000: th
 characters behind an elision marker, the part that led to the step's calls, never the
 head where a degenerate loop's seed sits); never
 replayed across turns; counted at zero in occupancy.
+
+**A resumed turn keeps its step count** (2026-09-24). An approval pause used to re-enter
+at step 1, so a thread 65 steps into a 100-step budget woke with a fresh 100 ("I have
+limited steps" → "I have plenty of steps", tower-defense run audit F6). The count is
+read back from persisted state — the dangling `tool_call` event's `meta.step`, which the
+runner already writes — so it survives a restart with no column and no migration. The
+distinction the repair branches already draw is the rule: a turn *paused* (approval
+pending or decided) resumes with its count, a turn whose results were lost to a restart
+starts a new one. The thread's `[steps remaining: N]` block is right on the first step
+after a resume, because the loop derives it from the same counter.
+
+**Suspend is a named event** (2026-09-24). Each model call is measured with both
+`time.monotonic()` and `time.time()`; wall clock far ahead of monotonic means the machine
+was in standby across the call (~60 minutes of one 136-minute run). When such a call
+fails with a drift over `SUSPEND_DRIFT_S` (60 s), the runner writes the system event
+`system resumed after N min; retrying` and
+retries, without spending a `model_error_retries` attempt and without reporting a
+provider idle-timeout, bounded to `SUSPEND_RETRIES` (2) per call. On a platform whose
+`monotonic` itself counts suspended time the drift is zero and the mechanism is inert.
+
+**Intent** (2026-09-24). Every `ToolContext` carries `intent` (§9.1): the step's own
+assistant text when it has one, else the last assistant text of this turn, else the last
+assistant text in the transcript, else empty. On a repair it is the persisted `tool_call`
+event's `meta.text`, so a call executed after an approval is classified against the
+preamble it was made with, not against whatever the person last said.
 
 ### 6.4 Budgets and brakes
 - `step_budget`: desk 25, threads 60 (settings). Threads see
@@ -514,7 +551,8 @@ images, an ongoing effort — and it exists in Loom as an ordinary note the mode
 note, and a thread without one was a "task". Every thread is now that.
 - **Spawn** (`conversation.create`): payload = `goal`, optional `excerpt` (model-selected
   text from the parent), `notes` (vault paths to pin; each must exist), `roots`, `preset`
-  override (validated against enabled presets), `title`. `depth = parent.depth + 1`;
+  override (validated against enabled presets), `title`, `isolation`/`isolation_root`
+  (below). `depth = parent.depth + 1`;
   refused above `max_thread_depth` (default 3). Row written and `conversation.created`
   emitted **before** the first turn is scheduled. *When* to spawn is prose, not
   mechanism (`system.md`, `kind-desk.md`; decided 2026-09-22): the test is whether the
@@ -545,6 +583,16 @@ note, and a thread without one was a "task". Every thread is now that.
   to the daily note `log/YYYY-MM-DD.md` (created on first use), records that note's path
   in `conversations.walkthrough`, sets status `done`, emits to parent. Linking the
   section from a project note is the model's knowledge work, not the harness's.
+- **Finish delivery** (2026-09-24): what reaches the spawner is the summary first, then
+  the walkthrough section just filed (its path and its text, capped at 8,000 chars with a
+  marker naming `knowledge_read`), then every artifact and image the thread produced as
+  an id with a caption — the artifact's first head line, the image's tool name and result
+  line. `conversation/tools.py` builds it (`evidence_block`, `produced`) and puts it on
+  `extras["finish"]["delivery"]`; the runner posts that as the parent's inbox row and
+  keeps the bare summary for the now-board item, which must stay short. The spawner's
+  judgment is *fed*, not pointed at: the 2026-09-20 decision made judgment the mechanism,
+  but the walkthrough was filed and never delivered, so the desk re-derived 43 minutes of
+  a thread's work it could have read (tower-defense run audit §3).
 - **User in a thread**: the same surface calls as the desk; user messages set priority 0
   for that turn.
 - **Turn end without finish** (decided 2026-09-20): a thread turn that ends with plain
@@ -557,8 +605,27 @@ note, and a thread without one was a "task". Every thread is now that.
 - **Sub-threads**: a thread may spawn threads down to `max_thread_depth` for independent
   parts of a larger effort, each with its own goal, status and pins. Nothing is shared
   by construction, so nothing needs refusing.
+- **Isolation** (`isolation="worktree"`, 2026-09-24; `conversation/worktree.py`): the
+  thread gets its own `git worktree` checkout of the repository holding `isolation_root`
+  (one of its `roots`; the first root by default), under `APP_HOME/worktrees/<thread>` on
+  branch `loom/<thread>`, recorded in `conversations.worktree`. The checkout **replaces**
+  that root and leads the list, so relative paths resolve inside it and the live checkout
+  is simply not among the paths the thread may touch — isolation from the tree it was
+  branched from and from every sibling, by construction rather than by refusal. The
+  harness block names the path and the branch (§7 slot [6]) and the branch is how the
+  work comes back. Failure classes are defined refusals, never a silent downgrade: not a
+  repository, a repository with no commit, no root at all, an `isolation_root` that is
+  not one of the roots, or git refusing. Ordering: the row is written first (persist
+  before act), the checkout second, the `worktree`/`roots` update third; a failed
+  `worktree add` deletes the row it just wrote — nothing has been emitted or posted, so
+  nothing has seen it — and refuses the spawn. This is the general mechanism §15.1's
+  self-modification worktree is one use of (backlog audit #15).
 - **Archival**: maintenance archives `done`/`failed` threads idle for
   `thread_archive_days` (14). Archived threads stay searchable (FTS) and reopenable.
+  Archiving also *releases* an isolated checkout (`worktree.release`, the one codepath
+  the archive route and the maintenance pass share): a clean worktree is removed and the
+  column cleared, a dirty one is kept — uncommitted work is the person's — and either way
+  the outcome is a `system` event in the thread's own transcript and the branch survives.
 
 ## 7. Context assembly (`assemble`, the only builder)
 
@@ -644,11 +711,11 @@ for more. Never inject `core/` here (already in slot [3]).
 |---|---|---|
 | `knowledge_search` | `query`, `type?`, `k=8` | fused: FTS5 rank + cosine, RRF; returns path, title, snippet |
 | `knowledge_read` | `path`, `offset?`, `limit?`, `pin?` | full note or line slice; one page of `tool_output_cap` chars with a paging footer, never spilled (`paged`) |
-| `knowledge_write` | `path`, `op: create|append|replace|rethink`, `content`, `old?` (replace), `frontmatter?` | `replace` = exact `old`→`content` (like fs_edit); `rethink` = whole-body rewrite, requires `reason`, logged as a `knowledge.rethink` item on the now board; stamps `modified`; rejects relative dates; commits to git (`loom: <op> <path>`) |
+| `knowledge_write` | `path`, `op: create|append|replace|rethink`, `content`, `old?` + `new?` (replace), `frontmatter?` | `replace` = exact `old`→`content` (like fs_edit), and `new` is accepted as the name for `content` there, since old→new is how the op reads and how a model sends it (2026-09-24); `content` is therefore checked in the handler, not by the schema's `required`; `rethink` = whole-body rewrite, requires `reason`, logged as a `knowledge.rethink` item on the now board; stamps `modified`; rejects relative dates; commits to git (`loom: <op> <path>`) |
 | `knowledge_links` | `path`, `direction: out|in` | neighbours |
 | `procedure_load` | `name` | SKILL.md body (L2); scripts stay on disk |
 | `transcript_search` | `query`, `conversation?`, `k` | FTS5 over `events_fts` — episodic last resort |
-| `artifact_recall` | `id`, `offset?`, `limit?` | spilled outputs |
+| `artifact_recall` | `id`, `offset?`, `limit?` | spilled outputs, and an `img_…` id returns the image itself (`offset`/`limit` do not apply to it). The id may belong to this conversation or to any conversation **below** it in the spawn tree — its threads, their sub-threads — and never to a sibling or an ancestor: evidence flows up to the conversation that commissioned the work (2026-09-24). `Store.visible_ids` is the one place that rule lives; `read_in_tree` and `find_image_in_tree` both go through it, and a miss on either kind is one error class, so an out-of-tree id is indistinguishable from an absent one |
 
 `knowledge_write` is `allow` by default (the vault is the agent's own memory), except
 paths under `core/` which default to `ask` (they are always in context; a bad write is
@@ -775,18 +842,20 @@ Registry = native tools + MCP tools (prefixed `mcp_<server>_<tool>`) + connector
 ### 9.2 Native tool inventory (decided) and default policies
 | Tool | Purpose | readOnly | Default policy |
 |---|---|---|---|
-| `fs_read` | file or line slice; one page of `tool_output_cap` chars with a paging footer, never spilled (`paged`); an image file (png/jpeg/webp/gif under `image_max_mb`) is returned as the image | yes | allow |
+| `fs_read` | file or line slice; one page of `tool_output_cap` chars with a paging footer, never spilled (`paged`); `line_numbers` (default true) prefixes each line `N\t` with the absolute number, so a later page continues the count and the prefix is never part of `old`/`new` (2026-09-24); an image file (png/jpeg/webp/gif under `image_max_mb`) is returned as the image; a PDF is text via `pdftotext` when it is on PATH (`layout`, default true; a clear error naming the binary when it is not — no Python dependency) and a `.ipynb` is rendered as its cells (header, source, one summarised line per output), both paged like text (2026-09-24) | yes | allow |
 | `fs_list` | glob under a root | yes | allow |
 | `fs_search` | regex/grep with context | yes | allow |
-| `fs_write` | create/overwrite (guarded) | no | allow (within roots) |
-| `fs_edit` | exact `old`→`new` replace, must be unique | no | allow (within roots) |
-| `shell` | one command line, `cwd` in roots, env passthrough minus secrets, timeout, output cap; `background=true` (+ `title`) starts a supervised long-running process instead and returns its id, pid and log path at once (§9.6); Windows: cmd.exe or Git Bash per setting (restart-required), whose quirks are appended to this tool's description from `prompts/context/shell-<flavour>.md` at registration rather than injected into the harness block every turn (2026-09-22); Git Bash is located from the Git install (registry `GitForWindows\InstallPath`, the standard folders, then the `git` on PATH), never from a bare `bash.exe` on PATH, which on Windows is the WSL launcher in System32 (2026-09-22); everything a foreground call starts ends with the call (kill-on-close Job Object on Windows, process group elsewhere) | no | classify (pre-filter first) |
-| `process` | `list` / `logs` / `stop` for background processes (§9.6); `logs` is the tail by default, paged forward with a footer (`paged`, never spilled) | list, logs yes | allow |
-| `http` | GET/POST/… with headers/body; secret templating; an image response is returned as the image | no (GET treated read-only) | classify |
-| `screenshot` | capture a monitor, the whole virtual screen, a region or a window (by title, Windows) as an image; `scale` downsizes; via PowerShell/System.Drawing on Windows, `screencapture` on macOS, `grim`/`gnome-screenshot`/`import`/`scrot` on Linux — no dependency | yes | allow |
+| `fs_write` | create/overwrite (guarded); refuses a file this conversation has not read or that changed on disk since (the ledger below); keeps the file's line endings and BOM (2026-09-24) | no | allow (within roots) |
+| `fs_edit` | exact `old`→`new` replace, must be unique; or `edits=[{old,new,replace_all}]` applied in order, all-or-nothing, with one diff; same ledger check and ending/BOM preservation; on a `.ipynb`, `old`/`new` match cell sources and the JSON around them is preserved (2026-09-24) | no | allow (within roots) |
+| `fs_patch` | one unified diff across files: `patch`, `cwd`, `strip` (default: drop a leading `a/`/`b/`), `dry_run`; `/dev/null` creates or deletes, differing paths rename; a hunk is matched by its exact context-plus-deletions block (the `@@` line is a hint tried first, never fuzz), every path inside the diff is guarded (§9.3) and ledger-checked, and nothing is written unless every file applies (2026-09-24) | no | allow (within roots) |
+| `shell` | one command line, `cwd` in roots, env passthrough minus secrets, timeout, output cap; `background=true` (+ `title`) starts a supervised long-running process instead and returns its id, pid and log path at once (§9.6); Windows: cmd.exe or Git Bash per setting (restart-required), whose quirks are appended to this tool's description from `prompts/context/shell-<flavour>.md` at registration rather than injected into the harness block every turn (2026-09-22); Git Bash is located from the Git install (registry `GitForWindows\InstallPath`, the standard folders, then the `git` on PATH), never from a bare `bash.exe` on PATH, which on Windows is the WSL launcher in System32 (2026-09-22); everything a foreground call starts ends with the call (kill-on-close Job Object on Windows, process group elsewhere — on POSIX the group is killed on a normal exit too, not only on a timeout: 2026-09-24), and the result says so — survivors are enumerated *before* the kill (the job's pid list on Windows, `ps -g`/`/proc` on POSIX; best effort, silent when the platform refuses) and the trailer names them on its own line after `[exit N]`: `[ended 1 process the command left running: game.exe pid 5732]`, at most 8 names then `, and N more`, also `meta["ended"]` (2026-09-24); `timeout_s` is the call's own, clamped by `conversation.tool_timeout_max_s`, and a timed-out call returns the output captured before the kill (§9.3) | no | classify (pre-filter first) |
+| `process` | `list` / `logs` / `stop` for background processes (§9.6); `logs` is the tail by default, `tail=true` asks for it explicitly, `since=<offset>` (or the older `offset`) reads forward from there, and the footer always names the offsets and the next call, so following a growing log needs no bookkeeping (2026-09-24); `paged`, never spilled | list, logs yes | allow |
+| `http` | GET/POST/… with headers/body; secret templating; an image response is returned as the image; `format` (raw / text / **markdown**, default markdown) decides what an HTML body becomes — an in-house `html.parser` converter (`tools/native/html_text.py`, no dependency) for markdown, a tag strip for text, untouched for raw; a body that is not HTML passes through whatever the format (2026-09-24) | no (GET treated read-only) | classify |
+| `web_search` | `query`, `k` (default `tools.web_search_results`, max 20) → a numbered list of title / url / snippet, from the provider in `tools.web_search_provider`: SearXNG (`tools.web_search_url`, no key), Brave, Exa or Tavily (key from the secret named in `tools.web_search_secret`). Unset provider, missing URL, missing secret, provider HTTP failure and a non-JSON body are five defined errors; the unset one (`prompts/context/web-search-unconfigured.md`) tells the model where the person configures it (2026-09-24) | yes | allow (no row: read-only) |
+| `screenshot` | capture a monitor, the whole virtual screen, a region or a window (by title, Windows) as an image; `scale` downsizes; via PowerShell/System.Drawing on Windows, `screencapture` on macOS, `grim`/`gnome-screenshot`/`import`/`scrot` on Linux — no dependency. `window=` captures the window's own pixels (`PrintWindow` with `PW_RENDERFULLCONTENT`, falling back to the rect copy when it fails or comes back all black), so an occluded window is still readable; `region=` and `monitor=` capture whatever is visible at that spot. A failure is plain text on stdout with a non-zero exit, and a `#< CLIXML` stream is decoded, so the model reads "no window whose title contains …" rather than PowerShell's serialised error (2026-09-24) | yes | allow |
 | `knowledge_*`, `procedure_load`, `transcript_search`, `artifact_recall` | §8.4 | mixed | allow (core/ → ask) |
 | `status_update` | publish the thread's status as a `status` event in its own transcript; threads only (`kinds`) | no | allow |
-| `conversation_create / send / read / list / finish` | §6.7; `create` takes `notes` to pin; `finish` is threads only (`kinds`) | read/list yes | allow |
+| `conversation_create / send / read / list / finish` | §6.7; `create` takes `notes` to pin and `isolation`/`isolation_root` (a git worktree of its own, §15.1); `finish` is threads only (`kinds`) and delivers the summary, the walkthrough section and the ids of everything the thread produced | read/list yes | allow |
 | `schedule_create / list / delete` | §11 | list yes | allow (caps enforced) |
 | `item_post` | put a notification/setup item on the now board | no | allow |
 | `secret_set` | store a secret the user pasted (value never echoed) | no | ask |
@@ -794,24 +863,55 @@ Registry = native tools + MCP tools (prefixed `mcp_<server>_<tool>`) + connector
 | `promote_plan` | §15: what promoting a ref would change | yes | allow (no row; read-only) |
 | `promote` | §15 | no | ask |
 
+**The stale-write ledger** (2026-09-24, audit #2). `file_reads(conversation_id, path,
+mtime_ns, size, seen_at, wrote)` — one row per conversation and normalised absolute path
+(migration `0004`). `fs_read` records what it saw; `fs_write`, `fs_edit` and `fs_patch`
+check before writing and record after, so the next write in the same conversation needs
+no fresh read. One behaviour per class: the record matches → proceed; it differs → refuse,
+naming the change and telling the model to read the file again; there is no record and
+the file exists → refuse, read it first; the file does not exist → create it. The reason
+is not a weak model, it is concurrency: the user edits the same files in Obsidian and
+their own editor. `wrote=1` marks the rows a writing tool left, which is how anything
+else (the permission classifier's script lookup) learns what this conversation wrote.
+Writes are atomic (temp file beside the target, then replace) and keep the file's line
+endings and BOM; the BOM is stripped from what `fs_read` shows, so what the model copies
+is what `old` matches.
+
+The fs tools live in `tools/native/fs/` — `read`, `search`, `write`, `patch`, `ledger`,
+`notebook`, `pdf`, `common` — with the schemas the model sees in the package's
+`__init__`. One matching rule is shared by all of them (`common.apply_edit`): exact text,
+unique unless `replace_all`; a patch hunk is that same rule applied to its
+context-plus-deletions block.
+
 ### 9.3 Dispatcher pipeline (one path for every call)
 ```
 1 lookup tool → unknown → error result
 2 parse/validate args against schema → invalid → error result "resend the call"
-3 fs guard on path_params: resolve absolute; must be under a root (or APP_HOME/vault
-  for knowledge tools, artifacts for recall); protected → ask; outside → ask with
-  option add_root
+3 fs guard on path_params (plus the paths a registered extractor pulls out of an
+  argument — `fs_guard.register_paths`, used by fs_patch for the files a diff names):
+  resolve absolute; must be under a root (or APP_HOME/vault for knowledge tools,
+  artifacts for recall); protected → ask; outside → ask with option add_root
 4 policy = tool_policies[tool] or default (readOnly→allow, else ask):
      allow → go
+     not allow → a call_grants row for (conversation, tool, args) → go
      ask → approval
      classify → shell pre-filter (shell only) → allow, else classifier call → allow|ask
+4½ connector before-hooks (§10.2): annotate, or turn the allow into an ask; never deny
 5 secrets substitution ({{secret:NAME}}) into a private copy of args
-6 execute with timeout; exceptions → error result (never raise)
-7 bound output (cap → artifact spill) → tool_result content
+6 execute with timeout (the tool's own deadline fires first); exceptions → error result (never raise)
+7 bound output (cap → artifact spill) → tool_result content; after-hooks annotate
 ```
-An approval persists `approvals(pending)`, emits `approval.requested`, and the turn
-returns (§6.3). A decision `allowed_always` for `add_root` writes the root; for a tool it
-sets `tool_policies[tool]=allow`. Both are ordinary settings the UI shows.
+An approval persists `approvals(pending)`, emits `approval.requested`, posts one
+`notification` item with `notify=True` (§11.3 — the interrupt path, so a person away
+from the screen is told rather than a card waiting in a screen nobody is looking at:
+TD audit F1), and the turn returns (§6.3). Answering it dismisses that item.
+
+Four answers (`approvals.DECISIONS`), three of them allowing, in widening order:
+`allow` once; `allow_conversation`, which writes a `call_grants` row so this tool with
+exactly these arguments runs again **in this conversation only**; `allow_always`, which
+for `add_root` writes the root and for a tool sets `tool_policies[tool]=allow`. Both of
+the `allow_always` consequences are ordinary settings the UI shows. Anything else fails
+closed.
 
 **Step 4 in full** (`tools/permissions.py`, `decide(app, tool, args) -> (mode, policy_key)`):
 
@@ -829,6 +929,17 @@ a call that is read-only *for these arguments* turns a matching `classify` row i
 foregone conclusion. It relaxes only `classify`, never an explicit `ask`, and nothing
 static can produce a denial.
 
+*Conversation grants* (`call_grants`, migration 0005, 2026-09-24): the person's own
+grant-only shortcut, and the answer to `allow_always` being the only way to stop being
+asked the same question (TD audit F1 asked for the same command five times). Answering
+`allow_conversation` stores `(conversation_id, tool, sha256(db.dumps(args)))`;
+`permissions.conversation_grant` returns the reason `allowed for this conversation
+(approval <id>)` when a later call matches exactly. The dispatcher consults it only when
+the mode is not already `allow`, and only after the fs guard, so a guard ask — a
+protected path, a path outside the roots — is never grantable this way. The key is the
+conversation id alone: nothing inherits, so a thread's grant never reaches its parent or
+the desk. It widens no rule; `tool_policies` is untouched.
+
 `policy_key` — the rule that decided — is stored in the approval's `options` so
 `allow_always` widens exactly that rule (the path class, not the whole tool).
 
@@ -840,6 +951,20 @@ call the guard would ask about for being outside the roots, or whose mode is `as
 `classify`, runs without an approval or a classifier call (`policy: "auto"`). A protected
 path still asks — the guard's own ask, and a shell command that names one or cannot be
 split to tell. Threads never see it.
+
+**Step 6 in full** (`timeout_for(app, tool, args)`, 2026-09-24, TD audit F5 — a 180 s
+call was cancelled at the 120 s default and its output thrown away). In order: a tool
+that *declares* a `timeout_s` argument (shell, http) and was passed a usable positive
+number gets that number, clamped by `conversation.tool_timeout_max_s` (default 900);
+else `Tool.timeout_s`; else the per-kind setting (shell 120, http 60, `mcp:` 300); else
+60. The declared argument deliberately outranks `Tool.timeout_s`, and junk, zero or a
+negative value falls back rather than erroring. The tool's own deadline is then the one
+that fires: the dispatcher's `wait_for` is a grace margin above it
+(`timeout + min(30, max(1, 0.1 × timeout))`) and is only a backstop for a tool that
+does not time itself out, while the message still names the effective timeout. That is
+what lets a timed-out shell call return what the command said before the kill — the
+handler reads stdout into its own buffer through a shielded reader task, because a
+cancelled `communicate()` discards everything it had already read.
 
 ### 9.4 Shell pre-filter (can only grant)
 Split on `&&`, `||`, `;`, `|` respecting quotes. For each stage: first token (after
@@ -862,6 +987,26 @@ side effects, credential access, or out-of-scope → ask). Output: strict JSON
 set else the conversation's role; priority inherits. Result and reason are stored on
 the tool_call event `meta` and shown in the UI on hover.
 
+*What the judge sees* (2026-09-24, from the tower-defense run's F1, where seven
+`powershell -File <script Loom had just written>` calls were asked because "the script's
+contents are unknown" and "the 'Desk' goal does not clearly authorize"):
+
+- **The stated intent.** `ToolContext.intent` — what the assistant said it was about to
+  do at this step — renders as its own fenced untrusted block beside the request text,
+  `(none stated)` when empty.
+- **The goal is the `goal` column, never the title.** A title is a label, not a scope, so
+  the desk no longer renders a bare `Desk`. With no goal the line reads `(none recorded —
+  the stated intent below is this turn's scope)`, and the intent stays inside its fence:
+  untrusted text never rides on a bare label line.
+- **The files the call names, when this conversation owns them.** Candidate strings (the
+  shell command's words via the pre-filter's splitter, plus every string argument) are
+  normalised against the same cwd the shell tool will use (`classify.command_cwd`) and
+  matched against the conversation's artifacts folder and its `file_reads` rows. A match
+  is included as `Contents of a file this call runs or names (untrusted data): <path>`
+  plus a fenced block: at most `MAX_FILES = 2` files, `MAX_FILE_CHARS = 4000` each,
+  files this conversation *wrote* first. Unreadable, binary or missing paths are skipped
+  silently; a path the conversation has never touched is never read.
+
 ### 9.6 Background processes (decided 2026-09-22)
 A program that must outlive a tool call — a dev server, a bot, a watcher — is started
 with `shell(command, cwd?, env?, background=true, title?)`. The command is judged exactly
@@ -881,13 +1026,26 @@ the REST call or the UI) kills the process tree with the same helper the foregro
 timeout uses and marks the row `stopped`; when someone other than the owning
 conversation stopped it, the owner is told the same way.
 
-The model reads and manages processes through one tool, `process(action, id?, offset?,
-limit?)`: `list` (every row, newest first, with status, pid, owner and log size),
-`logs` (paged like `artifact_recall`: the tail by default, `offset` pages forward with a
-footer; `paged`, never spilled) and `stop`. Default policy `allow`: Loom started it. The
+The model reads and manages processes through one tool, `process(action, id?, tail?,
+since?, offset?, limit?)`: `list` (every row, newest first, with status, pid, owner and
+log size), `logs` (paged like `artifact_recall`; `paged`, never spilled) and `stop`.
+Default policy `allow`: Loom started it. The
 desk's now board carries one line per running process after the thread lines; every
 conversation's panel lists the processes it started; the board's Processes group has
 Stop and a log drawer.
+
+*Reading a log that is still growing* (2026-09-24, after a thread read fixed offsets of
+a 495 KB log growing at 60 frames a second and briefly chased a phantom freeze):
+`tail=true` reads the last page from the log's current end, `since=<offset>` reads
+forward from there, `offset` is the same as `since` and kept, and with none of them the
+default is still the tail. The footer is printed on *every* read, including a log that
+fits in one page and an empty one, and always names the offsets and the exact next call
+— `[chars 1200–5000 of 9000; process(action="logs", id="p1", since=5000) for what
+follows, tail=true for the end]` — so following a growing log is read, then hand the
+footer's number back as `since`. A `since` past the end is not an error: it returns an
+empty page whose footer names the log's real end, which is the "nothing new yet" answer
+a poller needs. (Watch-for-line — blocking until a pattern appears — is a separate,
+undecided question and is not built.)
 
 Why a log file and not a pipe: a child whose stdout is a pipe into the backend dies
 with the backend (EPIPE on its next write), and the whole point of a background process
@@ -955,7 +1113,9 @@ Connector(name, description,
           tools: list[Tool] = [],
           events: Optional[EventSource] = None,   # async generator yielding Event(kind, payload)
           surface: Optional[Surface] = None,      # adapter implementing the surface contract (§12.3)
-          setup: Optional[callable] = None)       # returns a setup Item when user action is needed
+          setup: Optional[callable] = None,       # returns a setup Item when user action is needed
+          before_tool: Optional[callable] = None, # dispatcher step 4½: annotate a call, or ask
+          after_tool: Optional[callable] = None)  # annotate a result
 ```
 Loader imports each package in a try/except; failure → `connectors.status=error`, item
 posted, backend continues. Enable/disable and config edits take effect on `reload`
@@ -985,6 +1145,26 @@ Decided while building:
 - The connectors folder is `<repo>/connectors/` (`LOOM_CONNECTORS_DIR` overrides it for
   tests). `connectors/README.md` is the author's guide and `connectors/example_echo/`
   the reference package: one read-only `echo` tool and an optional tick event source.
+- **Hooks** (2026-09-24, audit #14) are the fourth facet. A connector may declare
+  `before_tool(api, config, ctx_summary, tool_name, args)` and
+  `after_tool(api, config, ctx_summary, tool_name, args, result)`; either one adds
+  `hooks` to `facets`, and the loader registers a
+  `ConnectorHooks(name, api, config, before, after)` in `apply` and drops it in
+  `_teardown`, so disabling or reloading a connector takes its hooks with it.
+  `before_tool` runs at dispatcher step 4½ — after the call has been allowed, before it
+  executes — and answers `{"ask", "reason", "notes"}`: it may annotate the call or turn
+  the allow into an ask, and it may never deny (a returned `deny` is logged and counted
+  as an ask; nothing static denies). `after_tool` runs at the end of `execute` on every
+  result, including one the runner ran after an approval, and answers `{"notes"}`. The
+  notes from both are appended to the result's text, one per line, through
+  `prompts/context/tool-hook-note.md` (`[{connector}] {note}`). A hook reads plain data:
+  `ctx_summary` is a dict built from the `ToolContext` (conversation id/kind/goal, call
+  id, intent, request text, and the dispatcher's policy/decision/reason), `args` and
+  `result` are copies, and a before-hook sees `{{secret:NAME}}` placeholders because
+  substitution is step 5 — so a hook can never change what executes. Each call is
+  bounded by `hooks.HOOK_TIMEOUT_S` (10s) and every failure class ends the same way: log
+  a warning, ignore that hook. Because an approved call resumes through `execute`, the
+  before-hooks run exactly once per call and cannot loop.
 
 ### 10.3 Knowledge entity per integration
 When an MCP server or connector is added, the backend creates
@@ -1047,13 +1227,13 @@ the UI's board panel. Turns produced by triggers run at priority 1.
 
 ### 12.1 REST (prefix `/api`; as built 2026-09-20)
 ```
-GET  /conversations?kind&status&include_archived   POST /conversations {goal, notes?, roots?, preset?, title?, parent_id?, excerpt?}
+GET  /conversations?kind&status&include_archived   POST /conversations {goal, notes?, roots?, preset?, title?, parent_id?, excerpt?, isolation?: none|worktree, isolation_root?}
 GET  /conversations/{id}                PATCH /conversations/{id} {title?, preset?, step_budget?, clear_preset?, pinned_notes?}
 GET  /conversations/{id}/events?after&before&limit&kinds&tail   (tail=1 → the newest `limit`, ascending; the UI's first page)
 POST /conversations/{id}/messages {content, images?: [image_id]}  → 202 {inbox_id}; 400 empty (no text and no images) or unknown image id; 409 when no model is configured
 POST /conversations/{id}/images  (raw image bytes; Content-Type image/*) → {id, mime, bytes}; 415 not an image, 413 over image_max_mb
 GET  /conversations/{id}/images/{image_id} → the bytes, immutable cache headers; 404 on miss or a malformed id
-POST /conversations/{id}/cancel         POST /conversations/{id}/archive     POST /conversations/{id}/clear (409 while running)
+POST /conversations/{id}/cancel         POST /conversations/{id}/archive (→ {…, worktree_message} when a checkout was released)     POST /conversations/{id}/clear (409 while running)
 GET  /conversations/{id}/occupancy      GET  /conversations/{id}/artifacts     GET /artifacts/{id}?offset&limit
 GET  /processes?conversation_id&status  GET  /processes/{id}   GET /processes/{id}/logs?offset&limit   POST /processes/{id}/stop   (§9.6; starting one is a model action, `shell(background=true)`)
 GET  /conversations/{id}/inbox          rows posted but not yet in the transcript (surfaces render them as *queued*)
@@ -1215,6 +1395,11 @@ is the last line, not a licence: the shapes crossing the bus are one shape (§12
   mode table (allow/ask/classify, grouped native / MCP / connector), shell read-only command list, allowed roots, protected paths, shell
   flavour (cmd/Git Bash/PowerShell/sh), classifier role, classifier timeout (a verdict slower
   than this becomes an ask; one retry when the provider is busy).
+- **Tools** (2026-09-24): web search provider, SearXNG URL, the *name* of the secret
+  holding the provider key, results per search. The tab has no hand-written screen: the
+  Settings shell renders any declared group it has no dedicated tab for straight from
+  the schema, so a group of scalars costs one line in `TAB_ORDER` (which fixes where it
+  sits) and nothing else.
 - **Integrations**: MCP servers (CRUD, test connection, refresh tools, env with secret
   picker), connectors (enable, config form, reload, status), secrets (names only:
   add/replace/delete; values write-only).
@@ -1246,11 +1431,18 @@ fake provider/preset/roles so the UI can be developed with no Ollama running.
 ## 15. Self-modification and promotion
 
 ### 15.1 Layout
+Isolation is a property of any thread, not of self-modification (2026-09-24, generalising
+this section): `conversation_create(isolation="worktree")` gives a thread its own
+`git worktree` checkout under `APP_HOME/worktrees/<thread>` on branch `loom/<thread>`,
+recorded in `conversations.worktree`, replacing the source root as the thread's first
+root and named to it in the harness block (§6.7, §7 slot [6]). Self-modification is the
+case that also needs a scratch `LOOM_HOME`.
+
 The assistant's own repo is cloned once into `APP_HOME/releases/src.git` (bare) with
 worktrees `releases/<id>/` per release; `current` names the live one. A self-mod thread
-gets its own worktree under `releases/dev-<thread>/` as a root, plus a scratch
-`LOOM_HOME` pointing at `APP_HOME/scratch/<thread>/` so tests and a staging run
-never touch live state.
+gets its own worktree as a root — under `releases/dev-<thread>/`, since a release
+worktree belongs beside the other releases — plus a scratch `LOOM_HOME` pointing at
+`APP_HOME/scratch/<thread>/` so tests and a staging run never touch live state.
 
 That workflow is a **procedure note, not code** (charter §5.9): `promote.install`
 ensures `procedures/self-modification/SKILL.md` exists in the vault from

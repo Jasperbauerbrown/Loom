@@ -859,3 +859,274 @@ sessions do not re-litigate.
   (`reference/tool-parity-audit.md`). Agreed: audit P1 #1–6 and P3, tracked in
   `05-backlog.md`. Rejected: blocking subagents (asynchrony is what threads are for)
   and a separate todo tool (the thread status is the plan). The rest of P2 is undecided.
+- **2026-09-24** — The backlog build ran as five parallel streams partitioned by file
+  ownership (fs, web, machine, permissions, threads), each a manager with workers, after
+  the overseer laid down the shared contracts first: migrations 0004–0006, the
+  dispatcher's step 4½ (`hooks.before`/`after`), `permissions.conversation_grant`
+  consulted before classify/ask, `timeout_for(app, tool, args)`, `ToolContext.intent`,
+  and the `tools` settings group. Entries below are the streams' own, in stream order.
+  Two follow-ups the streams could not make in files they did not own were made by the
+  overseer: `dispatch` uses `classify.command_cwd` (one cwd rule, not two copies), and
+  standby detection is two settings (`conversation.suspend_drift_s`, `suspend_retries`)
+  rather than module constants, so it is UI-visible like every other knob.
+- **2026-09-24** — `tools/native/fs.py` became the package `tools/native/fs/`: `read`
+  (text, PDF, notebooks, images), `search` (fs_list, fs_search), `write` (fs_write,
+  fs_edit), `patch`, `ledger`, `notebook`, `pdf`, `common`. The tool schemas stay in one
+  place, the package's `__init__`, so the model-facing surface is still read in a single
+  file. `from . import fs` and `fs.tools()` are unchanged.
+- **2026-09-24** — `fs_read` numbers its lines `N\t` by default (`line_numbers=false`
+  turns it off for prose you will quote). The numbers are absolute, so page two
+  continues the count, and the page cap applies to the *rendered* text, prefixes
+  included; the footer's next offset stays exact. The prompts for `fs_edit` and
+  `fs_patch` say the prefix is not part of the file's text, and the "not found" error
+  repeats it, because that is the one mistake numbering invites.
+- **2026-09-24** — A stale-write guard, kept in the `file_reads` table (migration 0004:
+  conversation, normalised path, mtime_ns, size, seen_at, and `wrote`). `fs_read`
+  records; `fs_write`, `fs_edit` and `fs_patch` check then record. Four classes, one
+  behaviour each: record matches → proceed; record differs → refuse and say to read it
+  again; no record and the file exists → refuse, read it first; no file → create it.
+  This is not scaffolding for a weak model — the person edits the same notes and files
+  in Obsidian and their own editor while a thread is working. There is no opt-out
+  setting: a second read is one cheap call, and an override would be a way to lose work.
+  `wrote=1` is how another part of the harness (the permission classifier's script
+  lookup) learns which files this conversation wrote.
+- **2026-09-24** — `fs_edit` takes `edits=[{old,new,replace_all}]` beside the single
+  `old`/`new` form (never both in one call: that is an error naming the choice). The
+  list is applied in order to the text in memory and written once, so a failing edit
+  leaves the file exactly as it was, and the result carries one diff of the whole
+  change. Each edit keeps the existing rule — exact text, unique unless `replace_all` —
+  and the error names which edit of how many failed.
+- **2026-09-24** — The unified-diff tool is `fs_patch`, not the backlog's `apply_patch`:
+  the fs family is named by what it acts on, and a tool called `apply_patch` sorts away
+  from its five siblings in the registry, the permissions table and the model's tool
+  list. Arguments: `patch`, `cwd`, `strip` (default: drop a leading `a/`/`b/`, git's
+  spelling), `dry_run`. `/dev/null` on the left creates, on the right deletes; differing
+  paths rename.
+- **2026-09-24** — A patch hunk is applied by exactly the rule `fs_edit` uses: its
+  context-plus-deletions block must match the file exactly, and unambiguously. The `@@`
+  line number is a hint tried first, never a fuzz factor; a block that matches nowhere,
+  or in two places while the stated line matches neither, is refused with what to do
+  next. No fuzzy-replacer cascade (tool-parity audit §4). Parsing is hand-written —
+  `difflib` writes diffs and cannot read them — and is tolerant of what surrounds a
+  diff: `diff --git`, `index`, mode lines and prose are skipped.
+- **2026-09-24** — `Tool.path_params` cannot express "the paths inside a diff", and the
+  registry is not the place to learn about diffs. `fs_guard.register_paths(tool_name,
+  extractor)` is the smallest general mechanism: one function per tool name, whose
+  result the guard judges in the same loop as every `path_params` value, so protection
+  and root checks are one codepath. A patch that cannot be parsed yields no paths — and
+  is refused by the handler with the parse error before anything is written.
+- **2026-09-24** — PDFs in `fs_read` go through the `pdftotext` binary when it is on
+  PATH (`layout`, default true), and a missing binary is a clear error naming it. No
+  Python PDF dependency: §19 stays as it is.
+- **2026-09-24** — `.ipynb` is JSON, so it needs no dependency either: `fs_read` renders
+  the cells (a header per cell, the source, one summarised line per output — outputs are
+  never dumped), `fs_edit` matches `old`/`new` against the cell *sources* and rewrites
+  the JSON preserving outputs, metadata, execution counts, the file's own indentation
+  and its `source` list shape, and `fs_write` writes raw JSON like any other file.
+- **2026-09-24** — `fs_write`, `fs_edit` and `fs_patch` keep a file's line endings and
+  its UTF-8 BOM. A file whose endings are all CRLF is written back as CRLF; a file with
+  mixed endings is left exactly as it is, because picking a winner would rewrite lines
+  nobody touched. The BOM is stripped from what `fs_read` shows, so what the model
+  copies is what `old` matches, and put back on the write. Writes are atomic: a temp
+  file beside the target, then a replace.
+- **2026-09-24** — A relative path that names an existing vault note is refused by
+  `fs_write` and `fs_edit` with a pointer to `knowledge_read`/`knowledge_write` (TD
+  audit F9), instead of creating a stray file under the first allowed root. The
+  "relative paths resolve against …" hint stays for everything else.
+- **2026-09-24** — `http` gains `format` (`raw` / `text` / `markdown`, default
+  `markdown`). HTML is converted by an in-house `html.parser` walker
+  (`tools/native/html_text.py`) — no dependency, per §19 — which drops
+  script/style/noscript/template/svg and the navigational furniture
+  (nav/header/footer/aside/form/iframe) and renders headings, paragraphs, lists,
+  links, images, code and `pre`, emphasis, blockquotes, rules and best-effort tables.
+  The default is `markdown` rather than `raw` because raw HTML is the expensive answer
+  to almost every fetch: a two-thousand-word article arrives as two hundred thousand
+  characters of markup the model pays for and does not need. `raw` stays one argument
+  away for the times the markup *is* the question.
+- **2026-09-24** — A body that is not HTML passes through unchanged whatever `format`
+  says (JSON still pretty-printed, source files untouched). One rule, no per-type
+  special cases: the tool converts what it can read as a page and never quietly mangles
+  anything else. HTML is recognised by the declared content-type, or — only when the
+  server declared none at all — by the body's own first bytes, because a page served
+  with no content-type is common enough that believing the server costs the whole
+  context budget.
+- **2026-09-24** — `web_search(query, k)` ships native and read-only behind one
+  provider setting: SearXNG (self-hosted, `tools.web_search_url`, no key), Brave, Exa
+  or Tavily (key fetched from the secret *named* in `tools.web_search_secret`, never
+  pasted into a setting). A provider is only a request branch and a parse branch over
+  one `Hit`; the key lookup, timeout, failure classes and numbered output are shared,
+  because none of that has any business differing between indexes.
+- **2026-09-24** — The tool exists even when nothing is configured, and answers with a
+  defined "not configured" note (`prompts/context/web-search-unconfigured.md`) naming
+  Settings → Tools, the four providers and `secret_set`. A tool that disappears when it
+  is unconfigured teaches the model nothing and leaves the person un-prompted. Five
+  defined failures in all: unset provider, SearXNG with no URL, missing secret,
+  provider HTTP failure (status + first body line), non-JSON body. No hits is an
+  answer, not a failure.
+- **2026-09-24** — `web_search` carries `read_only=True` and gets **no**
+  `DEFAULT_TOOL_POLICIES` row: §9.3 rule 3 already resolves a rowless read-only tool to
+  `allow`. Adding a row would state the default twice and let the two drift.
+- **2026-09-24** — The Settings "Tools" tab has no hand-written screen. The Settings
+  shell already renders any declared group it has no tab for straight from the schema,
+  so a group of scalars costs one line in `TAB_ORDER` — which is only about *where* the
+  tab sits — and nothing else. A dedicated tab would be a second place for the same
+  four fields to be wrong.
+- **2026-09-24** — `screenshot(window=…)` captures the window, not the screen in front
+  of it. The Windows capture now renders the window's own pixels with
+  `PrintWindow(hwnd, hdc, PW_RENDERFULLCONTENT)` and falls back to the old rect copy
+  only when that call fails or the bitmap comes back all black (an 8×8 grid of sampled
+  pixels decides). `region=` and `monitor=` are unchanged and keep capturing whatever is
+  visible at that spot — that is what they are for, and the prompt now says so in both
+  directions. In the tower-defense run 0 of 6 desk captures showed the game, because
+  every one of them was a rect copy of whatever was on top.
+- **2026-09-24** — A screenshot failure is a sentence, not a serialisation format. The
+  PowerShell capture catches its own errors, writes the message as plain text on stdout
+  and exits non-zero, so the model reads `screen capture failed: no window whose title
+  contains "tower"`. Belt and braces, Loom decodes a `#< CLIXML` stream (stdlib XML plus
+  the `_xNNNN_` unescape) before it ever looks at the first line, because PowerShell
+  serialises its error stream whenever stderr is a pipe and any future `throw` outside
+  the script's own try would leak it again. In the audited run that lost message would
+  have told the desk its process was already dead, 40 minutes early.
+- **2026-09-24** — A foreground `shell` result names what the containment killed. The
+  survivors are enumerated *before* the kill — the Job Object's pid list on Windows
+  (`QueryInformationJobObject` + `QueryFullProcessImageNameW`, ctypes, no dependency),
+  `ps -g` or `/proc` on POSIX — and the trailer goes on its own line after `[exit N]`:
+  `[ended 1 process the command left running: game.exe pid 5732]`, at most eight names
+  then `, and N more`, and `meta["ended"]` beside it. Nothing left running means no
+  line at all. Best effort throughout: a platform that refuses the call logs at debug
+  and the call behaves exactly as before. `prompts/tools/shell.md` already stated the
+  rule and the desk still spent forty minutes on it in the tower-defense run (F3); a
+  rule the model is told once is weaker than the same rule in the result it is reading.
+  The same change makes the rule true off Windows, where the process group was only
+  killed on a timeout and a normal exit left orphans behind.
+- **2026-09-24** — The call's `timeout_s` is honoured, and the tool's own deadline is
+  the one that fires. `timeout_for` gives a tool that declares a `timeout_s` argument
+  (shell, http) the number the model asked for, clamped by the new
+  `conversation.tool_timeout_max_s` (default 900) — the declared argument outranks the
+  tool's own `timeout_s`, and junk, zero or a negative value falls back to the per-kind
+  default rather than erroring. The dispatcher's `wait_for` becomes a grace margin above
+  that (`timeout + min(30, max(1, 0.1 × timeout))`), so it is a backstop for a tool that
+  does not time itself out and never the thing that cancels a tool mid-flight. That is
+  what makes partial output survivable, and the shell handler now reads stdout into its
+  own buffer through a shielded reader: a cancelled `communicate()` discards everything
+  it had already read, which is why a timed-out build used to come back empty. A
+  timed-out call returns the text produced before the kill plus `[timed out after Ns;
+  process tree killed]`. `http` clamps its own `timeout_s` the same way.
+- **2026-09-24** — `process(logs)` follows a growing log without bookkeeping. `tail=true`
+  reads the last page from the log's current end, `since=<offset>` reads forward from
+  there, `offset` stays as an alias so nothing that works breaks, and the tail is still
+  the default. The footer is printed on every read — including a log that fits in one
+  page and an empty one — and always names the offsets and the exact next call, so the
+  loop is read, then hand the footer's number back as `since`. A `since` past the end
+  returns an empty page naming the real end: that is the "nothing new yet" answer, not
+  an error. Watch-for-line (blocking until a pattern appears) is a different question
+  and stays undecided.
+- **2026-09-24** — The permission judge sees what the call is actually about. Three
+  inputs were added to `classify.render_inputs` after the tower-defense run (F1), where
+  seven `powershell -File <script Loom had just written>` calls were asked because "the
+  script's contents are unknown" and "the 'Desk' goal does not clearly authorize". (1)
+  The turn's **stated intent** (`ToolContext.intent`, what the assistant said it was
+  about to do) renders as its own fenced untrusted block. (2) A conversation's goal is
+  its `goal` column and nothing else — the `title` fallback is gone, so the desk never
+  renders a bare "Desk"; with no goal the line says the stated intent below is this
+  turn's scope, and the intent stays inside its fence, because untrusted text never
+  rides on a bare label line. (3) The **contents of files the call names, when this
+  conversation owns them** — under its artifacts folder, or a row of its `file_reads`
+  ledger — are shown as untrusted data: at most two files, 4000 chars each, files this
+  conversation wrote first. Candidate paths come from the shell pre-filter's word
+  splitter plus every string argument, normalised against the cwd the shell tool will
+  use. A file the conversation has never touched is never read, so the judge is never a
+  way to see more than the conversation already saw.
+- **2026-09-24** — Connectors may hook tool calls, and a hook may only ask. Two optional
+  fields on `Connector` — `before_tool(api, config, ctx_summary, tool_name, args)` and
+  `after_tool(..., result)` — make hooks the fourth connector facet (audit #14).
+  `before_tool` runs at dispatcher step 4½, once the call is already allowed, and may
+  annotate it or turn the allow into an ask; `after_tool` annotates the result. Neither
+  may deny: a hook that returns `deny` is logged and counted as an ask, because nothing
+  static ever denies (the hard rule), and an ask is already the strongest thing a
+  connector can say. A hook reads copies and a `ctx_summary` dict, never the live
+  `ToolContext`, and sees `{{secret:NAME}}` placeholders rather than secrets, so it can
+  observe a call but never change what executes. Every failure class is one behaviour —
+  raises, times out past `HOOK_TIMEOUT_S`, or answers the wrong type: log a warning and
+  ignore that hook. The notes ride on the result's text through
+  `prompts/context/tool-hook-note.md`, so the model reads them like any other trailer.
+- **2026-09-24** — "Allow this call for the conversation", a third allowing answer. The
+  tower-defense run asked the same `powershell -File` command five times because the
+  only way to stop being asked was `allow_always`, which widens the whole tool — never
+  a sane answer for one script. `approvals.DECISIONS` is now
+  `("allow", "allow_conversation", "deny", "allow_always")`: the three allowing answers
+  widen once, this conversation, always. `allow_conversation` writes a `call_grants` row
+  keyed `(conversation_id, tool, sha256(db.dumps(args)))` (migration 0005) and nothing
+  else — no policy row, no root. The dispatcher consults it only when the mode is not
+  already `allow` and only after the fs guard, so a protected path or a path outside the
+  roots keeps asking: a grant is the person allowing one call, never a way around the
+  guard. The key is the conversation id alone, so a thread's grant never reaches its
+  parent or the desk.
+- **2026-09-24** — A pending approval is a notification, not just a card. `approvals.
+  create` posts one `notification` item with `notify=True` — the existing interrupt path
+  (web toast plus every surface in `triggers.notification_targets`) — naming the
+  conversation, the tool and the reason, sourced `approval:<id>`. Answering it dismisses
+  that item, so the now board never keeps a question that has been answered. A card
+  waiting in a screen nobody is looking at is a question nobody hears (TD audit F1),
+  and no new mechanism was invented to fix it: items and the interrupt policy already
+  existed.
+- **2026-09-24** — **A finished thread hands over its evidence, not a pointer to it.**
+  `conversation_finish` now delivers to the spawning conversation: the summary first,
+  then the walkthrough section it just filed (path and text, capped at 8,000 chars with
+  a marker naming `knowledge_read`), then every artifact and image the thread produced
+  as an id with a caption. The now-board item stays the bare summary. The 2026-09-20
+  decision — no verify-on-finish, judgment in the spawning conversation "fed by evidence
+  in the finish walkthrough" — was never actually fed: the walkthrough was filed in the
+  daily log and the desk got ~590 characters. It then spent 43 minutes re-deriving a
+  thread's work it could have read (audit §3, F4). The mechanism is unchanged; only what
+  the message carries is. Built in `conversation/tools.py` (`evidence_block`, `produced`)
+  and delivered by the runner, so there is still one notify path.
+- **2026-09-24** — **Artifacts and images are readable down the spawn tree, and only
+  down it.** `artifact_recall` takes an id belonging to the calling conversation or to
+  any conversation below it in the spawn tree (its threads, their sub-threads), never a
+  sibling and never an ancestor; an image id returns the image itself. Until now the tool
+  read text only and was scoped to nothing at all — any conversation's artifact, but no
+  image, so a cited screenshot was unopenable (audit §3). Evidence flows up to the
+  conversation that commissioned the work, which is the same direction responsibility
+  flows; one helper in `artifacts.py` decides it for both kinds.
+- **2026-09-24** — **A turn resumed after an approval keeps its step count.** The count
+  is read back from the dangling `tool_call` event's `meta.step`, so it needs no column
+  and survives a restart. A turn whose results were lost to a backend restart is not a
+  resumed turn and starts over — the distinction the repair branches already draw. A
+  thread 65 steps into a 100-step budget woke from an approval with a fresh 100 and said
+  so to itself (audit F6).
+- **2026-09-24** — **Standby is a named event.** Every model call is measured with both
+  the monotonic and the wall clock; when a failed call was spanned by a wall-clock jump
+  of a minute or more, the runner writes the system event `system resumed after N min;
+  retrying` and retries without charging the model-error budget, at most twice per call.
+  ~60 of one 136-minute run went into Modern Standby, and the only trace was a
+  stream-idle watchdog line blaming the provider (audit F7). Holding a power request
+  while a turn runs stays undecided — that is the person's battery.
+- **2026-09-24** — **The turn's stated intent travels with every tool call.**
+  `ToolContext.intent` is the step's own assistant text, else the turn's last, else the
+  transcript's last; on a repair it is the persisted `tool_call` event's `meta.text`. The
+  classifier had only `request_text`, which at the desk is the last user message — "go
+  ahead" — and refused seven identical commands for lack of a stated purpose (audit F1).
+  The runner fills it; what reads it is the permissions stream's.
+- **2026-09-24** — **The desk opens what a thread cites; the thread stops when the
+  evidence exists.** `kind-desk.md` now says to open the ids a finish carries before
+  reproducing anything, to say so and stop when something cannot be opened, and never to
+  rebuild a thread's verification harness; `kind-thread.md` says verification is done
+  once the cited evidence exists and a documentation-only edit needs no rebuild (audit
+  F4, F10). Both files stay at their 12-line budget: the traded rule is the desk's "when
+  asked about a thread, answer from its status and its walkthrough in the daily log, not
+  by re-doing its work", which the new rule states more precisely and enforceably.
+- **2026-09-24** — **`knowledge_write(op="replace")` accepts `new` as the name for
+  `content`.** old→new is how the op reads and how a model sends it (audit F9). Because
+  the dispatcher enforces the schema's `required` list before a handler sees the call,
+  `content` moved out of it and is checked in the handler — the one place that knows the
+  two names mean one field. The prompt names the fields beside each op.
+- **2026-09-24** — **Worktree isolation is a property of any thread, not a
+  self-modification special case.** `conversation_create(isolation="worktree")` gives a
+  thread its own `git worktree` checkout under `APP_HOME/worktrees/<id>` on branch
+  `loom/<id>`; the checkout replaces the source root as the thread's first root, so the
+  thread cannot touch the tree it was branched from, and the harness block tells it where
+  it works and on which branch. A root that is not a git repository is a defined refusal,
+  not a silent downgrade. On archive a clean worktree is removed and a dirty one is kept
+  with a system event saying why. 03 §15's release worktree becomes one use of this
+  mechanism (audit #15 in the backlog).

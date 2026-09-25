@@ -50,14 +50,16 @@ Legend: ✅ parity or better · 🟡 partial · ❌ missing.
 |---|---|---|---|
 | Permissions | modes (default / acceptEdits / plan / auto / bypass) + allow/ask/deny rules per tool with specifiers | allow/ask/deny, glob patterns per command, per-agent rulesets, unmatched → ask | allow/ask/classify per tool + path classes, pre-filter, LLM classifier, desk auto-approve; never denies (by design) |
 | Undo / checkpoints | rewind (restores code and conversation) | shadow-git snapshot per project; `revert` / `unrevert` | ❌ outside the vault (the vault is committed to git) |
-| Hooks / plugins | Pre- and PostToolUse hooks, and more | plugin hooks `tool.execute.before/after`, `shell.env`, system-prompt transform, custom tool files | connectors add tools, events and surfaces; **no before/after-tool hooks** |
+| Hooks / plugins | Pre- and PostToolUse hooks, and more | plugin hooks `tool.execute.before/after`, `shell.env`, system-prompt transform, custom tool files | connectors add tools, events and surfaces, and (2026-09-24) before/after-tool hooks that may annotate or ask, never deny |
 | Output overflow | truncates and spills to a file | 2000 lines / 50 KB, spilled, points at `explore` | cap, then spill to an artifact, `artifact_recall` pages it ✅ |
 | Doom-loop guard | — | the same call 3× → ask | — (deliberately; see §4) |
 | Compaction | ✅ | ✅ | ✅ (§7) |
 
 ## 3. Gaps, ranked
 
-Agreed items are tracked in `../05-backlog.md`.
+Agreed items are tracked in `../05-backlog.md`. **Shipped 2026-09-24/25:** P1 #1, #2, #3
+(`fs_patch`, not `apply_patch`), #5, #6 and all of P3 (#14–#18); #4 is still open and P2
+is still undecided. The build is recorded in the charter's decision log.
 
 Ranked by how much harness capability each unlocks per unit of work. Each item stays
 within §19 (no new runtime dependencies) unless it says otherwise.
