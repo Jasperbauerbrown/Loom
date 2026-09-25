@@ -9,7 +9,13 @@ at registration.
 A timeout kills the whole process tree, not just the shell — on Windows a killed
 `cmd.exe` leaves its children running, which is how a "timed out" build keeps holding a
 file lock. Partial output is returned either way: what the command managed to say
-before it was killed is usually the interesting part.
+before it was killed is usually the interesting part, so stdout is drained by a shielded
+reader task rather than `communicate()`, whose buffer a cancellation throws away.
+
+What the containment ends is named in the result (`[ended 1 process the command left
+running: game.exe pid 5732]`, 2026-09-24). The rule was already in the prose and the
+desk still launched a game in a foreground call four times, chasing wrong hypotheses for
+40 minutes, because nothing in the result said what had happened to it.
 
 Secrets are already substituted by the dispatcher; `env` values may therefore contain
 real credentials and are never echoed back.
@@ -25,7 +31,18 @@ from pathlib import Path
 from typing import Any
 
 from ... import prompts
-from ...processes import assign, close, create_job, kill_tree, terminate_job
+from ...processes import (
+    assign,
+    close,
+    create_job,
+    group_pids,
+    job_pids,
+    kill_group,
+    kill_tree,
+    pid_alive,
+    process_name,
+    terminate_job,
+)
 from ..fs_guard import normalise
 from ..registry import Tool, ToolContext, ToolResult
 
@@ -148,6 +165,52 @@ def resolve_shell(app: Any) -> list[str]:
     return [shutil.which("sh") or "/bin/sh", "-c"]
 
 
+MAX_ENDED_NAMES = 8  # beyond this the list says ", and N more"
+
+
+def effective_timeout(app: Any, args: dict[str, Any]) -> float:
+    """The deadline this call runs under: its own `timeout_s` clamped by
+    `conversation.tool_timeout_max_s`, else the configured shell timeout. The same value
+    `dispatch.timeout_for` computes, whose `wait_for` sits a grace margin above it — so
+    this deadline fires first and the output produced before the kill survives."""
+    try:
+        asked = 0.0 if isinstance(args.get("timeout_s"), bool) else float(args.get("timeout_s"))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        asked = 0.0
+    if asked > 0:
+        return min(asked, float(app.settings.get("conversation.tool_timeout_max_s")))
+    return float(app.settings.get("conversation.tool_timeout_shell_s"))
+
+
+def survivors(proc: asyncio.subprocess.Process, job: int | None) -> list[dict[str, Any]]:
+    """What the command left running, as `{"pid", "name"}`, lowest pid first. Snapshot it
+    *before* the kill: for a kill-on-close job, dropping the handle is the kill. Best
+    effort — an enumeration that fails just means no trailer."""
+    found: list[dict[str, Any]] = []
+    try:
+        pairs = [(pid, "") for pid in job_pids(job)] if os.name == "nt" else group_pids(proc.pid)
+        for pid, name in sorted(pairs):
+            if not pid or int(pid) == int(proc.pid) or not pid_alive(pid):
+                continue
+            found.append({"pid": int(pid), "name": name or process_name(pid)})
+    except Exception as exc:  # pragma: no cover - platform dependent
+        log.debug("could not list what the command left running: %s", exc)
+    return found
+
+
+def ended_trailer(ended: list[dict[str, Any]]) -> str:
+    """The line that makes the kill-on-close rule concrete. Empty when nothing was left
+    running, which is the ordinary case."""
+    if not ended:
+        return ""
+    shown = ended[:MAX_ENDED_NAMES]
+    names = ", ".join(f"{e['name']} pid {e['pid']}" if e.get("name") else f"pid {e['pid']}" for e in shown)
+    if len(ended) > len(shown):
+        names += f", and {len(ended) - len(shown)} more"
+    noun = "process" if len(ended) == 1 else "processes"
+    return f"[ended {len(ended)} {noun} the command left running: {names}]"
+
+
 def _kill_tree(proc: asyncio.subprocess.Process, job: int | None = None) -> None:
     """Kill the process and everything it started. The Job Object reaches descendants
     whose parent already exited; the pid tree kill is belt and braces (`loom.processes`)."""
@@ -189,7 +252,7 @@ async def shell_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
             meta={"process_id": pid_, "pid": row["pid"], "cwd": cwd},
         )
 
-    timeout = float(args.get("timeout_s") or app.settings.get("conversation.tool_timeout_shell_s"))
+    timeout = effective_timeout(app, args)
     argv = resolve_shell(app) + [command]
     stdin_text = args.get("stdin")
 
@@ -215,37 +278,70 @@ async def shell_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         close(job)
         job = None
 
+    # Drained into a list, not with `communicate()`: a cancelled `communicate()` discards
+    # everything it had already buffered, and what a killed command said before it died
+    # is the interesting part (2026-09-24).
+    chunks: list[bytes] = []
+
+    async def drain() -> None:
+        while proc.stdout is not None:
+            chunk = await proc.stdout.read(65536)
+            if not chunk:
+                return
+            chunks.append(chunk)
+
+    reader = asyncio.ensure_future(drain())
+    if stdin_text is not None and proc.stdin is not None:
+        try:
+            proc.stdin.write(str(stdin_text).encode("utf-8"))
+            await proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass  # a command that never reads its input is not an error
+        try:
+            proc.stdin.close()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+
     timed_out = False
+    ended: list[dict[str, Any]] = []
     try:
-        out, _ = await asyncio.wait_for(
-            proc.communicate(str(stdin_text).encode("utf-8") if stdin_text is not None else None),
-            timeout=timeout,
-        )
+        # Shielded: the timeout must not cancel the reader, which still has to drain the
+        # pipe that the kill is about to close.
+        await asyncio.wait_for(asyncio.shield(reader), timeout=timeout)
+        await proc.wait()
     except asyncio.TimeoutError:
         timed_out = True
+        ended = survivors(proc, job)  # before the kill: the job is about to be emptied
         _kill_tree(proc, job)
         try:
-            out, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+            await asyncio.wait_for(reader, timeout=5)  # finishes as the kill closes the pipe
         except Exception:
-            out = b""
+            reader.cancel()  # whatever it collected is already in `chunks`
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)  # reap the child we just killed
+        except Exception:
+            pass
     except asyncio.CancelledError:
         _kill_tree(proc, job)
+        reader.cancel()
         raise
+    else:
+        ended = survivors(proc, job)
+        kill_group(proc.pid)  # POSIX: the group outlives the shell; on Windows close(job) does it
     finally:
         close(job)  # kill-on-close: whatever the command left behind ends here
 
-    text = out.decode("utf-8", errors="replace") if out else ""
-    if timed_out:
-        trailer = f"[timed out after {timeout:g}s; process tree killed]"
-        return ToolResult(
-            content=(text + ("\n" if text and not text.endswith("\n") else "") + trailer),
-            ok=False,
-            meta={"timeout": True, "cwd": cwd},
-        )
+    text = b"".join(chunks).decode("utf-8", errors="replace")
     code = proc.returncode if proc.returncode is not None else -1
-    trailer = f"[exit {code}]"
+    trailer = f"[timed out after {timeout:g}s; process tree killed]" if timed_out else f"[exit {code}]"
     content = text + ("\n" if text and not text.endswith("\n") else "") + trailer
-    return ToolResult(content=content, ok=(code == 0), meta={"exit_code": code, "cwd": cwd})
+    line = ended_trailer(ended)
+    if line:
+        content += "\n" + line
+    meta: dict[str, Any] = {"timeout": True, "cwd": cwd} if timed_out else {"exit_code": code, "cwd": cwd}
+    if ended:
+        meta["ended"] = ended
+    return ToolResult(content=content, ok=(not timed_out and code == 0), meta=meta)
 
 
 def tools(app: Any = None) -> list[Tool]:

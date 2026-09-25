@@ -43,23 +43,38 @@ def _logs(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     process_id = str(args.get("id") or "").strip()
     if not process_id:
         return ToolResult.error("id is required for logs")
-    offset = args.get("offset")
     limit = args.get("limit")
+    start_at: int | None = None
+    if not args.get("tail"):
+        # `since` and `offset` mean the same thing; `since` is the name the footer
+        # hands back, `offset` is kept so nothing that works today breaks.
+        raw = args.get("since")
+        if raw is None:
+            raw = args.get("offset")
+        if raw is not None:
+            try:
+                start_at = int(raw)
+            except (TypeError, ValueError):
+                return ToolResult.error("since must be a non-negative integer")
+            if start_at < 0:
+                return ToolResult.error("since must be a non-negative integer")
     page = ctx.app.processes.read_log(
         process_id,
-        None if offset is None else int(offset),
+        start_at,
         None if limit is None else int(limit),
     )
     if page is None:
         return ToolResult.error(f"no process {process_id}")
     text = page["text"]
     total, start, end = page["total"], page["offset"], page["end"]
+    if start > total:
+        # `since` past the end: nothing to show, and the footer should name the log's
+        # actual end, not the offset that was asked for.
+        start = end = total
     if end < total:
-        footer = f'\n[chars {start}–{end} of {total}; process(action="logs", id="{process_id}", offset={end}) for more]'
-    elif offset is None and start > 0:
-        footer = f"\n[showing the last {end - start} chars of {total}; offset=0 for the start]"
+        footer = f'\n[chars {start}–{end} of {total}; process(action="logs", id="{process_id}", since={end}) for what follows, tail=true for the end]'
     else:
-        footer = ""
+        footer = f'\n[chars {start}–{end} of {total}; process(action="logs", id="{process_id}", since={end}) for what is written next]'
     if not text and total == 0:
         text = "(no output yet)"
     return ToolResult(text + footer, meta={"id": process_id, "offset": start, "end": end, "total": total})
@@ -101,7 +116,9 @@ def tools() -> list[Tool]:
                 "properties": {
                     "action": {"type": "string", "enum": list(ACTIONS), "description": "list, logs or stop."},
                     "id": {"type": "string", "description": "Process id from shell(background=true) or list."},
-                    "offset": {"type": "integer", "description": "logs: character offset to start at; omitted = the tail."},
+                    "tail": {"type": "boolean", "description": "logs: read the last page from the current end of the log, however much it has grown. Wins over since/offset; also the default when none of tail/since/offset are given."},
+                    "since": {"type": "integer", "description": "logs: character offset to read from, forward — hand it back the offset the previous read's footer named."},
+                    "offset": {"type": "integer", "description": "logs: same meaning as since, kept for back-compat. offset/since is ignored if tail is set."},
                     "limit": {"type": "integer", "description": "logs: characters to return; default and maximum are the tool output cap."},
                 },
                 "required": ["action"],

@@ -16,9 +16,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import re
 import shutil
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -62,16 +64,19 @@ Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 Add-Type -Namespace Loom -Name Native -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
 [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+[DllImport("user32.dll")] public static extern int PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
 [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
 '@
+try {
 [void][Loom.Native]::SetProcessDPIAware()
 $monitor = __MONITOR__; $scale = __SCALE__; $fmt = '__FMT__'; $out = '__OUT__'
 $rx = __RX__; $ry = __RY__; $rw = __RW__; $rh = __RH__; $win = '__WIN__'
 if ($win -ne '') {
   $p = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -like ('*' + $win + '*') } | Select-Object -First 1
   if ($null -eq $p) { throw ('no window whose title contains "' + $win + '"') }
+  $hwnd = $p.MainWindowHandle
   $r = New-Object Loom.Native+RECT
-  [void][Loom.Native]::GetWindowRect($p.MainWindowHandle, [ref]$r)
+  [void][Loom.Native]::GetWindowRect($hwnd, [ref]$r)
   $bounds = New-Object System.Drawing.Rectangle($r.Left, $r.Top, ($r.Right - $r.Left), ($r.Bottom - $r.Top))
 } elseif ($rw -gt 0 -and $rh -gt 0) {
   $bounds = New-Object System.Drawing.Rectangle($rx, $ry, $rw, $rh)
@@ -84,9 +89,31 @@ if ($win -ne '') {
 }
 if ($bounds.Width -le 0 -or $bounds.Height -le 0) { throw 'empty capture area' }
 $bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
-$g = [System.Drawing.Graphics]::FromImage($bmp)
-$g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-$g.Dispose()
+$capturedByWindow = $false
+if ($win -ne '') {
+  $g = [System.Drawing.Graphics]::FromImage($bmp)
+  $hdc = $g.GetHdc()
+  $pwOk = [Loom.Native]::PrintWindow($hwnd, $hdc, 0x2)
+  $g.ReleaseHdc($hdc)
+  $g.Dispose()
+  if ($pwOk -ne 0) {
+    $allBlack = $true
+    for ($ix = 0; $ix -lt 8; $ix++) {
+      for ($iy = 0; $iy -lt 8; $iy++) {
+        $px = [Math]::Min($bounds.Width - 1, [int]($bounds.Width * ($ix + 0.5) / 8))
+        $py = [Math]::Min($bounds.Height - 1, [int]($bounds.Height * ($iy + 0.5) / 8))
+        $c = $bmp.GetPixel($px, $py)
+        if ($c.R -ne 0 -or $c.G -ne 0 -or $c.B -ne 0) { $allBlack = $false }
+      }
+    }
+    if (-not $allBlack) { $capturedByWindow = $true }
+  }
+}
+if (-not $capturedByWindow) {
+  $g = [System.Drawing.Graphics]::FromImage($bmp)
+  $g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+  $g.Dispose()
+}
 if ($scale -lt 1) {
   $w = [Math]::Max(1, [int]($bounds.Width * $scale)); $h = [Math]::Max(1, [int]($bounds.Height * $scale))
   $small = New-Object System.Drawing.Bitmap $w, $h
@@ -96,11 +123,52 @@ if ($scale -lt 1) {
 }
 if ($fmt -eq 'jpeg') { $bmp.Save($out, [System.Drawing.Imaging.ImageFormat]::Jpeg) } else { $bmp.Save($out, [System.Drawing.Imaging.ImageFormat]::Png) }
 $bmp.Dispose()
+} catch {
+  Write-Output $_.Exception.Message
+  exit 1
+}
 """
 
 
 def _ps_literal(text: str) -> str:
     return text.replace("'", "''")
+
+
+_PS_ESCAPE_RE = re.compile(r"_x([0-9A-Fa-f]{4})_")
+
+
+def _unescape_ps(text: str) -> str:
+    """Undo PowerShell's `_xNNNN_` character escapes (CLIXML uses them for
+    control characters such as CR/LF)."""
+    return _PS_ESCAPE_RE.sub(lambda m: chr(int(m.group(1), 16)), text)
+
+
+def decode_clixml(text: str) -> str:
+    """Decode PowerShell's CLIXML error-stream serialisation into a plain
+    sentence. When stderr is piped (as ours is), PowerShell wraps a `throw`'d
+    error in `#< CLIXML` + an XML document instead of the plain message; that
+    CLIXML then leaked to the model as the "error". Text that does not start
+    with the CLIXML marker is returned unchanged. Never raises: malformed
+    input falls back to a best-effort tag strip."""
+    if not text.startswith("#< CLIXML"):
+        return text
+    body = text.split("\n", 1)[1] if "\n" in text else ""
+    try:
+        root = ET.fromstring(body)
+        pieces = [
+            (el.text or "")
+            for el in root.iter()
+            if el.tag.rsplit("}", 1)[-1] == "S" and el.get("S") == "Error"
+        ]
+        if pieces:
+            decoded = _unescape_ps("".join(pieces)).strip()
+            if decoded:
+                return decoded
+    except ET.ParseError:
+        pass
+    # Fall back to a crude tag strip so a malformed document is still readable.
+    stripped = _unescape_ps(re.sub(r"<[^>]+>", " ", body)).strip()
+    return stripped or text
 
 
 def _windows_script(spec: CaptureSpec) -> str:
@@ -133,7 +201,8 @@ async def _run(argv: list[str]) -> tuple[int, str]:
     except asyncio.TimeoutError:
         proc.kill()
         raise CaptureError(f"{argv[0]} did not finish within {CAPTURE_TIMEOUT_S:g}s") from None
-    return int(proc.returncode or 0), (out or b"").decode("utf-8", errors="replace").strip()
+    text = (out or b"").decode("utf-8", errors="replace").strip()
+    return int(proc.returncode or 0), decode_clixml(text)
 
 
 def _first_line(text: str) -> str:

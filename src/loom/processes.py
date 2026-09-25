@@ -29,6 +29,10 @@ child survives a restart, but while the handle lives `stop` terminates the whole
 reaches descendants whose parent is gone. A restart loses the handle (a Job Object is a
 handle, not a row) and `stop` falls back to `kill_tree(pid)`. Every Job Object call is
 best effort: a sandbox that refuses one logs at debug and the old behaviour continues.
+
+What the containment ends is named in the shell result (2026-09-24, after a desk spent
+40 minutes not seeing it): `job_pids` + `process_name` on Windows, `group_pids`
+elsewhere, snapshotted before the job closes or the group is killed.
 """
 
 from __future__ import annotations
@@ -109,12 +113,100 @@ def pid_alive(pid: int | None) -> bool:
     return True
 
 
+def process_name(pid: int | None) -> str:
+    """The executable's basename for a pid (`game.exe`), or "" when it cannot be read —
+    a dead pid, a process owned by someone else, a sandbox that refuses the handle.
+    Windows only; elsewhere names come from `group_pids`."""
+    if not pid or int(pid) <= 0 or os.name != "nt":
+        return ""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k = _kernel32()
+        handle = k.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not handle:
+            return ""
+        try:
+            size = wintypes.DWORD(32768)
+            buf = ctypes.create_unicode_buffer(size.value)
+            if not k.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+                return ""
+            return os.path.basename(buf.value.replace("\\", "/"))
+        finally:
+            k.CloseHandle(handle)
+    except Exception as exc:  # pragma: no cover - platform dependent
+        log.debug("process name for pid %s unavailable: %s", pid, exc)
+        return ""
+
+
+def group_pids(pgid: int | None) -> list[tuple[int, str]]:
+    """Every process in POSIX process group `pgid`, as `(pid, name)`. `ps` first, then
+    `/proc` where there is no `ps`. Best effort; empty on Windows (the job knows)."""
+    if not pgid or int(pgid) <= 0 or os.name == "nt":
+        return []
+    pgid = int(pgid)
+    text = ""
+    try:
+        text = subprocess.run(
+            ["ps", "-o", "pid=,comm=", "-g", str(pgid)],
+            capture_output=True, timeout=10, check=False, text=True,
+        ).stdout
+    except Exception as exc:  # pragma: no cover - platform dependent
+        log.debug("ps failed for group %s: %s", pgid, exc)
+    rows: list[tuple[int, str]] = []
+    for line in text.splitlines():
+        parts = line.split(None, 1)
+        if parts and parts[0].isdigit():
+            rows.append((int(parts[0]), parts[1].strip() if len(parts) > 1 else ""))
+    return rows or _proc_group_pids(pgid)
+
+
+def _proc_group_pids(pgid: int) -> list[tuple[int, str]]:  # pragma: no cover - platform dependent
+    """`/proc/<pid>/stat` fallback: `pid (comm) state ppid pgrp …`, so the field after
+    the last `)` at index 2 is the group."""
+    rows: list[tuple[int, str]] = []
+    try:
+        entries = os.listdir("/proc")
+    except Exception as exc:
+        log.debug("/proc unavailable: %s", exc)
+        return rows
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            head, _, rest = Path(f"/proc/{entry}/stat").read_text(errors="replace").rpartition(")")
+            fields = rest.split()
+            if len(fields) >= 3 and int(fields[2]) == pgid:
+                rows.append((int(entry), head.partition("(")[2]))
+        except Exception:
+            continue
+    return rows
+
+
+def kill_group(pgid: int | None) -> None:
+    """SIGKILL a POSIX process group — what a foreground shell call leaves behind once
+    its own child is gone. Best effort; a no-op on Windows, where the kill-on-close Job
+    Object does it, and never our own group."""
+    if not pgid or int(pgid) <= 0 or os.name == "nt":
+        return
+    try:
+        if int(pgid) == os.getpgrp():
+            return
+        os.killpg(int(pgid), signal.SIGKILL)
+    except Exception as exc:  # pragma: no cover - platform dependent
+        log.debug("killpg %s failed: %s", pgid, exc)
+
+
 # -- Windows Job Objects (ctypes; no-ops elsewhere) -------------------------------------
 
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
 _JobObjectExtendedLimitInformation = 9
 _PROCESS_SET_QUOTA = 0x0100
 _PROCESS_TERMINATE = 0x0001
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_JobObjectBasicProcessIdList = 3
+_JOB_PID_CAPACITY = 512  # pids one query can name; a foreground call never has more
 
 
 def _kernel32() -> Any:
@@ -134,6 +226,10 @@ def _kernel32() -> Any:
     k.TerminateJobObject.argtypes = [wintypes.HANDLE, ctypes.c_uint]
     k.CloseHandle.restype = wintypes.BOOL
     k.CloseHandle.argtypes = [wintypes.HANDLE]
+    k.QueryInformationJobObject.restype = wintypes.BOOL
+    k.QueryInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD, wintypes.LPDWORD]
+    k.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    k.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, wintypes.LPDWORD]
     return k
 
 
@@ -205,6 +301,33 @@ def assign(job: int | None, pid: int | None) -> bool:
     except Exception as exc:  # pragma: no cover - platform dependent
         log.debug("assign to job failed for pid %s: %s", pid, exc)
         return False
+
+
+def job_pids(job: int | None) -> list[int]:
+    """Every process still in the job. Snapshot it before `terminate_job` or `close`:
+    for a kill-on-close job, dropping the handle is the kill. Best effort; empty where
+    there are no Job Objects (POSIX) or the query failed."""
+    if job is None or os.name != "nt":
+        return []
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class PID_LIST(ctypes.Structure):
+            _fields_ = [
+                ("NumberOfAssignedProcesses", wintypes.DWORD),
+                ("NumberOfProcessIdsInList", wintypes.DWORD),
+                ("ProcessIdList", ctypes.c_size_t * _JOB_PID_CAPACITY),  # ULONG_PTR[1] in the header
+            ]
+
+        buf = PID_LIST()
+        if not _kernel32().QueryInformationJobObject(job, _JobObjectBasicProcessIdList, ctypes.byref(buf), ctypes.sizeof(buf), None):
+            return []
+        count = min(int(buf.NumberOfProcessIdsInList), _JOB_PID_CAPACITY)
+        return [int(buf.ProcessIdList[i]) for i in range(count)]
+    except Exception as exc:  # pragma: no cover - platform dependent
+        log.debug("job pid list unavailable: %s", exc)
+        return []
 
 
 def terminate_job(job: int | None) -> bool:

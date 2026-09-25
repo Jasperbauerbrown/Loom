@@ -120,10 +120,10 @@ async def test_logs_page_like_recall(app, ctx, project, fake):
     app.settings.set(app.db, "conversation.tool_output_cap", "500")  # the smallest the setting allows
     tool = app.tools.get("process")
     first = await dispatch.execute(app, ctx, tool, {"action": "logs", "id": row["id"], "offset": 0})
-    assert first.content.startswith("0123456789" * 50) and f'[chars 0–500 of 600; process(action="logs", id="{row["id"]}", offset=500) for more]' in first.content
+    assert first.content.startswith("0123456789" * 50) and f'[chars 0–500 of 600; process(action="logs", id="{row["id"]}", since=500) for what follows, tail=true for the end]' in first.content
     assert "artifact_id" not in first.meta  # paged: never spilled, even at exactly the cap
     tail = await dispatch.execute(app, ctx, tool, {"action": "logs", "id": row["id"]})
-    assert "[showing the last 500 chars of 600; offset=0 for the start]" in tail.content
+    assert f'[chars 100–600 of 600; process(action="logs", id="{row["id"]}", since=600) for what is written next]' in tail.content
     page = app.processes.read_log(row["id"], offset=None, limit=5000)  # clamped to the cap
     assert page["offset"] == 100 and page["end"] == 600 and page["total"] == 600
 
