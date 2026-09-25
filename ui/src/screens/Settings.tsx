@@ -26,6 +26,7 @@ const TAB_ORDER = [
   "conversation",
   "knowledge",
   "permissions",
+  "tools",
   "integrations",
   "triggers",
   "system",
