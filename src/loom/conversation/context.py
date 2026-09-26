@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .. import db, items, prompts
+from ..artifacts import conversation_dir
 from ..tools.registry import Tool
 from . import events, inbox, pins, status, worktree
 
@@ -283,6 +284,11 @@ def filesystem_block(app, conv: dict[str, Any]) -> str:  # type: ignore[no-untyp
     protected = paths.get("protected") or []
     if protected:
         lines.append("protected (always ask): " + ", ".join(protected))
+    # Scratch work belongs in the conversation's own artifacts folder: a thread that
+    # downloaded into `/tmp` left the roots, asked for approval, and shared the folder
+    # with every program on the machine (2026-09-25). The shell's TMPDIR agrees.
+    scratch = fs_guard.normalise(str(conversation_dir(app, conv["id"])))
+    lines.append(prompts.load("context/scratch").strip().replace("{path}", scratch))
     if conv.get("worktree"):
         # A thread spawned with isolation="worktree" (03 §6.7) works in its own checkout,
         # which is already its first root; this line says why that path is not the repo

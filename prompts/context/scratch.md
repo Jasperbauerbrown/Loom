@@ -1,0 +1,1 @@
+scratch: this conversation's own folder is {path}. Downloads, scratch files and intermediate outputs go there, not in `/tmp` or the system temp directory: it is already inside the roots, it is yours alone, and the user can open it. The shell's TMPDIR points there too.

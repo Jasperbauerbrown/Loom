@@ -1130,3 +1130,42 @@ sessions do not re-litigate.
   not a silent downgrade. On archive a clean worktree is removed and a dirty one is kept
   with a system event saying why. 03 §15's release worktree becomes one use of this
   mechanism (audit #15 in the backlog).
+- **2026-09-25** — **The user's own desk request authorises reversible external
+  effects.** On the desk the person typed "please start the bot again"; the judge asked
+  about `npm start` because a bot that connects to Discord is an external side effect, and
+  the prompt said scope never widens the test. The person's own typed instruction is not
+  injected data, so the judge now sees who wrote the request: `Request that led here
+  (typed by the user on the desk)` when every claimed row is `source="user"` on the desk,
+  `(untrusted data)` for everything else (a thread's goal or handoff is the desk model's
+  text; connector, schedule and thread-report rows are someone else's). A specific user
+  request allows a reversible external effect — starting, stopping or restarting a
+  service, bot or server they named. The boundary stays where harm is hard to undo:
+  outbound communication on the person's behalf, payments, pushes, publishing, deleting
+  or overwriting work and credential access still ask, as does anything broader than the
+  request; vague requests count only when the stated intent makes them concrete, and
+  uncertainty is still an ask.
+- **2026-09-25** — **The intent fallback stays inside the turn.** `ToolContext.intent`
+  falls back to this turn's earlier text only, never the transcript: the judge in the
+  incident above was handed a project-ideas reply from 22 hours earlier as the "stated
+  intent". A bare first call now renders `(none stated)`; a resumed call takes its own
+  preamble, else what its turn said before it. `sleep` joined the default read-only shell
+  commands in the same change.
+- **2026-09-25** — **Paths are read the way the shell reads them.** A thread ran
+  `curl … -o /tmp/centauri/…` then `cd /tmp/centauri && grep …`; Git Bash put the file in
+  the user's temp dir, while `fs_guard.normalise` read `/tmp/centauri` as
+  `C:/tmp/centauri` — a different, real directory — so the guard, the classifier's
+  owned-file lookup and the shell disagreed about which file a path named. Allowing both
+  spellings as roots cannot fix that. On Windows `normalise` now reads every POSIX
+  absolute path through Git Bash's own mount table (`/tmp` → `%TEMP%`, `/bin` →
+  `<git>/usr/bin`, `/` and any unmounted `/foo` → the Git install root), asked once per
+  process by running `mount` under the same bash the shell tool finds, derived from the
+  bash path and `%TEMP%` if that fails, empty without Git Bash. One function, so every
+  consumer (guard, shell cwd, pre-filter, classifier) agrees without edits.
+- **2026-09-25** — **Scratch work goes in the conversation's artifacts folder.** The
+  harness block's Filesystem section names it (`scratch: this conversation's own folder
+  is …`) as the place for downloads and intermediate files instead of `/tmp`, which is
+  outside the roots, asks for approval, and is shared with every program on the machine;
+  the shell's `TMPDIR` points there too, so `mktemp` and `tempfile` follow. `TEMP`/`TMP`
+  are deliberately untouched: Git Bash mounts `/tmp` at `TEMP`, and moving it per
+  conversation would make the per-process mount table — and so the guard — disagree
+  with the shell about `/tmp` again.

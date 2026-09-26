@@ -82,6 +82,7 @@ def _summary(ctx: ToolContext) -> dict[str, Any]:
         "call_id": str(getattr(ctx, "call_id", "") or ""),
         "intent": str(getattr(ctx, "intent", "") or ""),
         "request_text": str(getattr(ctx, "request_text", "") or ""),
+        "request_from_user": bool(getattr(ctx, "request_from_user", False)),
         "policy": str(meta.get("policy") or ""),
         "decision": str(meta.get("decision") or ""),
         "reason": str(meta.get("reason") or ""),

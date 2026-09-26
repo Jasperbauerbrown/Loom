@@ -54,7 +54,8 @@ class TurnState:
     forced_compactions: int = 0
     extras: dict[str, Any] = field(default_factory=dict)  # shared with every ToolContext this turn
     request_text: str = ""
-    last_assistant_text: str = ""  # the newest non-empty step text; the intent fallback
+    request_from_user: bool = False  # request_text is the user's own typed words on the desk
+    last_assistant_text: str = ""  # this turn's newest non-empty step text; the intent fallback
     last_result: Result | None = None
     last_request: ChatRequest | None = None
     finished: dict[str, Any] | None = None
@@ -142,7 +143,7 @@ async def _turn(app, state: TurnState) -> None:  # type: ignore[no-untyped-def]
         persisted = [int(r["persisted_event_id"]) for r in claimed if r.get("persisted_event_id")]
         state.turn_start_event_id = min([events.max_id(app, cid) + 1, *persisted])
     _persist_claimed(app, state, claimed)
-    state.request_text = "\n".join(r.get("content") or "" for r in claimed) or _last_user_text(app, cid)
+    state.request_text, state.request_from_user = _request(app, conv, claimed)
     resolved = await resolve_knowledge(app, conv, "\n".join(r.get("content") or "" for r in claimed))
     ctx = assemble(app, conv, claimed, state.turn_start_event_id, resolved=resolved)
 
@@ -352,19 +353,19 @@ async def _stream(app, state: TurnState, request: ChatRequest) -> Result:  # typ
 def _tool_ctx(app, state: TurnState, call_id: str, event_id: int | None, intent: str = "") -> ToolContext:  # type: ignore[no-untyped-def]
     return ToolContext(
         app=app, conversation=state.conv, call_id=call_id, event_id=event_id,
-        request_text=state.request_text, intent=intent, priority=state.priority, meta={}, extras=state.extras,
+        request_text=state.request_text, request_from_user=state.request_from_user, intent=intent, priority=state.priority, meta={}, extras=state.extras,
     )
 
 
 def _intent(app, state: TurnState, text: str) -> str:  # type: ignore[no-untyped-def]
     """What the turn said it was doing when it made this step's calls. The classifier
     reads it beside `request_text`, which for the desk is only the last user message
-    ("go ahead") — too thin to judge a command by (TD audit F1)."""
-    if text:
-        return text
-    if state.last_assistant_text:
-        return state.last_assistant_text
-    return _last_assistant_text(app, state.cid)
+    ("go ahead") — too thin to judge a command by (TD audit F1).
+
+    The fallback is this turn's own earlier text and nothing older: a bare call at the
+    start of a turn has no intent, and "(none stated)" is honest where a reply from a
+    previous day is not (2026-09-25)."""
+    return text or state.last_assistant_text
 
 
 def _is_read_only(app, call: ToolCall) -> bool:  # type: ignore[no-untyped-def]
@@ -479,11 +480,12 @@ async def _repair(app, state: TurnState, paused: bool) -> str | bool:  # type: i
     missing = [c for c in calls if c.id not in present]
     if not missing:
         return False
-    state.request_text = _last_user_text(app, cid)
+    state.request_text, state.request_from_user = _request(app, state.conv, [])
     state.priority = PRIORITY_INTERACTIVE if state.conv["kind"] == "desk" else PRIORITY_BACKGROUND
-    # A call executed after an approval carries the intent it was made with: the preamble
-    # the model wrote in the step that issued it, persisted on the tool_call event.
-    resumed_intent = tc["meta"].get("text") or ""
+    # A call executed after an approval carries the intent it was made with, and the
+    # resumed turn's later bare steps fall back to it like any other step text.
+    resumed_intent = _resumed_intent(app, cid, tc)
+    state.last_assistant_text = resumed_intent
     # …and the step it was made at. A resumed turn continues its budget rather than
     # starting a fresh one (65 of 100 steps became "plenty of steps", TD audit F6). The
     # INTERRUPTED branch below deliberately leaves `steps` at 0: a turn whose results were
@@ -636,17 +638,33 @@ def _persist_claimed(app, state: TurnState, rows: list[dict[str, Any]], ctx: Con
             ctx.turn.append(msg)
 
 
-def _last_user_text(app, cid: str) -> str:  # type: ignore[no-untyped-def]
-    last = events.last(app, cid, 1, kinds=["user"])
-    return last[0]["content"] if last else ""
+def _request(app, conv: dict[str, Any], rows: list[dict[str, Any]]) -> tuple[str, bool]:  # type: ignore[no-untyped-def]
+    """(request_text, from_user) for the classifier: the claimed rows' text, else the
+    last user event (a repaired turn claims nothing). `from_user` is true only on the
+    desk when every row is the user's own typed message (source "user"); a thread's
+    goal or handoff, a thread report, a connector or schedule message is someone else's
+    text and stays untrusted data (03 §9.5, 2026-09-25)."""
+    desk = conv.get("kind") == "desk"
+    if rows:
+        text = "\n".join(r.get("content") or "" for r in rows)
+        return text, desk and all(inbox.is_user_source(r) for r in rows)
+    last = events.last(app, conv["id"], 1, kinds=["user"])
+    if not last:
+        return "", False
+    return last[0]["content"] or "", desk and (last[0]["meta"].get("source") or "user") == "user"
 
 
-def _last_assistant_text(app, cid: str) -> str:  # type: ignore[no-untyped-def]
-    """The last thing the model said in this conversation: an `assistant` event's content
-    or a `tool_call` event's preamble, whichever is later and non-empty. Bounded lookback —
-    a turn that starts with a bare tool call has no intent of its own, and an old one is
-    better than none, but it is not worth a transcript scan."""
-    for ev in reversed(events.last(app, cid, 20, kinds=["assistant", "tool_call"])):
+def _resumed_intent(app, cid: str, tc: dict[str, Any]) -> str:  # type: ignore[no-untyped-def]
+    """The intent of a call resumed by `_repair`: the preamble the model wrote in the
+    step that issued it (persisted on the tool_call event), else the newest text the
+    same turn said before it — `assistant` content or a `tool_call` preamble after the
+    turn's last user message. Never an earlier turn's."""
+    own = tc["meta"].get("text") or ""
+    if own.strip():
+        return own
+    user = events.list_events(app, cid, before=tc["id"], limit=1, kinds=["user"], descending=True)
+    since = user[0]["id"] if user else 0
+    for ev in reversed(events.list_events(app, cid, after=since, before=tc["id"], limit=10_000, kinds=["assistant", "tool_call"])):
         text = (ev["content"] if ev["kind"] == "assistant" else ev["meta"].get("text")) or ""
         if text.strip():
             return text

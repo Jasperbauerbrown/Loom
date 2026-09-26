@@ -186,3 +186,88 @@ def test_normalise_reads_msys_and_cygwin_drive_paths():
     assert fs_guard.normalise("/c") == "C:/"
     # a relative path that merely starts with a letter is untouched
     assert fs_guard.normalise("c/Users", cwd="D:/base") == "D:/base/c/Users"
+
+
+# -- Git Bash mounts (2026-09-25) --------------------------------------------------
+FAKE_MOUNTS = {
+    "/": "G:/Git",
+    "/bin": "G:/Git/usr/bin",
+    "/tmp": "T:/Users/me/AppData/Local/Temp",
+}
+
+
+@pytest.fixture
+def mounts(monkeypatch):
+    """A fixed mount table, so these tests never depend on this machine's Git install."""
+    monkeypatch.setattr(fs_guard, "msys_mounts", lambda: dict(FAKE_MOUNTS))
+    return FAKE_MOUNTS
+
+
+@pytest.mark.skipif(not WINDOWS, reason="Git Bash mounts only mean something on Windows")
+def test_normalise_reads_posix_paths_through_the_git_bash_mount_table(mounts):
+    # /tmp is the user's temp dir in Git Bash, not C:/tmp: a thread downloaded to
+    # /tmp/centauri and the guard judged a different directory (2026-09-25).
+    assert fs_guard.normalise("/tmp/x") == "T:/Users/me/AppData/Local/Temp/x"
+    assert fs_guard.normalise("/tmp") == "T:/Users/me/AppData/Local/Temp"
+    assert fs_guard.normalise("/bin/ls") == "G:/Git/usr/bin/ls"
+    assert fs_guard.normalise("/usr/bin") == "G:/Git/usr/bin"  # through `/`, like Git Bash
+    assert fs_guard.normalise("/") == "G:/Git"
+    assert fs_guard.normalise("/foo/bar") == "G:/Git/foo/bar"  # not a mount: under the root
+    assert fs_guard.normalise("/tmpfoo") == "G:/Git/tmpfoo"  # a prefix is not a mount point
+    # drive spellings, relative paths and UNC paths are untouched by the table
+    assert fs_guard.normalise("/c/Users/x") == "C:/Users/x"
+    assert fs_guard.normalise("rel/x", cwd="D:/base") == "D:/base/rel/x"
+    assert fs_guard.normalise("//host/share/x") == "//host/share/x"
+
+
+@pytest.mark.skipif(not WINDOWS, reason="Git Bash mounts only mean something on Windows")
+def test_a_root_added_as_the_windows_temp_path_contains_the_posix_spelling(app, mounts):
+    fs_guard.add_root(app, r"T:\Users\me\AppData\Local\Temp\centauri", added_by="test")
+    desk = _desk(app)
+    assert fs_guard.within_roots(app, desk, "/tmp/centauri/data.json")
+    assert isinstance(fs_guard.check(app, desk, _tool(), {"path": "/tmp/centauri/x"}), fs_guard.GuardOk)
+    ask = fs_guard.check(app, desk, _tool(), {"path": "/tmp/elsewhere/x"})
+    assert isinstance(ask, fs_guard.GuardAsk) and "T:/Users/me/AppData/Local/Temp/elsewhere/x" in ask.reason
+
+
+@pytest.mark.skipif(not WINDOWS, reason="Git Bash mounts only mean something on Windows")
+def test_no_git_bash_means_no_mounts_and_the_old_reading(monkeypatch):
+    monkeypatch.setattr(fs_guard, "msys_mounts", lambda: {})
+    drive = os.path.splitdrive(os.getcwd())[0].replace("\\", "/")
+    assert fs_guard.normalise("/tmp/x") == f"{drive}/tmp/x"
+
+
+@pytest.mark.skipif(not WINDOWS, reason="Git Bash mounts only mean something on Windows")
+def test_mount_table_parsing_and_fallback(monkeypatch):
+    import subprocess
+    import types
+
+    table = (
+        "C:/Program Files/Git on / type ntfs (binary,noacl,auto)\n"
+        "C:/Program Files/Git/usr/bin on /bin type ntfs (binary,noacl,auto)\n"
+        "C:/Users/me/AppData/Local/Temp on /tmp type ntfs (binary,noacl,posix=0,usertemp)\n"
+        "C: on /c type ntfs (binary,noacl,posix=0,user,noumount,auto)\n"
+    )
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: types.SimpleNamespace(stdout=table))
+    assert fs_guard._ask_mounts("X:/Git/bin/bash.exe") == {
+        "/": "C:/Program Files/Git",
+        "/bin": "C:/Program Files/Git/usr/bin",
+        "/tmp": "C:/Users/me/AppData/Local/Temp",
+    }
+    # Asking failed: the defaults come from where bash lives and the temp dir.
+    monkeypatch.setenv("TEMP", r"T:\tmpdir")
+    for bash in (r"X:\Git\bin\bash.exe", r"X:\Git\usr\bin\bash.exe"):
+        assert fs_guard._derived_mounts(bash) == {"/": "X:/Git", "/bin": "X:/Git/usr/bin", "/tmp": "T:/tmpdir"}
+
+
+def test_prefilter_protected_check_reads_mounts_too(monkeypatch, tmp_path):
+    """The pre-filter's protected-path check goes through `normalise`, so a protected
+    file in the temp dir is protected under its `/tmp` spelling as well."""
+    from loom.tools import shell_prefilter as pf
+
+    if not WINDOWS:
+        pytest.skip("Git Bash mounts only mean something on Windows")
+    monkeypatch.setattr(fs_guard, "msys_mounts", lambda: {"/": "G:/Git", "/tmp": str(tmp_path).replace("\\", "/")})
+    protected = [str(tmp_path / "secret.env")]
+    assert pf.names_protected(["/tmp/secret.env"], protected) is True
+    assert pf.names_protected(["/tmp/other.txt"], protected) is False

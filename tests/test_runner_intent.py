@@ -3,8 +3,9 @@
 The classifier used to see only `request_text`, which for the desk is the last user
 message. Seven identical `powershell -File <script>` calls were asked about because
 "the 'Desk' goal does not clearly authorize" them - the desk has no goal, and "go ahead"
-is not one. The runner now carries the step's own preamble, with a fallback chain so a
-bare tool call is never intent-less.
+is not one. The runner now carries the step's own preamble, falling back to what the
+same turn said earlier - never to an earlier turn (2026-09-25: a project-ideas reply from
+22 hours before became the "stated intent" of `npm start`).
 """
 
 from __future__ import annotations
@@ -56,9 +57,9 @@ async def test_intent_is_the_step_text_then_the_last_one(app, fake):
     ]
 
 
-async def test_a_turn_that_opens_with_a_bare_call_falls_back_to_the_transcript(app, fake):
-    """A first step with no text has no intent of its own; the last thing the model said
-    in this conversation (an assistant event, or an earlier step's preamble) is it."""
+async def test_a_turn_that_opens_with_a_bare_call_has_no_intent(app, fake):
+    """A first step with no text has no intent of its own, and an earlier turn's reply is
+    not one: the judge sees "(none stated)" rather than yesterday's conversation."""
     desk = app.desk_id()
     seen: list[str] = []
     _probe(app, "probe", "allow", seen)
@@ -70,7 +71,7 @@ async def test_a_turn_that_opens_with_a_bare_call_falls_back_to_the_transcript(a
     conversation.post(app, desk, "go ahead")
     await _run(app, desk)
 
-    assert seen == ["I will run the deploy script next."]
+    assert seen == [""]
 
 
 async def test_an_empty_transcript_gives_an_empty_intent(app, fake):
@@ -107,5 +108,97 @@ async def test_a_call_executed_after_an_approval_keeps_the_intent_it_was_made_wi
     await _run(app, desk)
 
     # [0] the approved call, executed by _repair; [1] the next step, which has no text and
-    # falls back through an empty TurnState to the transcript.
+    # falls back to the resumed call's intent.
     assert seen == ["Installing the dependency now.", "Installing the dependency now."]
+
+
+async def test_a_resumed_bare_call_takes_the_same_turns_earlier_text(app, fake):
+    """After a restart the TurnState is empty; a resumed call with no preamble of its own
+    takes the newest text its turn said before it."""
+    desk = app.desk_id()
+    seen: list[str] = []
+    _probe(app, "probe_ask", "ask", seen)
+    _probe(app, "probe", "allow", seen)
+    fake.script(
+        Scripted(content="Looking at the service first.", tool_calls=[("probe", {})]),
+        Scripted(content="", tool_calls=[("probe_ask", {})]),
+        Scripted(content="done"),
+    )
+    conversation.post(app, desk, "restart it")
+    await _run(app, desk)
+    assert app.conversation(desk)["status"] == "waiting_approval"
+
+    approvals.decide(app, approvals.pending(app, desk)[0]["id"], "allow")
+    await _run(app, desk)
+
+    assert seen == ["Looking at the service first.", "Looking at the service first."]
+
+
+async def test_a_resumed_bare_call_never_takes_an_earlier_turns_text(app, fake):
+    desk = app.desk_id()
+    seen: list[str] = []
+    _probe(app, "probe_ask", "ask", seen)
+    fake.script(Scripted(content="Here are some project ideas."))
+    conversation.post(app, desk, "any ideas?")
+    await _run(app, desk)
+
+    fake.script(Scripted(content="", tool_calls=[("probe_ask", {})]), Scripted(content="done"))
+    conversation.post(app, desk, "start the bot")
+    await _run(app, desk)
+    approvals.decide(app, approvals.pending(app, desk)[0]["id"], "allow")
+    await _run(app, desk)
+
+    assert seen == [""]
+
+
+def _request_probe(app, seen: list[tuple[str, bool]]) -> None:
+    async def handler(ctx, args):
+        seen.append((ctx.request_text, ctx.request_from_user))
+        return ToolResult(content="ok")
+
+    tool = Tool(name="req_probe", description="req_probe", parameters={"type": "object", "properties": {}}, handler=handler)
+    app.tools.register(tool, replace=True)
+    permissions.set_policy(app, tool, "allow")
+
+
+async def test_request_is_from_the_user_only_for_a_typed_desk_message(app, fake):
+    """The classifier labels the request as the user's own words only when it is: the
+    desk, and every claimed row came from the user (2026-09-25)."""
+    desk = app.desk_id()
+    seen: list[tuple[str, bool]] = []
+    _request_probe(app, seen)
+
+    fake.script(Scripted(content="", tool_calls=[("req_probe", {})]), Scripted(content="done"))
+    conversation.post(app, desk, "please start the bot again")
+    await _run(app, desk)
+
+    fake.script(Scripted(content="", tool_calls=[("req_probe", {})]), Scripted(content="done"))
+    conversation.post(app, desk, "start the bot", source="connector:discord")
+    await _run(app, desk)
+
+    thread = conversation.create_thread(app, goal="start the bot", parent_id=desk, created_by="desk")["id"]
+    fake.script(Scripted(content="", tool_calls=[("req_probe", {})]), Scripted(content="done"))
+    await _run(app, thread)
+
+    assert seen[0] == ("please start the bot again", True)
+    assert seen[1][1] is False
+    assert seen[2][1] is False and "start the bot" in seen[2][0]
+
+
+async def test_a_resumed_desk_call_keeps_the_users_request(app, fake):
+    desk = app.desk_id()
+    seen: list[tuple[str, bool]] = []
+    _request_probe(app, seen)
+    probe_seen: list[str] = []
+    _probe(app, "probe_ask", "ask", probe_seen)
+    fake.script(
+        Scripted(content="Starting it.", tool_calls=[("probe_ask", {})]),
+        Scripted(content="", tool_calls=[("req_probe", {})]),
+        Scripted(content="done"),
+    )
+    conversation.post(app, desk, "please start the bot again")
+    await _run(app, desk)
+    approvals.decide(app, approvals.pending(app, desk)[0]["id"], "allow")
+    await _run(app, desk)
+
+    assert seen == [("please start the bot again", True)]

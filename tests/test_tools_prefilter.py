@@ -151,3 +151,16 @@ def test_fuzz_of_shell_metacharacters_never_grants_something_odd():
     for _ in range(200):
         command = " ".join(rng.choice(pieces) for _ in range(rng.randint(1, 8)))
         assert pf.is_readonly(command, ALLOW) in (True, False)
+
+
+@pytest.mark.parametrize("command", ["sleep 10", "sleep 2 && ls", "sleep 1; git status"])
+def test_sleep_is_read_only(command):
+    """Waiting changes nothing; a `sleep` between a background start and a status check
+    must not cost a classifier call (2026-09-25)."""
+    assert "sleep" in DEFAULT_SHELL_READONLY
+    assert pf.is_readonly(command, ALLOW) is True
+
+
+def test_sleep_does_not_launder_a_write():
+    assert pf.is_readonly("sleep 1 && rm -rf build", ALLOW) is False
+    assert pf.is_readonly("sleep 1 > out.txt", ALLOW) is False

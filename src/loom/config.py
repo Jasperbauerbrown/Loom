@@ -174,7 +174,7 @@ DEFAULT_SHELL_READONLY = [
     "ls", "dir", "cat", "type", "head", "tail", "less", "more", "wc", "grep", "rg",
     "find", "where", "which", "echo", "pwd", "printenv", "env", "tree", "stat", "file",
     "git status", "git log", "git diff", "git show", "git branch", "git remote",
-    "python --version", "node --version", "npm ls", "uv pip list", "pip list",
+    "python --version", "node --version", "npm ls", "uv pip list", "pip list", "sleep",
 ]
 
 FIELDS: list[Field] = [

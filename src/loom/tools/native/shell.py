@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from ... import prompts
+from ...artifacts import conversation_dir
 from ...processes import (
     assign,
     close,
@@ -220,6 +221,22 @@ def _kill_tree(proc: asyncio.subprocess.Process, job: int | None = None) -> None
     kill_tree(proc.pid)
 
 
+def scratch_dir(ctx: ToolContext) -> str | None:
+    """The conversation's artifacts folder, created, as the command's TMPDIR: `mktemp`,
+    Python's `tempfile` and the like land where the harness block already steers
+    downloads (2026-09-25). Only TMPDIR — TEMP and TMP stay the user's, because Git
+    Bash mounts `/tmp` at TEMP (`usertemp`) and `fs_guard.normalise` reads `/tmp`
+    through one per-process mount table; moving it per conversation would make the
+    guard and the shell disagree about `/tmp` again. None when it cannot be made."""
+    try:
+        folder = conversation_dir(ctx.app, ctx.conversation_id)
+        folder.mkdir(parents=True, exist_ok=True)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        log.warning("shell: no scratch folder for %s: %s", ctx.conversation.get("id"), exc)
+        return None
+    return normalise(str(folder))
+
+
 async def shell_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     command = str(args.get("command") or "").strip()
     if not command:
@@ -232,6 +249,9 @@ async def shell_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         return ToolResult.error(f"cwd does not exist: {cwd}")
 
     env = dict(os.environ)
+    scratch = scratch_dir(ctx)
+    if scratch:
+        env["TMPDIR"] = scratch
     extra = args.get("env")
     if isinstance(extra, dict):
         env.update({str(k): str(v) for k, v in extra.items()})

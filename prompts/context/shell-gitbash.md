@@ -7,3 +7,4 @@ directory.
 process's command line or its parent, call PowerShell: `powershell -NoProfile -Command
 "Get-CimInstance Win32_Process -Filter \"ProcessId=1234\" | Select-Object
 ProcessId,ParentProcessId,CommandLine"`.
+`/tmp` is a Git Bash mount of the Windows user temp directory, shared with every program and outside the roots; `/` is the Git install folder.

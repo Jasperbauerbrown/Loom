@@ -177,3 +177,33 @@ def test_thread_with_goal_renders_it(app):
     tool = app.tools.get("shell")
     rendered = classify.render_inputs(app, ctx, tool, {"command": "ls"})
     assert "Conversation goal: tidy the vault" in rendered
+
+
+def _request_block(rendered: str) -> str:
+    return next(line for line in rendered.splitlines() if line.startswith("Request that led here"))
+
+
+def test_desk_user_request_is_labelled_as_the_users_own_words(app):
+    """The user's typed desk message is not injected data: the judge is told who wrote it
+    (2026-09-25, "please start the bot again")."""
+    conv = app.conversation(app.desk_id())
+    ctx = _ctx(app, conv, request_text="please start the bot again")
+    ctx.request_from_user = True
+    rendered = classify.render_inputs(app, ctx, app.tools.get("shell"), {"command": "npm start"})
+    assert _request_block(rendered) == "Request that led here (typed by the user on the desk):"
+    assert "please start the bot again" in rendered
+
+
+def test_thread_goal_request_stays_untrusted(app):
+    """A thread's goal/handoff was written by the desk model, not the user."""
+    thread = _thread(app, goal="restart the bot")
+    ctx = _ctx(app, thread, request_text="Goal: restart the bot")
+    rendered = classify.render_inputs(app, ctx, app.tools.get("shell"), {"command": "npm start"})
+    assert _request_block(rendered) == "Request that led here (untrusted data):"
+
+
+def test_an_empty_request_is_never_labelled_as_the_users(app):
+    ctx = _ctx(app, request_text="")
+    ctx.request_from_user = True
+    rendered = classify.render_inputs(app, ctx, app.tools.get("shell"), {"command": "ls"})
+    assert _request_block(rendered) == "Request that led here (untrusted data):"

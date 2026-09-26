@@ -18,6 +18,7 @@ guard inside their own handlers. Nothing here is special-cased for them.
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import re
@@ -31,6 +32,7 @@ log = logging.getLogger(__name__)
 
 
 _MSYS_DRIVE = re.compile(r"^/(?:cygdrive/)?([A-Za-z])(?=/|$)")
+_MOUNT_LINE = re.compile(r"^(?P<win>.+?) on (?P<posix>/\S*) type ")
 
 
 def _from_msys(raw: str) -> str:
@@ -43,16 +45,101 @@ def _from_msys(raw: str) -> str:
     return f"{match.group(1).upper()}:" + (raw[match.end():] or "/")
 
 
+def _derived_mounts(bash: str) -> dict[str, str]:
+    """The Git for Windows defaults, derived from where its bash lives: `/` is the
+    install root, `/bin` is `<root>/usr/bin`, `/tmp` is the user's temp directory
+    (`usertemp` in its fstab). The fallback when asking the shell itself fails."""
+    parent = os.path.dirname(bash.replace("\\", "/"))
+    root = os.path.dirname(parent)
+    if os.path.basename(parent).lower() == "bin" and os.path.basename(root).lower() == "usr":
+        root = os.path.dirname(root)  # <root>/usr/bin/bash.exe
+    root = root.replace("\\", "/")
+    temp = (os.environ.get("TEMP") or os.environ.get("TMP") or "").replace("\\", "/")
+    mounts = {"/": root, "/bin": f"{root}/usr/bin"}
+    if temp:
+        mounts["/tmp"] = temp
+    return mounts
+
+
+def _ask_mounts(bash: str) -> dict[str, str]:
+    """The live mount table, from `mount` run by the very bash the shell tool runs — so
+    a customised `/etc/fstab` is honoured too. Drive mounts (`C: on /c`) are left to
+    `_from_msys`, which needs no shell."""
+    import subprocess
+
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    out = subprocess.run(
+        [bash, "-c", "mount"], capture_output=True, text=True, timeout=10, creationflags=flags
+    ).stdout
+    mounts: dict[str, str] = {}
+    for line in out.splitlines():
+        match = _MOUNT_LINE.match(line.strip())
+        if not match:
+            continue
+        win, posix = match.group("win").replace("\\", "/"), match.group("posix")
+        if re.fullmatch(r"[A-Za-z]:/?", win):
+            continue
+        mounts[posix] = win.rstrip("/") if len(win) > 3 else win
+    return mounts
+
+
+@functools.lru_cache(maxsize=1)
+def msys_mounts() -> dict[str, str]:
+    """`{posix mount point: Windows path}` for the Git Bash the shell tool runs, asked
+    once per process. Empty off Windows or without Git Bash — then a POSIX absolute
+    path keeps its old meaning (the current drive). `/tmp` in Git Bash is the user's
+    temp directory, not `C:/tmp`; a guard reading it lexically disagreed with the shell
+    about which file a thread's download named (2026-09-25). Tests monkeypatch this."""
+    if os.name != "nt":
+        return {}
+    from .native.shell import find_git_bash  # lazy: shell imports this module
+
+    bash = find_git_bash()
+    if not bash:
+        return {}
+    mounts = _derived_mounts(bash)
+    try:
+        asked = _ask_mounts(bash)
+    except Exception as exc:
+        log.warning("fs guard: could not read Git Bash's mount table (%r); using defaults", exc)
+        asked = {}
+    if "/" in asked:
+        return asked
+    mounts.update(asked)
+    return mounts
+
+
+def _from_mounts(raw: str, mounts: dict[str, str]) -> str:
+    """A POSIX absolute path (`/tmp/x`, `/usr/bin`, `/`) read through the mount table,
+    longest mount point first; anything not under a narrower mount lands under `/`,
+    which is what Git Bash does with `/foo`. UNC (`//host/share`) is left alone."""
+    if not raw.startswith("/") or raw.startswith("//") or not mounts:
+        return raw
+    for point in sorted(mounts, key=len, reverse=True):
+        if point == "/":
+            return mounts[point].rstrip("/") + raw
+        if raw == point or raw.startswith(point + "/"):
+            return mounts[point] + raw[len(point):]
+    return raw
+
+
 def normalise(path: str, cwd: str | None = None) -> str:
     """Absolute, `..`-resolved, forward slashes, case preserved. Relative paths resolve
     against `cwd` (default: the process working directory). Lexical on purpose: a
     symlink must not be able to move a path out of a root behind the user's back, and
     the path need not exist yet (fs_write creates it). On Windows, MSYS/Cygwin drive
-    spellings (`/c/Users/...`) are read as `C:/Users/...`."""
+    spellings (`/c/Users/...`) are read as `C:/Users/...`, and every other POSIX
+    absolute path through Git Bash's mount table (`/tmp/x` → the user's temp dir), so
+    the guard and the shell name the same file."""
     raw = os.path.expanduser(str(path).strip().strip('"').strip("'"))
     raw = raw.replace("\\", "/")
     if os.name == "nt":
         raw = _from_msys(raw)
+        if raw.startswith("/") and not raw.startswith("//"):
+            try:
+                raw = _from_mounts(raw, msys_mounts())
+            except Exception:  # never raise: an unreadable mount table means no mounts
+                pass
     if not os.path.isabs(raw) and cwd:
         raw = os.path.join(str(cwd).replace("\\", "/"), raw)
     out = os.path.normpath(os.path.abspath(raw)).replace("\\", "/")

@@ -488,6 +488,25 @@ async def test_context_block_lists_the_roots_and_protected_paths(app, fake, tmp_
     assert line.startswith(f"loom: this backend serves http://127.0.0.1:{int(app.settings.get('general.port'))} (pid ")
 
 
+def test_filesystem_block_names_the_conversation_scratch_folder(app):
+    """Downloads and intermediate files go in the conversation's own artifacts folder,
+    named with its real path from assembly — not `/tmp`, which is outside the roots and
+    shared with every program (2026-09-25). The prose lives in prompts/context/scratch.md."""
+    from loom import prompts
+    from loom.artifacts import conversation_dir
+    from loom.tools import fs_guard
+
+    conv = app.conversation(app.desk_id())
+    block = context.filesystem_block(app, conv)
+    scratch = fs_guard.normalise(str(conversation_dir(app, conv["id"])))
+    assert f"scratch: this conversation's own folder is {scratch}." in block
+    assert "not in `/tmp`" in block and "{path}" not in block
+    assert "{path}" in prompts.load("context/scratch")
+    assert fs_guard.within_roots(app, conv, scratch)
+    thread = conversation.create_thread(app, goal="fetch a dataset", created_by="user")
+    assert fs_guard.normalise(str(conversation_dir(app, thread["id"]))) in context.filesystem_block(app, app.conversation(thread["id"]))
+
+
 async def test_harness_block_is_one_snapshot_per_turn_and_the_budget_is_the_only_tail(app, fake):
     """The block is built once per Context and reused for every step; only the trailing
     budget line differs between steps. Rebuilding it per step used to re-prefill the

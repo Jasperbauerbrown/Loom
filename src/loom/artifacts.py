@@ -144,10 +144,7 @@ class Store:
         return int(self.app.settings.get("conversation.image_max_mb")) * 1024 * 1024
 
     def _image_folder(self, conversation_id: str) -> Path:
-        cid = str(conversation_id or "")
-        if not cid or "/" in cid or "\\" in cid or cid in (".", ".."):
-            raise ValueError(f"invalid conversation id {conversation_id!r}")
-        return self.root / cid
+        return conversation_dir(self.app, conversation_id)
 
     def store_image(self, conversation_id: str, data: bytes, mime: str) -> dict[str, Any]:
         """Persist image bytes; returns `{"id", "mime", "bytes"}`. `ValueError` for an
@@ -324,6 +321,17 @@ class Store:
                 except OSError as exc:
                     log.warning("image %s: unlink failed (%s)", path.name, exc)
         return removed
+
+
+def conversation_dir(app: Any, conversation_id: str) -> Path:
+    """`artifacts/<conversation>`: spills, images, and the conversation's scratch folder —
+    where the harness block steers downloads and intermediate files, and where the
+    shell's TMPDIR points (2026-09-25). Always inside the allowed roots. Not created
+    here; whoever writes first creates it."""
+    cid = str(conversation_id or "")
+    if not cid or "/" in cid or "\\" in cid or cid in (".", ".."):
+        raise ValueError(f"invalid conversation id {conversation_id!r}")
+    return Path(app.artifacts_dir) / cid
 
 
 def install(app: Any) -> None:

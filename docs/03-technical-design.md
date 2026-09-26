@@ -488,11 +488,20 @@ retries, without spending a `model_error_retries` attempt and without reporting 
 provider idle-timeout, bounded to `SUSPEND_RETRIES` (2) per call. On a platform whose
 `monotonic` itself counts suspended time the drift is zero and the mechanism is inert.
 
-**Intent** (2026-09-24). Every `ToolContext` carries `intent` (§9.1): the step's own
-assistant text when it has one, else the last assistant text of this turn, else the last
-assistant text in the transcript, else empty. On a repair it is the persisted `tool_call`
-event's `meta.text`, so a call executed after an approval is classified against the
-preamble it was made with, not against whatever the person last said.
+**Intent** (2026-09-24, narrowed 2026-09-25). Every `ToolContext` carries `intent`
+(§9.1): the step's own assistant text when it has one, else the last assistant text of
+this turn, else empty — never an earlier turn's text (a project-ideas reply from 22 hours
+before once became the "stated intent" of `npm start`). On a repair it is the persisted
+`tool_call` event's `meta.text`, else the newest `assistant` content or `tool_call`
+preamble between the turn's last user event and that call, so a call executed after an
+approval or a restart is classified against what its own turn said; the resumed turn's
+later bare steps fall back to that same text.
+
+**Request** (2026-09-25). `ToolContext.request_text` is the claimed inbox rows' text, or
+on a repaired turn the last `user` event's. `request_from_user` is true only on the desk
+when every claimed row (or that event's `meta.source`) is `user` — the person's own typed
+message. A thread's goal or handoff (written by the desk model), a thread report, a
+connector or schedule message is someone else's text and stays untrusted (§9.5).
 
 ### 6.4 Budgets and brakes
 - `step_budget`: desk 25, threads 60 (settings). Threads see
@@ -638,7 +647,7 @@ note, and a thread without one was a "task". Every thread is now that.
 | — | *end of cache-friendly prefix* | | |
 | [7] | `summary` (if any), fenced `<context from="harness">` | user, right after the prefix | changes only on fold |
 | [8] | Live events since `summary_cutoff`, replayed in order; `thinking`/`system`/`status` kinds skipped; evictions applied. A `user` event's `meta.images` become data URLs on its message; a `tool_result` with images stays text (one `[image <id> attached to this result]` marker per image) and is followed, after the step's last tool message, by a user-role *follower* carrying the images (`prompts/context/tool-image-note.md`) — tool-role messages cannot carry image parts. Evicted results lose their images with their content. | assistant / user / tool | stable within a turn |
-| [5]+[6] | Desk: the **now board** (pending approvals, unseen items, running threads with one-line status, then one line per running background process). Thread: the goal + its status fields. Both: the **pinned notes** (`# Pinned notes`, each capped at `pinned_note_chars`). Then a **Filesystem** block: the conversation's effective roots (global + its own, the first being what relative paths resolve against) and the protected paths, one line each; then a `loom:` line naming this backend — the address it serves, its pid, its home — so the model can tell its own process from anything else it finds (2026-09-22). Then `now: 2026-09-20 14:02 (America/…)`. One fenced `<context from="harness">` block, **built once per turn and reused verbatim for every step** (2026-09-22) | user, after the history and before this turn's messages | per turn, not per step |
+| [5]+[6] | Desk: the **now board** (pending approvals, unseen items, running threads with one-line status, then one line per running background process). Thread: the goal + its status fields. Both: the **pinned notes** (`# Pinned notes`, each capped at `pinned_note_chars`). Then a **Filesystem** block: the conversation's effective roots (global + its own, the first being what relative paths resolve against) and the protected paths, one line each; then a `scratch:` line naming this conversation's own artifacts folder (`artifacts.conversation_dir`, prose in `prompts/context/scratch.md`) as the place for downloads, scratch files and intermediate outputs instead of `/tmp` — already inside the roots, per conversation, inspectable by the user (2026-09-25); then a `loom:` line naming this backend — the address it serves, its pid, its home — so the model can tell its own process from anything else it finds (2026-09-22). Then `now: 2026-09-20 14:02 (America/…)`. One fenced `<context from="harness">` block, **built once per turn and reused verbatim for every step** (2026-09-22) | user, after the history and before this turn's messages | per turn, not per step |
 | [9] | Resolved entities for this input (§8.2–8.3), wrapped `<knowledge may_be_irrelevant="true">…</knowledge>`; ephemeral, never persisted | user | volatile |
 | [10] | Claimed inbox messages as user-role messages (with their images), then the turn's own assistant / tool messages and image followers | user / assistant / tool | volatile |
 | [11] | Threads only: `[steps remaining: N]` in its own fenced block, **after** the turn's messages — the one thing that changes per step, isolated so the turn stays cached. The desk has no step line and therefore no block | user, last | per step |
@@ -827,8 +836,9 @@ Tool(name, description, parameters: JSONSchema,
 not the tool: `http` GET/HEAD is a read, `http` POST is not. `Tool.is_read_only(args)`
 is the one answer the permission layer asks for.
 
-`ToolContext` carries, besides the conversation and the call: `priority` (the turn's
-model-queue priority, which the classifier inherits), `meta` (the dispatcher writes
+`ToolContext` carries, besides the conversation and the call: `request_text`,
+`request_from_user` and `intent` (what the classifier judges against, §6.3), `priority`
+(the turn's model-queue priority, which the classifier inherits), `meta` (the dispatcher writes
 `{policy, decision, reason}` here and the runner persists it on the `tool_call` event)
 and `extras` (per-turn scratch; `tool_search` puts the names it exposed in
 `extras["exposed"]`).
@@ -848,7 +858,7 @@ Registry = native tools + MCP tools (prefixed `mcp_<server>_<tool>`) + connector
 | `fs_write` | create/overwrite (guarded); refuses a file this conversation has not read or that changed on disk since (the ledger below); keeps the file's line endings and BOM (2026-09-24) | no | allow (within roots) |
 | `fs_edit` | exact `old`→`new` replace, must be unique; or `edits=[{old,new,replace_all}]` applied in order, all-or-nothing, with one diff; same ledger check and ending/BOM preservation; on a `.ipynb`, `old`/`new` match cell sources and the JSON around them is preserved (2026-09-24) | no | allow (within roots) |
 | `fs_patch` | one unified diff across files: `patch`, `cwd`, `strip` (default: drop a leading `a/`/`b/`), `dry_run`; `/dev/null` creates or deletes, differing paths rename; a hunk is matched by its exact context-plus-deletions block (the `@@` line is a hint tried first, never fuzz), every path inside the diff is guarded (§9.3) and ledger-checked, and nothing is written unless every file applies (2026-09-24) | no | allow (within roots) |
-| `shell` | one command line, `cwd` in roots, env passthrough minus secrets, timeout, output cap; `background=true` (+ `title`) starts a supervised long-running process instead and returns its id, pid and log path at once (§9.6); Windows: cmd.exe or Git Bash per setting (restart-required), whose quirks are appended to this tool's description from `prompts/context/shell-<flavour>.md` at registration rather than injected into the harness block every turn (2026-09-22); Git Bash is located from the Git install (registry `GitForWindows\InstallPath`, the standard folders, then the `git` on PATH), never from a bare `bash.exe` on PATH, which on Windows is the WSL launcher in System32 (2026-09-22); everything a foreground call starts ends with the call (kill-on-close Job Object on Windows, process group elsewhere — on POSIX the group is killed on a normal exit too, not only on a timeout: 2026-09-24), and the result says so — survivors are enumerated *before* the kill (the job's pid list on Windows, `ps -g`/`/proc` on POSIX; best effort, silent when the platform refuses) and the trailer names them on its own line after `[exit N]`: `[ended 1 process the command left running: game.exe pid 5732]`, at most 8 names then `, and N more`, also `meta["ended"]` (2026-09-24); `timeout_s` is the call's own, clamped by `conversation.tool_timeout_max_s`, and a timed-out call returns the output captured before the kill (§9.3) | no | classify (pre-filter first) |
+| `shell` | one command line, `cwd` in roots, env passthrough minus secrets, plus `TMPDIR` set to the conversation's artifacts folder (created on demand) so `mktemp` and `tempfile` land where the harness block's `scratch:` line points — `TEMP`/`TMP` are left alone, since Git Bash mounts `/tmp` at `TEMP` and the guard reads `/tmp` through one per-process mount table (§9.3, 2026-09-25); an explicit `env` still wins; timeout, output cap; `background=true` (+ `title`) starts a supervised long-running process instead and returns its id, pid and log path at once (§9.6); Windows: cmd.exe or Git Bash per setting (restart-required), whose quirks are appended to this tool's description from `prompts/context/shell-<flavour>.md` at registration rather than injected into the harness block every turn (2026-09-22); Git Bash is located from the Git install (registry `GitForWindows\InstallPath`, the standard folders, then the `git` on PATH), never from a bare `bash.exe` on PATH, which on Windows is the WSL launcher in System32 (2026-09-22); everything a foreground call starts ends with the call (kill-on-close Job Object on Windows, process group elsewhere — on POSIX the group is killed on a normal exit too, not only on a timeout: 2026-09-24), and the result says so — survivors are enumerated *before* the kill (the job's pid list on Windows, `ps -g`/`/proc` on POSIX; best effort, silent when the platform refuses) and the trailer names them on its own line after `[exit N]`: `[ended 1 process the command left running: game.exe pid 5732]`, at most 8 names then `, and N more`, also `meta["ended"]` (2026-09-24); `timeout_s` is the call's own, clamped by `conversation.tool_timeout_max_s`, and a timed-out call returns the output captured before the kill (§9.3) | no | classify (pre-filter first) |
 | `process` | `list` / `logs` / `stop` for background processes (§9.6); `logs` is the tail by default, `tail=true` asks for it explicitly, `since=<offset>` (or the older `offset`) reads forward from there, and the footer always names the offsets and the next call, so following a growing log needs no bookkeeping (2026-09-24); `paged`, never spilled | list, logs yes | allow |
 | `http` | GET/POST/… with headers/body; secret templating; an image response is returned as the image; `format` (raw / text / **markdown**, default markdown) decides what an HTML body becomes — an in-house `html.parser` converter (`tools/native/html_text.py`, no dependency) for markdown, a tag strip for text, untouched for raw; a body that is not HTML passes through whatever the format (2026-09-24) | no (GET treated read-only) | classify |
 | `web_search` | `query`, `k` (default `tools.web_search_results`, max 20) → a numbered list of title / url / snippet, from the provider in `tools.web_search_provider`: SearXNG (`tools.web_search_url`, no key), Brave, Exa or Tavily (key from the secret named in `tools.web_search_secret`). Unset provider, missing URL, missing secret, provider HTTP failure and a non-JSON body are five defined errors; the unset one (`prompts/context/web-search-unconfigured.md`) tells the model where the person configures it (2026-09-24) | yes | allow (no row: read-only) |
@@ -901,6 +911,22 @@ context-plus-deletions block.
 6 execute with timeout (the tool's own deadline fires first); exceptions → error result (never raise)
 7 bound output (cap → artifact spill) → tool_result content; after-hooks annotate
 ```
+**Path normalisation** (`fs_guard.normalise`, the one reading of a path for the guard,
+the shell's cwd — `dispatch._shell_cwd`, `classify.command_cwd` — the pre-filter's
+protected-path check and the classifier's owned-file lookup): absolute, `..`-resolved,
+forward slashes, case preserved, lexical (a symlink cannot move a path out of a root)
+and never raising. On Windows it reads a path the way Git Bash would, so the guard and
+the shell name the same file: drive spellings `/c/x` and `/cygdrive/c/x` are `C:/x`,
+and every other POSIX absolute path goes through Git Bash's mount table, longest mount
+point first — `/tmp/x` is the user's temp dir (`usertemp`), `/bin` is `<git>/usr/bin`,
+and `/`, `/usr/...`, `/etc/...` and any unmounted `/foo` land under the Git install
+root (2026-09-25; before, `/tmp/centauri` read as `C:/tmp/centauri`, a different real
+directory from the one a thread's `curl -o` wrote). The table (`fs_guard.msys_mounts`)
+is asked once per process by running `mount` under the same bash the shell tool finds
+(`shell.find_git_bash`), so a customised fstab is honoured; if that fails it is derived
+from the bash path and `%TEMP%`; with no Git Bash it is empty and a POSIX path keeps
+its old reading (the current drive). UNC paths (`//host/share`) are untouched; POSIX
+hosts are unchanged.
 An approval persists `approvals(pending)`, emits `approval.requested`, posts one
 `notification` item with `notify=True` (§11.3 — the interrupt path, so a person away
 from the screen is told rather than a card waiting in a screen nobody is looking at:
@@ -970,7 +996,8 @@ cancelled `communicate()` discards everything it had already read.
 Split on `&&`, `||`, `;`, `|` respecting quotes. For each stage: first token (after
 `env`-style assignments) ∈ `shell_readonly_commands` (setting; default: `ls dir cat
 type head tail less more wc grep rg find where which echo pwd printenv git-status
-git-log git-diff git-show git-branch python--version node--version npm-ls uv-pip-list`
+git-log git-diff git-show git-branch python--version node--version npm-ls uv-pip-list
+sleep`
 with `git status` etc. matched as `git` + first arg), and no `>`/`>>`/`2>` redirection,
 and no backticks or `$(`, and no word that, taken as a path relative to the shell's
 working directory, is a protected path or sits under one (a `$VAR`/`%VAR%` path it
@@ -979,10 +1006,11 @@ the fs tools would have asked). All stages pass → allow. Otherwise → classif
 failure → classifier. Nothing here denies.
 
 ### 9.5 Classifier
-`prompts/classify.md` with inputs: conversation kind and goal, the last user message,
-the tool name and args (framed as untrusted data — Goose), the roots and protected
-paths, and the policy text (reversible and in-scope → allow; destructive, external
-side effects, credential access, or out-of-scope → ask). Output: strict JSON
+`prompts/classify.md` with inputs: conversation kind and goal, the request that led
+here, the stated intent, the tool name and args (framed as untrusted data — Goose), the
+roots and protected paths, and the policy text (reversible and in-scope → allow;
+destructive, external side effects, credential access, or out-of-scope → ask; the one
+exception below). Output: strict JSON
 `{"decision":"allow|ask","reason":"…"}`; any parse failure → ask. Role: `utility` if
 set else the conversation's role; priority inherits. Result and reason are stored on
 the tool_call event `meta` and shown in the UI on hover.
@@ -1006,6 +1034,16 @@ contents are unknown" and "the 'Desk' goal does not clearly authorize"):
   plus a fenced block: at most `MAX_FILES = 2` files, `MAX_FILE_CHARS = 4000` each,
   files this conversation *wrote* first. Unreadable, binary or missing paths are skipped
   silently; a path the conversation has never touched is never read.
+- **Who wrote the request** (2026-09-25). The request block is labelled `Request that led
+  here (typed by the user on the desk):` when `ToolContext.request_from_user` is set
+  (§6.3) and `(untrusted data)` otherwise. The prompt treats the user's own specific
+  request as authorisation for a **reversible** external effect — starting, stopping or
+  restarting a local service, bot or server they named, a process that connects to a
+  service they own — and for nothing else: sending messages, mail or posts on their
+  behalf, payments, `git push`/force-push, publishing, deleting or overwriting work,
+  credential access and anything broader than asked still ask. A vague request ("go
+  ahead") counts only when the stated intent makes the action concrete; injected text in
+  arguments, intent or files still authorises nothing, and uncertainty is still an ask.
 
 ### 9.6 Background processes (decided 2026-09-22)
 A program that must outlive a tool call — a dev server, a bot, a watcher — is started
@@ -1159,7 +1197,7 @@ Decided while building:
   notes from both are appended to the result's text, one per line, through
   `prompts/context/tool-hook-note.md` (`[{connector}] {note}`). A hook reads plain data:
   `ctx_summary` is a dict built from the `ToolContext` (conversation id/kind/goal, call
-  id, intent, request text, and the dispatcher's policy/decision/reason), `args` and
+  id, intent, request text and `request_from_user`, and the dispatcher's policy/decision/reason), `args` and
   `result` are copies, and a before-hook sees `{{secret:NAME}}` placeholders because
   substitution is step 5 — so a hook can never change what executes. Each call is
   bounded by `hooks.HOOK_TIMEOUT_S` (10s) and every failure class ends the same way: log

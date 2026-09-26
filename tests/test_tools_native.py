@@ -272,6 +272,27 @@ async def test_shell_passes_env_and_stdin(app, ctx, project):
     assert "piped-in" in result.content
 
 
+async def test_shell_tmpdir_is_the_conversation_scratch_folder(app, ctx, project):
+    """TMPDIR points at the conversation's artifacts folder, created on demand, so
+    `mktemp` and `tempfile` land where the harness block steers downloads — inside the
+    roots, not the machine-wide temp dir (2026-09-25). TEMP/TMP are left alone: Git
+    Bash mounts `/tmp` at TEMP, and the guard reads `/tmp` through that mount."""
+    from loom.artifacts import conversation_dir
+
+    folder = conversation_dir(app, ctx.conversation_id)
+    assert shell_tool.scratch_dir(ctx) == fs_guard.normalise(str(folder))
+    assert folder.is_dir()
+    assert fs_guard.within_roots(app, ctx.conversation, str(folder))
+    result = await run(app, ctx, "shell", {"command": 'echo "tmp=$TMPDIR"', "cwd": str(project)})
+    if "tmp=$TMPDIR" in result.content or "tmp=" not in result.content:
+        pytest.skip("POSIX shell not available for the round trip")
+    shown = result.content.split("tmp=", 1)[1].splitlines()[0].strip()
+    assert fs_guard.normalise(shown) == fs_guard.normalise(str(folder))
+    # an explicit env still wins
+    result = await run(app, ctx, "shell", {"command": 'echo "tmp=$TMPDIR"', "cwd": str(project), "env": {"TMPDIR": str(project)}})
+    assert fs_guard.normalise(result.content.split("tmp=", 1)[1].splitlines()[0].strip()) == fs_guard.normalise(str(project))
+
+
 # The flavour's quirks are prose in prompts/context/shell-<flavour>.md, appended to the
 # tool description at registration — not hardcoded, and not re-rendered into the harness
 # block every turn (2026-09-22).
