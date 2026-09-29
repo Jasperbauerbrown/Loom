@@ -151,6 +151,67 @@ async def test_a_resumed_bare_call_never_takes_an_earlier_turns_text(app, fake):
     assert seen == [""]
 
 
+def _carried_probe(app, name: str, mode: str, seen: list[tuple[str, bool]]) -> None:
+    """A tool that records the intent and whether it was carried from an earlier step."""
+
+    async def handler(ctx, args):
+        seen.append((ctx.intent, ctx.intent_carried))
+        return ToolResult(content=f"{name} ran")
+
+    tool = Tool(name=name, description=name, parameters={"type": "object", "properties": {}}, handler=handler)
+    app.tools.register(tool, replace=True)
+    permissions.set_policy(app, tool, mode)
+
+
+async def test_a_carried_intent_is_labelled_as_such(app, fake):
+    """"promoting now - this restarts me" from step 3 was read as the intent of five
+    later read-only calls and made each look suspicious (2026-09-28): the fallback stays,
+    but a call knows when its intent is an earlier step's text."""
+    desk = app.desk_id()
+    seen: list[tuple[str, bool]] = []
+    _carried_probe(app, "cprobe", "allow", seen)
+    fake.script(
+        Scripted(content="Promoting now.", tool_calls=[("cprobe", {})]),
+        Scripted(content="", tool_calls=[("cprobe", {})]),
+        Scripted(content="Checking the log.", tool_calls=[("cprobe", {})]),
+        Scripted(content="done"),
+    )
+    conversation.post(app, desk, "go ahead")
+    await _run(app, desk)
+
+    assert seen == [("Promoting now.", False), ("Promoting now.", True), ("Checking the log.", False)]
+
+
+async def test_a_bare_first_step_carries_nothing(app, fake):
+    desk = app.desk_id()
+    seen: list[tuple[str, bool]] = []
+    _carried_probe(app, "cprobe", "allow", seen)
+    fake.script(Scripted(content="", tool_calls=[("cprobe", {})]), Scripted(content="done"))
+    conversation.post(app, desk, "go ahead")
+    await _run(app, desk)
+
+    assert seen == [("", False)]
+
+
+async def test_a_resumed_call_carries_only_when_it_had_no_text_of_its_own(app, fake):
+    desk = app.desk_id()
+    seen: list[tuple[str, bool]] = []
+    _carried_probe(app, "cprobe_ask", "ask", seen)
+    _carried_probe(app, "cprobe", "allow", seen)
+    fake.script(
+        Scripted(content="Installing it.", tool_calls=[("cprobe_ask", {})]),
+        Scripted(content="", tool_calls=[("cprobe", {})]),
+        Scripted(content="done"),
+    )
+    conversation.post(app, desk, "go ahead")
+    await _run(app, desk)
+    approvals.decide(app, approvals.pending(app, desk)[0]["id"], "allow")
+    await _run(app, desk)
+
+    # the approved call had its own preamble; the bare step after it carries that text
+    assert seen == [("Installing it.", False), ("Installing it.", True)]
+
+
 def _request_probe(app, seen: list[tuple[str, bool]]) -> None:
     async def handler(ctx, args):
         seen.append((ctx.request_text, ctx.request_from_user))

@@ -49,6 +49,7 @@ class ToolContext:
     request_text: str = ""  # the claimed user text / thread goal, for classify and logs
     request_from_user: bool = False  # request_text is the user's own typed message on the desk (classify labels it so)
     intent: str = ""  # the turn's stated intent for this step: the assistant text before the call, else this turn's last assistant text (the classifier reads it beside request_text)
+    intent_carried: bool = False  # `intent` is this turn's earlier text, not this step's own preamble; the classifier labels it so (2026-09-28)
     priority: int = 0  # model-queue priority of the turn that issued the call (0 interactive)
     meta: dict[str, Any] = field(default_factory=dict)  # dispatcher writes {policy, decision, reason}
     extras: dict[str, Any] = field(default_factory=dict)  # per-turn scratch (tool_search's "exposed")

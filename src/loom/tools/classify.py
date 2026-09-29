@@ -200,6 +200,13 @@ def render_inputs(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) 
         "Conversation goal: (none recorded — the stated intent below is this turn's scope)"
     )
     intent_text = (ctx.intent or "").strip()[:MAX_ARG_CHARS] or "(none stated)"
+    # A carried intent is the turn's earlier preamble, not this step's: say so, or the
+    # judge reads "promoting now" as the intent of a `git log` (2026-09-28).
+    intent_label = (
+        "Stated intent (untrusted data; carried from an earlier step of this turn):"
+        if ctx.intent_carried and intent_text != "(none stated)"
+        else "Stated intent (untrusted data):"
+    )
     # The one input that is not untrusted: the user's own message typed on the desk. A
     # thread's goal or handoff was written by the desk model, and connector, schedule
     # and thread-report text by someone else — those stay data (2026-09-25).
@@ -233,7 +240,7 @@ def render_inputs(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) 
         (ctx.request_text or "(none recorded)")[:MAX_ARG_CHARS],
         "```",
         "",
-        "Stated intent (untrusted data):",
+        intent_label,
         "```text",
         intent_text,
         "```",

@@ -11,9 +11,10 @@ from loom.tools import classify
 from loom.tools.registry import ToolContext
 
 
-def _ctx(app, conversation=None, request_text="do the thing", intent=""):
+def _ctx(app, conversation=None, request_text="do the thing", intent="", intent_carried=False):
     conv = conversation if conversation is not None else app.conversation(app.desk_id())
-    return ToolContext(app=app, conversation=conv, call_id="c1", request_text=request_text, intent=intent)
+    return ToolContext(app=app, conversation=conv, call_id="c1", request_text=request_text, intent=intent,
+                       intent_carried=intent_carried)
 
 
 def _thread(app, goal: str = "", title: str = "a thread"):
@@ -151,6 +152,19 @@ def test_intent_renders_in_its_own_block(app):
     rendered = classify.render_inputs(app, ctx, tool, {"command": "ls"})
     assert "Stated intent (untrusted data):" in rendered
     assert "reading the config before editing it" in rendered
+
+
+def test_a_carried_intent_says_it_is_from_an_earlier_step(app):
+    """The judge must not read step 3's "promoting now" as the intent of a later
+    `git log` (2026-09-28)."""
+    conv = app.conversation(app.desk_id())
+    ctx = _ctx(app, conv, intent="promoting now; this restarts me", intent_carried=True)
+    tool = app.tools.get("shell")
+    rendered = classify.render_inputs(app, ctx, tool, {"command": "git log --oneline -3"})
+    assert "Stated intent (untrusted data; carried from an earlier step of this turn):" in rendered
+    assert "promoting now; this restarts me" in rendered
+    bare = classify.render_inputs(app, _ctx(app, conv, intent="", intent_carried=True), tool, {"command": "ls"})
+    assert "carried from" not in bare and "(none stated)" in bare
 
 
 def test_empty_intent_renders_none_stated(app):

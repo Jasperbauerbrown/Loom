@@ -350,22 +350,27 @@ async def _stream(app, state: TurnState, request: ChatRequest) -> Result:  # typ
 
 # -- dispatch ----------------------------------------------------------------------------
 
-def _tool_ctx(app, state: TurnState, call_id: str, event_id: int | None, intent: str = "") -> ToolContext:  # type: ignore[no-untyped-def]
+def _tool_ctx(app, state: TurnState, call_id: str, event_id: int | None, intent: str = "", intent_carried: bool = False) -> ToolContext:  # type: ignore[no-untyped-def]
     return ToolContext(
         app=app, conversation=state.conv, call_id=call_id, event_id=event_id,
-        request_text=state.request_text, request_from_user=state.request_from_user, intent=intent, priority=state.priority, meta={}, extras=state.extras,
+        request_text=state.request_text, request_from_user=state.request_from_user, intent=intent,
+        intent_carried=intent_carried, priority=state.priority, meta={}, extras=state.extras,
     )
 
 
-def _intent(app, state: TurnState, text: str) -> str:  # type: ignore[no-untyped-def]
-    """What the turn said it was doing when it made this step's calls. The classifier
-    reads it beside `request_text`, which for the desk is only the last user message
-    ("go ahead") — too thin to judge a command by (TD audit F1).
+def _intent(app, state: TurnState, text: str) -> tuple[str, bool]:  # type: ignore[no-untyped-def]
+    """`(intent, carried)`: what the turn said it was doing when it made this step's
+    calls. The classifier reads it beside `request_text`, which for the desk is only the
+    last user message ("go ahead") — too thin to judge a command by (TD audit F1).
 
     The fallback is this turn's own earlier text and nothing older: a bare call at the
     start of a turn has no intent, and "(none stated)" is honest where a reply from a
-    previous day is not (2026-09-25)."""
-    return text or state.last_assistant_text
+    previous day is not (2026-09-25). A carried intent is labelled as such for the
+    judge: "promoting now — this restarts me" from step 3 was read as the intent of five
+    later read-only calls and made each of them look suspicious (2026-09-28)."""
+    if text:
+        return text, False
+    return state.last_assistant_text, bool(state.last_assistant_text)
 
 
 def _is_read_only(app, call: ToolCall) -> bool:  # type: ignore[no-untyped-def]
@@ -386,8 +391,8 @@ async def _dispatch_calls(app, state: TurnState, ctx: Context, event_id: int, ca
     cid = state.cid
     for c in calls:
         app.bus.emit("tool.call", {"call_id": c.id, "name": c.name, "args": c.arguments, "event_id": event_id}, cid)
-    intent = _intent(app, state, text)
-    ctxs = {c.id: _tool_ctx(app, state, c.id, event_id, intent=intent) for c in calls}
+    intent, carried = _intent(app, state, text)
+    ctxs = {c.id: _tool_ctx(app, state, c.id, event_id, intent=intent, intent_carried=carried) for c in calls}
     outcomes: dict[str, Any] = {}
     ro = [c for c in calls if _is_read_only(app, c)]
     if ro:
@@ -485,6 +490,7 @@ async def _repair(app, state: TurnState, paused: bool) -> str | bool:  # type: i
     # A call executed after an approval carries the intent it was made with, and the
     # resumed turn's later bare steps fall back to it like any other step text.
     resumed_intent = _resumed_intent(app, cid, tc)
+    resumed_carried = bool(resumed_intent) and not (tc["meta"].get("text") or "").strip()
     state.last_assistant_text = resumed_intent
     # …and the step it was made at. A resumed turn continues its budget rather than
     # starting a fresh one (65 of 100 steps became "plenty of steps", TD audit F6). The
@@ -494,7 +500,7 @@ async def _repair(app, state: TurnState, paused: bool) -> str | bool:  # type: i
     did = False
     for c in missing:
         appr = approvals.pending_for_call(app, cid, c.id)  # latest row for the call, any status
-        tctx = _tool_ctx(app, state, c.id, tc["id"], intent=resumed_intent)
+        tctx = _tool_ctx(app, state, c.id, tc["id"], intent=resumed_intent, intent_carried=resumed_carried)
         if appr is not None and appr["status"] == "pending":
             return "waiting"
         if appr is not None:
