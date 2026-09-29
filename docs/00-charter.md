@@ -1208,7 +1208,9 @@ sessions do not re-litigate.
   the runner sets `PYTHONPATH=<worktree>/src` for the child: the supervisor pins a
   release's backend to its own `src` the same way, and a child that inherited that
   tested the live code against the candidate's tests (the third promotion failed on an
-  `ImportError` for a name only the candidate had).
+  `ImportError` for a name only the candidate had). The supervisor's `uv sync` step
+  resolves `uv` the same way; it had the same failure once the hand-installed module
+  was pruned. A supervisor change is live only after `loom serve` is started again.
 - **2026-09-28** — **Self-review is a procedure, not code.** Loom's ability to find
   its own failures — a thread looping, a tool that keeps breaking, approvals that keep
   asking, a result ignored, a false finish — is a built-in procedure note

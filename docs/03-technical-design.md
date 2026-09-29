@@ -1580,7 +1580,10 @@ to `python -m uv`: the backend's interpreter is a project or release virtualenv 
 the caller. The runner also hands the child its own environment: the supervisor starts
 a release's backend with `PYTHONPATH=<release>/src`, and a pytest that inherited it
 imported the live code against the candidate's tests (an `ImportError` for a name only
-the candidate has). The child gets `PYTHONPATH=<worktree>/src` and no `VIRTUAL_ENV`.
+the candidate has). The child gets `PYTHONPATH=<worktree>/src` and no `VIRTUAL_ENV`. The supervisor's
+`install_deps` (step 6) resolves `uv` the same way — PATH first — because its own
+interpreter is whatever launched `loom serve`, under `uv run` the project virtualenv,
+and a `uv` module installed there by hand is pruned by the next sync.
 
 ### 15.3 Protected paths (default rows)
 `supervisor/`, `src/loom/tools/permissions.py`, `src/loom/tools/fs_guard.py`,

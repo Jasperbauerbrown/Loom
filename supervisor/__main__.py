@@ -325,11 +325,21 @@ def create_release(home: Path, ref: str, origin: Path | str | None = None,
     return release
 
 
+def uv_command() -> list[str]:
+    """How this supervisor runs uv: the `uv` on PATH when there is one, else this
+    interpreter's `uv` module. The supervisor's interpreter is whatever launched
+    `loom serve` — under `uv run` that is the project virtualenv, which has no `uv`
+    module unless someone installed one there, and a `uv sync` can prune it again
+    (2026-09-28: the third promotion failed "No module named uv" in this very step)."""
+    found = shutil.which("uv")
+    return [found] if found else [sys.executable, "-m", "uv"]
+
+
 def install_deps(release_dir: Path) -> None:
     """`uv sync --frozen`, falling back to a plain sync when the lockfile moved."""
     output = ""
     for args in (["sync", "--frozen"], ["sync"]):
-        ok, output = run_command([sys.executable, "-m", "uv", *args], cwd=release_dir)
+        ok, output = run_command([*uv_command(), *args], cwd=release_dir)
         if ok:
             return
     raise ReleaseError(f"uv sync failed in {release_dir}: {output.strip()[-2000:]}")

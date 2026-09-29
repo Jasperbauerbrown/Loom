@@ -134,6 +134,19 @@ def test_rollback_without_a_previous_release_reports_rather_than_guesses(tmp_pat
     assert supervisor.last_error == "rollback: no previous release recorded"
 
 
+def test_uv_is_taken_from_path_before_this_interpreter(monkeypatch):
+    """The supervisor's interpreter is whatever launched it — under `uv run`, a
+    virtualenv with no `uv` module — so PATH wins (2026-09-28)."""
+    import shutil
+
+    from supervisor.__main__ import uv_command
+
+    monkeypatch.setattr(shutil, "which", lambda name: "C:/tools/uv.exe" if name == "uv" else None)
+    assert uv_command() == ["C:/tools/uv.exe"]
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    assert uv_command() == [sys.executable, "-m", "uv"]
+
+
 def test_self_modification_seams_are_implemented(tmp_path):
     """The three seams of 03 §15.2 are real now; their behaviour is exercised in
     tests/test_supervisor_release.py."""
