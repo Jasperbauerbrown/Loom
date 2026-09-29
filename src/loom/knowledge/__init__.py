@@ -27,6 +27,7 @@ def install(app: Any) -> None:
     app.vault = Vault(app)
     app.vault.bootstrap()
     app.index = Index(app)
+    app.vault.ensure_builtin_procedures()  # after the index exists, so the notes are indexed
     from .watcher import Watcher
 
     app.watcher = Watcher(app)

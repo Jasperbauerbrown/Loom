@@ -59,6 +59,15 @@ CORE_NOTES: dict[str, str] = {
     "core/conventions.md": "core-conventions",
 }
 
+# The procedures Loom ships with (charter §5.9: a workflow is a note, not code), ensured
+# at install from `prompts/templates/procedure-<name>.md`. Written by Loom itself, so
+# approved at write time (03 §4.3); the person edits them like any other note, and an
+# edited or deleted one is never overwritten — `ensure_note` only fills a gap.
+BUILTIN_PROCEDURES: dict[str, str] = {
+    "procedures/self-modification/SKILL.md": "procedure-self-modification",
+    "procedures/self-review/SKILL.md": "procedure-self-review",
+}
+
 GITIGNORE = """# Loom vault
 .obsidian/workspace*
 .obsidian/cache/
@@ -498,3 +507,16 @@ class Vault:
         parsed = notes.parse(text)
         self.write(path, parsed.body, op="create", frontmatter=dict(parsed.frontmatter), actor="loom")
         return self.norm(path)
+
+    def ensure_builtin_procedures(self) -> list[str]:
+        """Write any of `BUILTIN_PROCEDURES` that is missing; return the paths written.
+        A vault that will not take one must not stop the backend."""
+        written: list[str] = []
+        for path, template in BUILTIN_PROCEDURES.items():
+            if self.exists(path):
+                continue
+            try:
+                written.append(self.ensure_note(path, template))
+            except Exception:
+                log.exception("could not write %s", path)
+        return written

@@ -552,6 +552,9 @@ def tools() -> list[Tool]:
 # ---------------------------------------------------------------------------------
 # lifecycle
 # ---------------------------------------------------------------------------------
+# The workflow lives in the vault, not in Python (charter §5.9): a procedure note the
+# assistant loads like any other, ensured with the other built-in procedures by
+# `knowledge.install` (`vault.BUILTIN_PROCEDURES`).
 PROCEDURE_PATH = "procedures/self-modification/SKILL.md"
 
 
@@ -559,18 +562,6 @@ def install(app: Any) -> None:
     app.supervisor = SupervisorClient(app)
     for tool in tools():
         app.tools.register(tool, replace=True)
-    _ensure_procedure(app)
-
-
-def _ensure_procedure(app: Any) -> None:
-    """The workflow lives in the vault, not in Python (charter §5.9): a procedure note
-    the assistant loads like any other."""
-    if app.vault is None:
-        return
-    try:
-        app.vault.ensure_note(PROCEDURE_PATH, "procedure-self-modification")
-    except Exception:  # a vault that will not take the note must not stop the backend
-        log.exception("could not write %s", PROCEDURE_PATH)
 
 
 async def start(app: Any) -> None:

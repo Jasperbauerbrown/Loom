@@ -104,6 +104,23 @@ def _image_note(e: dict[str, Any]) -> str:
     return f" [+{n} image{'s' if n != 1 else ''}]" if n else ""
 
 
+VERDICT_REASON_CHARS = 120
+
+
+def _verdict(meta: dict[str, Any]) -> str:
+    """`; ask → allow: <reason>` when the harness did not simply allow the call — what
+    the person was asked, what the classifier judged, what the desk auto-approved. A
+    self-review reads permission friction off these; a plain `allow` says nothing."""
+    policy = str(meta.get("policy") or "")
+    if not policy or policy == "allow":
+        return ""
+    out = f"; {policy} → {meta.get('decision') or '?'}"
+    reason = str(meta.get("reason") or "").replace("\n", " ").strip()
+    if reason:
+        out += f": {reason[:VERDICT_REASON_CHARS]}"
+    return out
+
+
 def render_for_summary(evs: list[dict[str, Any]]) -> str:
     lines: list[str] = []
     for e in evs:
@@ -124,7 +141,7 @@ def render_for_summary(evs: list[dict[str, Any]]) -> str:
         elif k == "tool_result":
             status = "ok" if e["meta"].get("ok", True) else "ERROR"
             preview = e["content"][:160].replace("\n", " ")
-            lines.append(f"TOOL RESULT ({status}): {preview}{_image_note(e)}")
+            lines.append(f"TOOL RESULT ({status}{_verdict(e['meta'])}): {preview}{_image_note(e)}")
         elif k == "system":
             lines.append(f"SYSTEM: {e['content']}")
     return "\n".join(lines)

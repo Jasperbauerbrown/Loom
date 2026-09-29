@@ -8,6 +8,35 @@ from loom.knowledge import notes
 from loom.knowledge.vault import VaultError
 
 
+def test_the_built_in_procedures_are_installed_approved_and_never_overwritten(app):
+    from loom.knowledge.vault import BUILTIN_PROCEDURES
+
+    assert set(BUILTIN_PROCEDURES) >= {
+        "procedures/self-modification/SKILL.md",
+        "procedures/self-review/SKILL.md",
+    }
+    for path in BUILTIN_PROCEDURES:
+        note = app.vault.read(path)
+        assert note.frontmatter.get("approved")  # Loom wrote it, so no approval gate (03 §4.3)
+        assert note.frontmatter.get("name") == path.split("/")[1]
+    names = {p["name"] for p in app.vault.procedures()}
+    assert {"self-modification", "self-review"} <= names
+    # The person's edit wins: ensuring again fills gaps only.
+    mine = "---\nname: self-review\n---\n# mine\n"
+    app.vault.put_raw("procedures/self-review/SKILL.md", mine, "user")
+    assert app.vault.ensure_builtin_procedures() == []
+    assert "# mine" in app.vault.read("procedures/self-review/SKILL.md").raw
+
+
+def test_the_self_review_procedure_reads_with_the_tools_that_exist(app):
+    body = app.vault.read("procedures/self-review/SKILL.md").body
+    for tool in ("conversation_list", "conversation_read", "transcript_search", "artifact_recall", "knowledge_write"):
+        assert tool in body, tool
+    assert "ask → allow" in body  # the verdict `conversation_read` renders (test_transcript_render)
+    assert "harness" in body and "model" in body and "Self-review:" in body
+    assert "changes no setting" in body  # a review is read-only by contract
+
+
 def test_bootstrap_is_idempotent_and_committed(app):
     vault = app.vault
     for path in ("core/about-me.md", "core/preferences.md", "core/conventions.md"):
