@@ -902,9 +902,20 @@ is what `old` matches.
 
 The fs tools live in `tools/native/fs/` — `read`, `search`, `write`, `patch`, `ledger`,
 `notebook`, `pdf`, `common` — with the schemas the model sees in the package's
-`__init__`. One matching rule is shared by all of them (`common.apply_edit`): exact text,
-unique unless `replace_all`; a patch hunk is that same rule applied to its
-context-plus-deletions block.
+`__init__`. One matching rule is shared by all of them (`common.apply_edit`, the
+notebook's cells through the same `find_spans`): exact text, unique unless
+`replace_all`; a patch hunk is that same rule applied to its context-plus-deletions
+block. Two things the transcript cannot show are not compared (2026-09-29): when
+nothing matches exactly, the same lines are matched with line endings and trailing
+whitespace ignored, the span still indexes the original text so nothing around it is
+rewritten, and `new` is written with the file's own endings. Everything the model can
+see — indentation, wording, where a line breaks — must still match, and one exact
+occurrence wins over loose ones. A miss says where the closest text is and shows the
+file (-) against `old` (+) as a diff, and an ambiguous `old` names the lines it is
+on; a thread had retried one wrong `old` six times on "copy the text exactly", and
+sent CRLF against an LF file five times. Of 26 failed edits in one week, 2 were line
+endings, 4 were whitespace or a moved line break, 18 were text the model reconstructed
+— the diff is for those.
 
 ### 9.3 Dispatcher pipeline (one path for every call)
 ```

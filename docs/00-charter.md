@@ -1258,3 +1258,16 @@ sessions do not re-litigate.
   rule plus trigger — never a question back to the user. The judge stays on GLM 5.3 for
   now (the user's call, to revisit); "allow for this conversation" stays keyed on the
   exact arguments, which is why a run of thirteen printer-write asks felt long.
+- **2026-09-29** — **An edit that misses is told where it missed.** Of 26 `fs_edit`
+  failures in one week, 2 sent CRLF against an LF file, 4 differed in whitespace or a
+  moved line break, and 18 were text the model had reconstructed — one of them retried
+  six times on an error that only said "copy the text exactly". Two changes, both
+  general. The matcher no longer compares what a transcript cannot show: when nothing
+  matches exactly, line endings and trailing whitespace are ignored, the span still
+  indexes the original text, `new` is written with the file's own endings, and one
+  exact occurrence beats loose ones; indentation and wording still have to match, since
+  the model can see them (no indent-agnostic or rewrapped matching — that would absorb
+  a weaker model's mistakes, §2.1). And the miss itself is precise: the error shows the
+  closest text as a diff of the file (-) against `old` (+), and an ambiguous `old` names
+  the lines it is on, so the next attempt is a correction rather than another guess.
+  The notebook's cells match through the same function.

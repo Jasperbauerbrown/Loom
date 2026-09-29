@@ -209,6 +209,82 @@ async def test_fs_edit_says_when_the_text_is_not_there(app, ctx, project):
     result = await run(app, ctx, "fs_edit", {"path": str(target), "old": "goodbye", "new": "x"})
     assert not result.ok and "not found" in result.content
     assert "line-number prefixes are not part of the text" in result.content
+    assert "closest" not in result.content  # nothing in the file resembles it
+
+
+# ---------------------------------------------------------------------------------
+# what the transcript cannot show is not compared (2026-09-29)
+# ---------------------------------------------------------------------------------
+async def test_an_old_with_crlf_matches_an_lf_file(app, ctx, project):
+    """A thread sent `old` with CRLF breaks against an LF file five times and was told
+    to copy the text exactly each time; the ending style is invisible in a transcript."""
+    target = project / "a.md"
+    target.write_bytes(b"one\ntwo\nthree\n")  # bytes: text mode would make this CRLF on Windows
+    await run(app, ctx, "fs_read", {"path": str(target)})
+    result = await run(app, ctx, "fs_edit", {"path": str(target), "old": "one\r\ntwo\r\n", "new": "1\r\n2\r\n"})
+    assert result.ok, result.content
+    assert target.read_bytes() == b"1\n2\nthree\n"  # `new` is written with the file's endings
+
+
+async def test_trailing_whitespace_is_not_compared_and_is_kept(app, ctx, project):
+    target = project / "a.py"
+    target.write_text("def f():   \n    return 1  \n\nprint(f())\n", encoding="utf-8")
+    await run(app, ctx, "fs_read", {"path": str(target)})
+    result = await run(app, ctx, "fs_edit", {"path": str(target), "old": "def f():\n    return 1", "new": "def f():\n    return 2"})
+    assert result.ok, result.content
+    # the untouched trailing spaces after the last matched line survive; the rest is replaced
+    assert target.read_text(encoding="utf-8") == "def f():\n    return 2  \n\nprint(f())\n"
+
+
+async def test_a_single_line_old_with_trailing_spaces(app, ctx, project):
+    target = project / "a.txt"
+    target.write_text("alpha\nbeta gamma\ndelta\n", encoding="utf-8")
+    await run(app, ctx, "fs_read", {"path": str(target)})
+    result = await run(app, ctx, "fs_edit", {"path": str(target), "old": "beta  ", "new": "BETA"})
+    assert result.ok, result.content
+    assert target.read_text(encoding="utf-8") == "alpha\nBETA gamma\ndelta\n"
+
+
+async def test_indentation_and_wording_still_have_to_match(app, ctx, project):
+    """Only what the transcript cannot show is forgiven; indentation is visible."""
+    target = project / "a.py"
+    target.write_text("if x:\n    return 1\n", encoding="utf-8")
+    await run(app, ctx, "fs_read", {"path": str(target)})
+    result = await run(app, ctx, "fs_edit", {"path": str(target), "old": "if x:\n  return 1", "new": "y"})
+    assert not result.ok and "not found" in result.content
+
+
+async def test_the_loose_match_keeps_the_uniqueness_rule(app, ctx, project):
+    target = project / "a.txt"
+    target.write_text("k = 1  \nx\nk = 1 \n", encoding="utf-8")
+    await run(app, ctx, "fs_read", {"path": str(target)})
+    result = await run(app, ctx, "fs_edit", {"path": str(target), "old": "k = 1\n", "new": "k = 2\n"})
+    assert not result.ok and "appears 2 times" in result.content
+    assert "lines 1, 3" in result.content
+    # one exact occurrence wins over loose ones: exact is the more specific match
+    target.write_text("k = 1  \nx\nk = 1\n", encoding="utf-8")
+    await run(app, ctx, "fs_read", {"path": str(target)})
+    one = await run(app, ctx, "fs_edit", {"path": str(target), "old": "k = 1\n", "new": "k = 3\n"})
+    assert one.ok and target.read_text(encoding="utf-8") == "k = 1  \nx\nk = 3\n"
+    target.write_text("k = 1  \nx\nk = 1 \n", encoding="utf-8")
+    await run(app, ctx, "fs_read", {"path": str(target)})
+    every = await run(app, ctx, "fs_edit", {"path": str(target), "old": "k = 1\n", "new": "k = 2\n", "replace_all": True})
+    assert every.ok and target.read_text(encoding="utf-8") == "k = 2\nx\nk = 2\n"
+
+
+async def test_a_miss_shows_the_closest_text_as_a_diff(app, ctx, project):
+    """The error a wrong `old` earns says where the file differs, so the next attempt
+    is a correction, not another guess: a thread retried one wrong `old` six times."""
+    target = project / "note.md"
+    target.write_text("# Title\n\n## Status\n\n- Centauri cancel rejects correctly\n- Moonraker port fixed\n\n## Log\n", encoding="utf-8")
+    await run(app, ctx, "fs_read", {"path": str(target)})
+    old = "## Status\n\nCentauri cancel rejects correctly\n- Moonraker port fixed\n"
+    result = await run(app, ctx, "fs_edit", {"path": str(target), "old": old, "new": "x"})
+    assert not result.ok and "not found" in result.content
+    assert "closest text is at lines 3–6" in result.content
+    assert "-- Centauri cancel rejects correctly" in result.content  # the file's line
+    assert "+Centauri cancel rejects correctly" in result.content  # the model's line
+    assert target.read_text(encoding="utf-8").startswith("# Title")  # untouched
 
 
 # ---------------------------------------------------------------------------------

@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 from typing import Any, Sequence
 
-from .common import Edit, EditError, edit_problem
+from .common import Edit, EditError, edit_problem, find_spans, replace_spans
 
 DEFAULT_INDENT = 1
 _TEXT_MIME_PREFIXES = ("text/", "application/json")
@@ -135,19 +135,21 @@ def apply_edits(raw: str, edits: Sequence[Edit]) -> tuple[str, int]:
         if not edit.old:
             raise EditError("`old` is empty; it must be the exact text to replace")
         sources = [_join_source(c.get("source", "")) if isinstance(c, dict) else "" for c in cells]
-        count = sum(s.count(edit.old) for s in sources)
+        spans_per_cell = [find_spans(s, edit.old) for s in sources]
+        count = sum(len(spans) for spans in spans_per_cell)
         problem = edit_problem(count, edit.replace_all, "the notebook's cells")
         if problem:
             raise EditError(problem)
+        new = edit.new.replace("\r\n", "\n")
         made = 0
-        for cell, source in zip(cells, sources):
-            if not isinstance(cell, dict) or edit.old not in source:
+        for cell, source, spans in zip(cells, sources, spans_per_cell):
+            if not isinstance(cell, dict) or not spans:
                 continue
             if edit.replace_all:
-                _set_source(cell, source.replace(edit.old, edit.new))
-                made += source.count(edit.old)
+                _set_source(cell, replace_spans(source, spans, new))
+                made += len(spans)
             else:
-                _set_source(cell, source.replace(edit.old, edit.new, 1))
+                _set_source(cell, replace_spans(source, spans[:1], new))
                 made += 1
                 break
         total += made

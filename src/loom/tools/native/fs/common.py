@@ -249,32 +249,168 @@ class EditError(Exception):
     """An edit that does not apply. The message is what the model is told."""
 
 
-def edit_problem(count: int, replace_all: bool, where: str) -> str | None:
-    """The one matching rule, stated once: exact text, unique unless `replace_all`."""
+def _lf(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _canon_lines(text: str) -> list[str]:
+    """The text's lines with the two things a transcript cannot show removed: the
+    line-ending style and trailing whitespace."""
+    return [line.rstrip() for line in _lf(text).split("\n")]
+
+
+def _line_starts(text: str) -> list[int]:
+    starts = [0]
+    for i, ch in enumerate(text):
+        if ch == "\n":
+            starts.append(i + 1)
+    return starts
+
+
+def find_spans(text: str, old: str) -> list[tuple[int, int]]:
+    """Every `(start, end)` of `text` that `old` matches, non-overlapping, in order.
+
+    Exact matches first. When there are none, the same lines compared with line
+    endings and trailing whitespace ignored — the two things the transcript cannot
+    show, so the model cannot copy them (2026-09-29: a thread sent CRLF `old` against
+    an LF file, and trailing spaces it could not see, and was told to "copy the text
+    exactly" five times). Spans always index the original `text`, so the characters
+    around a match stay exactly as they were. Anything else — indentation, wording, a
+    line break moved — still has to match: those the model can see."""
+    if not old:
+        return []
+    spans: list[tuple[int, int]] = []
+    at = text.find(old)
+    while at != -1:
+        spans.append((at, at + len(old)))
+        at = text.find(old, at + len(old))
+    if spans:
+        return spans
+
+    if _lf(text) != text:
+        # a file with mixed endings is kept verbatim (`TextFile.newline == ""`); its
+        # offsets differ from the LF view, so the loose match is not attempted
+        return []
+    old_lines = _canon_lines(old)
+    lines = _canon_lines(text)
+    starts = _line_starts(text)
+    k = len(old_lines)
+    if k == 1:
+        needle = old_lines[0]
+        if not needle:
+            return []
+        for i, line in enumerate(lines):
+            at = line.find(needle)
+            while at != -1:
+                spans.append((starts[i] + at, starts[i] + at + len(needle)))
+                at = line.find(needle, at + len(needle))
+        return spans
+    first, middle, last = old_lines[0], old_lines[1:-1], old_lines[-1]
+    last_end = 0
+    for i in range(0, len(lines) - k + 1):
+        if starts[i] < last_end:
+            continue
+        if not lines[i].endswith(first) or lines[i + 1 : i + k - 1] != middle or not lines[i + k - 1].startswith(last):
+            continue
+        start = starts[i] + len(lines[i]) - len(first)
+        end = starts[i + k - 1] + len(last)
+        spans.append((start, end))
+        last_end = end
+    return spans
+
+
+def replace_spans(text: str, spans: list[tuple[int, int]], new: str) -> str:
+    out: list[str] = []
+    at = 0
+    for start, end in spans:
+        out.append(text[at:start])
+        out.append(new)
+        at = end
+    out.append(text[at:])
+    return "".join(out)
+
+
+def line_of(text: str, offset: int) -> int:
+    """1-based line number of `offset` in `text`."""
+    return text.count("\n", 0, offset) + 1
+
+
+CLOSEST_MAX_LINES = 20_000  # a file bigger than this gets no closest-match search
+CLOSEST_DIFF_LINES = 30
+
+
+def closest_excerpt(text: str, old: str) -> str:
+    """Where `old` nearly is: the file's lines that best align with it, as a diff of the
+    file (-) against `old` (+), so a miss can be corrected against what is there
+    instead of guessed at again. A thread retried one wrong `old` six times on a
+    message that only said "copy the text exactly" (2026-09-29). Empty when nothing in
+    the file resembles it, or the file is too large to search."""
+    old_lines = _canon_lines(old)
+    while old_lines and not old_lines[-1]:
+        old_lines.pop()
+    lines = _canon_lines(text)
+    if not old_lines or not lines or len(lines) > CLOSEST_MAX_LINES:
+        return ""
+    matcher = difflib.SequenceMatcher(None, lines, old_lines, autojunk=False)
+    block = matcher.find_longest_match(0, len(lines), 0, len(old_lines))
+    if block.size and any(lines[block.a : block.a + block.size]):
+        top = block.a - block.b
+    else:
+        anchor = next((line for line in old_lines if line.strip()), "")
+        near = difflib.get_close_matches(anchor, [line for line in lines if line.strip()], n=1, cutoff=0.6)
+        if not near:
+            return ""
+        top = lines.index(near[0])
+    top = max(0, min(top, len(lines) - 1))
+    bottom = min(len(lines), top + len(old_lines))
+    region = lines[top:bottom]
+    diff = list(
+        difflib.unified_diff(region, old_lines, fromfile="file", tofile="old", lineterm="", n=len(old_lines))
+    )[2:]  # the ---/+++ header lines say nothing the label does not
+    if len(diff) > CLOSEST_DIFF_LINES:
+        diff = diff[:CLOSEST_DIFF_LINES] + [f"… ({len(diff) - CLOSEST_DIFF_LINES} more lines)"]
+    where = f"line {top + 1}" if bottom - top <= 1 else f"lines {top + 1}–{bottom}"
+    return f"The closest text is at {where}; the file (-) against your `old` (+):\n" + "\n".join(diff)
+
+
+def edit_problem(count: int, replace_all: bool, where: str, detail: str = "") -> str | None:
+    """The one matching rule, stated once: the text, unique unless `replace_all`.
+    `detail` is what the caller can add about the miss — the closest match, the lines
+    the duplicates are on."""
     if count == 0:
         return (
             f"`old` text not found in {where}; read the file and copy the text exactly "
             "(fs_read's `N\\t` line-number prefixes are not part of the text)"
+            + (f"\n{detail}" if detail else "")
         )
     if count > 1 and not replace_all:
         return (
-            f"`old` text appears {count} times in {where}; include more surrounding "
+            f"`old` text appears {count} times in {where}{detail}; include more surrounding "
             "context to make it unique, or pass replace_all=true"
         )
     return None
 
 
 def apply_edit(text: str, edit: Edit, where: str) -> tuple[str, int]:
-    """`(new_text, replacements)`, or `EditError` with the reason it did not apply."""
-    count = text.count(edit.old) if edit.old else 0
+    """`(new_text, replacements)`, or `EditError` with the reason it did not apply.
+    `new` is written with LF line breaks whatever it arrived with; the file's own
+    ending is put back by `TextFile.encode`."""
     if not edit.old:
         raise EditError(f"`old` is empty in {where}; it must be the exact text to replace")
-    problem = edit_problem(count, edit.replace_all, where)
+    spans = find_spans(text, edit.old)
+    if not spans:
+        detail = closest_excerpt(text, edit.old)
+    elif len(spans) > 1:
+        detail = " (at lines " + ", ".join(str(line_of(text, s)) for s, _ in spans[:12]) + ("…" if len(spans) > 12 else "") + ")"
+    else:
+        detail = ""
+    problem = edit_problem(len(spans), edit.replace_all, where, detail)
     if problem:
         raise EditError(problem)
+    new = edit.new.replace("\r\n", "\n")
     if edit.replace_all:
-        return text.replace(edit.old, edit.new), count
-    return text.replace(edit.old, edit.new, 1), 1
+        return replace_spans(text, spans, new), len(spans)
+    return replace_spans(text, spans[:1], new), 1
 
 
 def unified_excerpt(before: str, after: str, path: str, width: int = 60, context: int = 2) -> str:
