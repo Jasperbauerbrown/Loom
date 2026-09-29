@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -221,11 +222,19 @@ def uv_command() -> list[str]:
 
 async def run_tests(worktree: Path | str, timeout_s: float = TEST_TIMEOUT_S) -> tuple[bool, str]:
     """`uv run pytest -q -x` in the ref's worktree. Returns (ok, output); a timeout or
-    a missing uv is a failure with its reason as the output."""
+    a missing uv is a failure with its reason as the output.
+
+    The suite must import the worktree's code, not ours: a backend running from a
+    release has `PYTHONPATH=<release>/src` from the supervisor, and a child that
+    inherits it tests the live code against the candidate's tests (2026-09-28: a new
+    test failed with an ImportError from the running release). So the child gets the
+    worktree's own `src`, and no `VIRTUAL_ENV`, which uv would otherwise try to honour."""
     command = [*uv_command(), "run", "pytest", "-q", "-x"]
+    env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
+    env["PYTHONPATH"] = str(Path(worktree) / "src")
     try:
         proc = await asyncio.create_subprocess_exec(
-            *command, cwd=str(worktree),
+            *command, cwd=str(worktree), env=env,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
         )
     except OSError as exc:

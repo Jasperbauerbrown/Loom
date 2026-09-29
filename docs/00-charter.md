@@ -1204,7 +1204,11 @@ sessions do not re-litigate.
   `plan` now fetches an unresolvable ref from the mirror's origin the way
   `create_release` does, and retries once. The suite runner finds `uv` on PATH before
   `python -m uv`: a project or release virtualenv has no `uv` module, and the desk had
-  worked around the "No module named uv" failure by installing one into `.venv`.
+  worked around the "No module named uv" failure by installing one into `.venv`. And
+  the runner sets `PYTHONPATH=<worktree>/src` for the child: the supervisor pins a
+  release's backend to its own `src` the same way, and a child that inherited that
+  tested the live code against the candidate's tests (the third promotion failed on an
+  `ImportError` for a name only the candidate had).
 - **2026-09-28** — **Self-review is a procedure, not code.** Loom's ability to find
   its own failures — a thread looping, a tool that keeps breaking, approvals that keep
   asking, a result ignored, a false finish — is a built-in procedure note

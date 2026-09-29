@@ -143,6 +143,35 @@ def test_run_tests_uses_the_uv_on_path_before_this_interpreter(monkeypatch):
     assert promote.uv_command() == [sys.executable, "-m", "uv"]
 
 
+async def test_run_tests_pins_the_worktree_source_and_drops_the_active_venv(monkeypatch, tmp_path):
+    """A backend running from a release carries PYTHONPATH=<release>/src; the suite in
+    a candidate worktree must import the candidate, not the live code (2026-09-28)."""
+    import asyncio
+
+    seen: dict = {}
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"1 passed", None
+
+    async def _spawn(*command, **kwargs):
+        seen["command"] = list(command)
+        seen["kwargs"] = kwargs
+        return _Proc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _spawn)
+    monkeypatch.setenv("PYTHONPATH", "C:/live/src")
+    monkeypatch.setenv("VIRTUAL_ENV", "C:/live/.venv")
+    ok, output = await promote.run_tests(tmp_path / "wt")
+    assert ok and output == "1 passed"
+    assert seen["command"][-4:] == ["run", "pytest", "-q", "-x"]
+    env = seen["kwargs"]["env"]
+    assert env["PYTHONPATH"] == str(tmp_path / "wt" / "src")
+    assert "VIRTUAL_ENV" not in env and seen["kwargs"]["cwd"] == str(tmp_path / "wt")
+
+
 def test_plan_without_a_checkout_says_so(app, monkeypatch):
     monkeypatch.setattr(promote, "repo_root", lambda _app: None)
     plan = promote.plan(app, "HEAD")

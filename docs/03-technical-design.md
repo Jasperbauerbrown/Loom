@@ -1577,7 +1577,10 @@ with "does not resolve". The suite runner (step 3) finds `uv` on PATH before fal
 to `python -m uv`: the backend's interpreter is a project or release virtualenv with no
 `uv` module, which is how the first promotion failed "No module named uv" — reported as
 `tests_failed`, since a runner that cannot start and a suite that fails are one class to
-the caller.
+the caller. The runner also hands the child its own environment: the supervisor starts
+a release's backend with `PYTHONPATH=<release>/src`, and a pytest that inherited it
+imported the live code against the candidate's tests (an `ImportError` for a name only
+the candidate has). The child gets `PYTHONPATH=<worktree>/src` and no `VIRTUAL_ENV`.
 
 ### 15.3 Protected paths (default rows)
 `supervisor/`, `src/loom/tools/permissions.py`, `src/loom/tools/fs_guard.py`,
