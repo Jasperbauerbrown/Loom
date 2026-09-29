@@ -96,6 +96,40 @@ def test_replace_requires_a_unique_old(app):
     assert "not found" in str(exc.value)
 
 
+def test_replace_is_the_same_rule_as_fs_edit(app):
+    """The vault's `replace` had its own exact matcher and missed 25 times in a week with
+    "copy the text exactly"; it now matches through `textmatch` like fs_edit (2026-09-29):
+    line endings and trailing whitespace are not compared, a miss shows the closest
+    text, an ambiguous `old` names its lines."""
+    app.vault.write("projects/p.md", "## Status\n\n- Centauri cancel rejects correctly  \n- Moonraker port fixed\n", op="create")
+    # CRLF and trailing spaces the model cannot see
+    note = app.vault.write("projects/p.md", "- Centauri cancel verified\n", op="replace", old="- Centauri cancel rejects correctly\r\n")
+    assert "- Centauri cancel verified\n- Moonraker port fixed" in note.body
+    # a miss says where the closest text is, as a diff of the note (-) against old (+)
+    with pytest.raises(VaultError) as exc:
+        app.vault.write("projects/p.md", "x", op="replace", old="## Status\n\nCentauri cancel verified\n")
+    assert "not found" in str(exc.value)
+    assert "closest text is at lines 2–4" in str(exc.value)  # the body keeps a blank line after the frontmatter
+    assert "-- Centauri cancel verified" in str(exc.value) and "+Centauri cancel verified" in str(exc.value)
+    # an ambiguous old names the body lines it is on
+    app.vault.write("projects/p.md", "\n- Moonraker port fixed\n", op="append")
+    with pytest.raises(VaultError) as exc:
+        app.vault.write("projects/p.md", "x", op="replace", old="- Moonraker port fixed")
+    assert "appears 2 times" in str(exc.value) and "at body lines 5, 7" in str(exc.value)
+
+
+def test_the_date_check_can_be_turned_off_for_the_daily_log(app):
+    """`conversation_finish` writes the daily log with `check_dates=False`: the note's name
+    is its date, so "today" in it is absolute by construction (2026-09-29). Every other
+    write keeps the refusal."""
+    note = app.vault.write("log/2026-09-29.md", "# 2026-09-29\n\nVerified today.\n", op="create", check_dates=False)
+    assert "Verified today." in note.body
+    with pytest.raises(VaultError):
+        app.vault.write("log/2026-09-29.md", "and again today", op="append")
+    with pytest.raises(VaultError):
+        app.vault.write("topics/y.md", "done today", op="create", check_dates=True)
+
+
 def test_rethink_requires_reason_and_posts_an_item(app):
     app.vault.write("topics/x.md", "old shape", op="create")
     with pytest.raises(VaultError):

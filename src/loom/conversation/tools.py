@@ -345,10 +345,16 @@ async def _finish(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         # has one, links to the section as ordinary knowledge.
         note_path = f"log/{date}.md"
         section = f"## {title} ({conv['id']})\nstate: {state}\n\n{walkthrough}\n"
+        # The daily log's name is its date, so "today" in it is absolute by construction;
+        # the vault's relative-date refusal is for notes that carry no date. Four
+        # finishes in one night each cost a retry over the word "today" (2026-09-29).
         if app.vault.exists(note_path):
-            app.vault.write(note_path, section, op="append")
+            app.vault.write(note_path, section, op="append", check_dates=False)
         else:
-            app.vault.write(note_path, f"# {date}\n\n{section}", op="create", frontmatter={"type": "log", "title": date})
+            app.vault.write(
+                note_path, f"# {date}\n\n{section}", op="create",
+                frontmatter={"type": "log", "title": date}, check_dates=False,
+            )
         status.write(app, conv, {"state": "done" if state == "done" else "blocked", "doing": "", "next": "", "done": summary}, owner=conv["id"])
     except Exception as exc:
         return ToolResult.error(f"could not write the walkthrough: {exc}")

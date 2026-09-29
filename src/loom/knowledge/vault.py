@@ -23,6 +23,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .. import db, items, prompts
+from ..textmatch import closest_excerpt, find_spans, lines_of, replace_spans
 from . import notes
 from .git import Git
 
@@ -270,13 +271,16 @@ class Vault:
         frontmatter: dict[str, Any] | None = None,
         reason: str | None = None,
         actor: str = "loom",
+        check_dates: bool = True,
     ) -> Note:
         """The one write path for notes (03 §4.3, §8.4).
 
         `create` refuses an existing note; `append` adds a blank line then the content;
-        `replace` swaps a unique `old` snippet; `rethink` rewrites the body and requires
-        a `reason`, which lands on the now board. Relative dates are refused. The write
-        is atomic, committed, indexed and announced."""
+        `replace` swaps a unique `old` snippet (the one matching rule, `textmatch`);
+        `rethink` rewrites the body and requires a `reason`, which lands on the now
+        board. Relative dates are refused unless `check_dates` is off — the finish
+        handler turns it off for the daily log, whose name is its date (2026-09-29).
+        The write is atomic, committed, indexed and announced."""
         if op not in OPS:
             raise VaultError(f"unknown op {op!r}; use one of {', '.join(OPS)}")
         target = self.resolve(path)
@@ -309,16 +313,23 @@ class Vault:
         elif op == "replace":
             if old is None or old == "":
                 raise VaultError("replace requires `old`: the exact text to swap out")
-            found = old_body.count(old)
-            if found == 0:
-                raise VaultError(f"`old` not found in {rel}; read the note and copy the text exactly")
-            if found > 1:
-                raise VaultError(f"`old` appears {found} times in {rel}; include more context to make it unique")
-            body = old_body.replace(old, content, 1)
+            spans = find_spans(old_body, old)
+            if not spans:
+                hint = closest_excerpt(old_body, old)
+                raise VaultError(
+                    f"`old` not found in {rel}; read the note and copy the text exactly"
+                    + (f"\n{hint}" if hint else "")
+                )
+            if len(spans) > 1:
+                raise VaultError(
+                    f"`old` appears {len(spans)} times in {rel} (at body {lines_of(old_body, spans)}); "
+                    "include more context to make it unique"
+                )
+            body = replace_spans(old_body, spans, content.replace("\r\n", "\n"))
         else:  # rethink
             body = content
 
-        offender = notes.has_relative_dates(content)
+        offender = notes.has_relative_dates(content) if check_dates else None
         if offender:
             raise VaultError(f"use absolute dates: found '{offender}'")
 

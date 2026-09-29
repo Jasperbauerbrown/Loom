@@ -14,8 +14,10 @@ Arguments:
   - `create` — a new note, from `content`. Fails if the path already exists.
   - `append` — add `content` to the end, after a blank line. The cheapest correct write.
   - `replace` — swap `old` for `content` (`new` is accepted as the name for `content`
-    here). `old` must appear exactly once; copy it from the note verbatim, with enough
-    surrounding text to be unique.
+    here). `old` must appear exactly once; copy it from the note, with enough
+    surrounding text to be unique. Line endings and trailing whitespace are not
+    compared; everything else must match, and a miss shows the closest text in the
+    note as a diff so you can correct `old` against it.
   - `rethink` — replace the whole body with `content`. Requires `reason`, and is
     recorded on the user's now board. Use it when the note's shape is wrong, not to fix
     a line.

@@ -98,3 +98,29 @@ async def test_finish_delivers_summary_first_then_the_evidence(app, fake):
     # the board stays short: the item is the summary, not the evidence
     item = app.db.execute("SELECT * FROM items WHERE kind='thread_event' ORDER BY id DESC LIMIT 1").fetchone()
     assert item["body"].strip() == "The window renders and a click builds a tower."
+
+
+async def test_finish_accepts_today_in_the_walkthrough(app, fake):
+    """The daily log's name is its date, so the finish writes it with the vault's
+    relative-date refusal off; four finishes in one night each cost a retry over the
+    word "today" (2026-09-29). Every other note keeps the refusal."""
+    desk = app.desk_id()
+    row = conversation.create_thread(app, goal="verify the window renders", parent_id=desk, created_by="user")
+    tid = row["id"]
+    fake.script(
+        Scripted(content="", tool_calls=[("conversation_finish", {
+            "summary": "Done.",
+            "walkthrough": "Verified today by running the suite; yesterday's failure is gone.",
+        })]),
+    )
+    conversation.post(app, tid, "go")
+    await _run(app, tid)
+    await _settle(app)
+
+    note = app.vault.read(f"log/{local_date(app)}.md")
+    assert "Verified today by running the suite" in note.body
+    assert app.conversation(tid)["status"] == "done"
+    result = app.db.execute(
+        "SELECT content FROM events WHERE conversation_id=? AND kind='tool_result' ORDER BY id DESC LIMIT 1", (tid,)
+    ).fetchone()["content"]
+    assert "could not write the walkthrough" not in result

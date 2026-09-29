@@ -1271,3 +1271,13 @@ sessions do not re-litigate.
   closest text as a diff of the file (-) against `old` (+), and an ambiguous `old` names
   the lines it is on, so the next attempt is a correction rather than another guess.
   The notebook's cells match through the same function.
+- **2026-09-29** — **One matcher for notes too, and the daily log may say "today".**
+  The vault's `replace` had its own exact matcher and had missed 25 times with the
+  same "copy the text exactly" that `fs_edit` used to give; the rule now lives once, in
+  `loom/textmatch.py`, imported by the tools and the knowledge packages alike, so notes
+  get the same forgiveness of line endings and trailing whitespace, the same closest-
+  text diff on a miss, and the same line numbers on an ambiguous `old`. And the finish
+  handler writes the daily log with the relative-date refusal off: that note's name is
+  its date, so "today" inside it is absolute by construction, and four finishes in one
+  night had each cost a retry over the word. Every other note keeps the refusal, and the
+  refusal's message stays as it is (the user held off on adding the date to it).

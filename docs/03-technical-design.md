@@ -258,6 +258,10 @@ Body. Wikilinks like [[ender-3-control]] resolve by filename, then title, then a
 Rules enforced by `knowledge_write` (not by the model): frontmatter is parsed and
 re-emitted (PyYAML), `modified` is stamped, `aliases` are lower-cased and de-duplicated,
 relative dates in the body are rejected with an error result ("use absolute dates").
+One exception, by the caller and not by the model (2026-09-29): the finish handler
+writes the daily log with the date check off (`Vault.write(check_dates=False)`), because
+that note's name is its date and "today" inside it is absolute by construction; four
+finishes in one night had each cost a retry over that word.
 
 **Project notes** are ordinary entity notes. The model writes one when it recognises
 that the thing it works on will persist and be returned to (the soul rule, decided
@@ -604,7 +608,10 @@ note, and a thread without one was a "task". Every thread is now that.
   changed, how verified, artifact ids of test output) as a section `## <title> (<id>)`
   to the daily note `log/YYYY-MM-DD.md` (created on first use), records that note's path
   in `conversations.walkthrough`, sets status `done`, emits to parent. Linking the
-  section from a project note is the model's knowledge work, not the harness's.
+  section from a project note is the model's knowledge work, not the harness's. The
+  log is written with the vault's relative-date refusal off (2026-09-29): its name is
+  its date, so "today" in it is absolute, and four finishes in one night had each cost
+  a retry over that word.
 - **Finish delivery** (2026-09-24): what reaches the spawner is the summary first, then
   the walkthrough section just filed (its path and its text, capped at 8,000 chars with a
   marker naming `knowledge_read`), then every artifact and image the thread produced as
@@ -733,7 +740,7 @@ for more. Never inject `core/` here (already in slot [3]).
 |---|---|---|
 | `knowledge_search` | `query`, `type?`, `k=8` | fused: FTS5 rank + cosine, RRF; returns path, title, snippet |
 | `knowledge_read` | `path`, `offset?`, `limit?`, `pin?` | full note or line slice; one page of `tool_output_cap` chars with a paging footer, never spilled (`paged`) |
-| `knowledge_write` | `path`, `op: create|append|replace|rethink`, `content`, `old?` + `new?` (replace), `frontmatter?` | `replace` = exact `old`→`content` (like fs_edit), and `new` is accepted as the name for `content` there, since old→new is how the op reads and how a model sends it (2026-09-24); `content` is therefore checked in the handler, not by the schema's `required`; `rethink` = whole-body rewrite, requires `reason`, logged as a `knowledge.rethink` item on the now board; stamps `modified`; rejects relative dates; commits to git (`loom: <op> <path>`) |
+| `knowledge_write` | `path`, `op: create|append|replace|rethink`, `content`, `old?` + `new?` (replace), `frontmatter?` | `replace` = `old`→`content` by the one matching rule (`textmatch.find_spans`, the same as fs_edit: exact first, else line endings and trailing whitespace ignored; a miss shows the closest text, an ambiguous `old` names its body lines — 2026-09-29), and `new` is accepted as the name for `content` there, since old→new is how the op reads and how a model sends it (2026-09-24); `content` is therefore checked in the handler, not by the schema's `required`; `rethink` = whole-body rewrite, requires `reason`, logged as a `knowledge.rethink` item on the now board; stamps `modified`; rejects relative dates; commits to git (`loom: <op> <path>`) |
 | `knowledge_links` | `path`, `direction: out|in` | neighbours |
 | `procedure_load` | `name` | SKILL.md body (L2); scripts stay on disk |
 | `transcript_search` | `query`, `conversation?`, `k` | FTS5 over `events_fts` — episodic last resort |
@@ -902,10 +909,11 @@ is what `old` matches.
 
 The fs tools live in `tools/native/fs/` — `read`, `search`, `write`, `patch`, `ledger`,
 `notebook`, `pdf`, `common` — with the schemas the model sees in the package's
-`__init__`. One matching rule is shared by all of them (`common.apply_edit`, the
-notebook's cells through the same `find_spans`): exact text, unique unless
-`replace_all`; a patch hunk is that same rule applied to its context-plus-deletions
-block. Two things the transcript cannot show are not compared (2026-09-29): when
+`__init__`. One matching rule is shared by all of them, and by the vault's `replace`:
+`loom/textmatch.py` (stdlib only, imported by the tools and knowledge packages alike,
+2026-09-29), applied by `common.apply_edit` for files and the notebook's cells and by
+`Vault.write` for notes: exact text, unique unless `replace_all`; a patch hunk is that
+same rule applied to its context-plus-deletions block. Two things the transcript cannot show are not compared (2026-09-29): when
 nothing matches exactly, the same lines are matched with line endings and trailing
 whitespace ignored, the span still indexes the original text so nothing around it is
 rewritten, and `new` is written with the file's own endings. Everything the model can
