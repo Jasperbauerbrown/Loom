@@ -1243,3 +1243,18 @@ sessions do not re-litigate.
   `promote.install`; and a rendered tool result carries the harness's verdict when the
   call was not simply allowed (`ask → allow: <reason>`), which is what permission
   friction looks like from inside a transcript.
+- **2026-09-29** — **The judge's asks, read back over a week.** 339 shell calls reached
+  the judge, 69 were asked, and about twenty of those asks were wrong by the prompt's
+  own rules while every allow held up — so the fix is not a stricter or looser judge but
+  four specific things. The static pre-filter now grants `cd` (87 of the 339 began `cd
+  <dir> &&`, seven of them consecutive greps the judge then asked about) and drops
+  redirections that write nowhere (`2>&1`, `/dev/null`) instead of failing the parse.
+  The prompt says running code is not by itself irreversible and names what is: tests,
+  builds, linters, a commit on a branch, a localhost server the goal calls for, a
+  package installed into the project's own environment — five pytest asks in a row on
+  the desk, a commit and a dev server had each been called "destructive". A read inside
+  the roots is an allow whatever the assistant's reason for wanting it. A program the
+  user asked to start may talk to a service on its own. And the reason is a verdict —
+  rule plus trigger — never a question back to the user. The judge stays on GLM 5.3 for
+  now (the user's call, to revisit); "allow for this conversation" stays keyed on the
+  exact arguments, which is why a run of thirteen printer-write asks felt long.

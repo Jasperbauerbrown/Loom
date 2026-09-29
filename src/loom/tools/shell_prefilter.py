@@ -13,15 +13,41 @@ The splitter is deliberately small and total: it never raises, and any doubt is 
 from __future__ import annotations
 
 import os
+import re
 from typing import Iterable
 
 # Unquoted constructs that put a stage beyond a first-token judgement.
 FORBIDDEN = (">", "<", "`", "$(", "${")
 
+# Redirections that write nowhere: a stream duplicated onto another (`2>&1`) or sent to
+# the null device (`>/dev/null`, `2>/dev/null`, `&>/dev/null`). They are dropped from
+# the stage rather than failing the parse: before 2026-09-29 every `git log … 2>&1`
+# cost a classifier call. Bash reads a digit before `>` as the stream only when it is
+# a word of its own, so `head -c 2>/dev/null` is `head -c` with stderr dropped — the
+# same reading here (`_null_redirect`). `2>nul` is not in the set: on Git Bash it
+# creates a file called `nul`.
+_NULL_REDIRECT = re.compile(r"(?:[12]?>>?|&>)\s*(?:/dev/null|&[12])(?![^\s;&|])")
+
+
+def _null_redirect(command: str, i: int) -> int | None:
+    """The index just past a harmless redirection starting at `i`, else None."""
+    ch = command[i]
+    if ch not in "12&>":
+        return None
+    if ch in "12" and not (i == 0 or command[i - 1].isspace()):
+        return None  # part of a word (`head -c 12>…` is not stream 2)
+    m = _NULL_REDIRECT.match(command, i)
+    if m is None:
+        return None
+    if ch == "&" and not m.group(0).startswith("&>"):
+        return None
+    return m.end()
+
 
 def split_stages(command: str) -> list[str] | None:
     """Split on `&&`, `||`, `;` and `|` outside quotes. None on parse failure: an
-    unbalanced quote, a newline, or an unquoted redirection/substitution."""
+    unbalanced quote, a newline, or an unquoted redirection/substitution. A
+    redirection that writes nowhere (`2>&1`, `>/dev/null`) is dropped from its stage."""
     if "\n" in command or "\r" in command:
         return None
     stages: list[str] = []
@@ -51,6 +77,10 @@ def split_stages(command: str) -> list[str] | None:
             buf.append(ch)
             buf.append(command[i + 1])
             i += 2
+            continue
+        end = _null_redirect(command, i)
+        if end is not None:
+            i = end
             continue
         pair = command[i : i + 2]
         if pair in ("&&", "||"):

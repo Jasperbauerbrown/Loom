@@ -60,10 +60,78 @@ def test_one_unlisted_stage_sinks_the_whole_chain():
 
 @pytest.mark.parametrize(
     "command",
-    ["ls > out.txt", "ls >> out.txt", "ls 2> err.txt", "cat < in.txt", "echo hi > /dev/null"],
+    ["ls > out.txt", "ls >> out.txt", "ls 2> err.txt", "cat < in.txt", "ls 2>&1 > out.txt"],
 )
-def test_redirection_is_never_granted(command):
+def test_redirection_to_a_file_is_never_granted(command):
     assert pf.is_readonly(command, ALLOW) is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ls 2>&1",
+        "git log --oneline -3 2>&1 | head -2",
+        "echo hi > /dev/null",
+        "ls >/dev/null 2>&1",
+        "ls 2>/dev/null",
+        "ls &>/dev/null",
+        "ls 1>&2",
+        "head -c 2>/dev/null",  # bash: `head -c` with stderr dropped, not `head -c 2`
+        "ls 2>&1; git status 2>/dev/null",
+    ],
+)
+def test_redirects_that_write_nowhere_are_granted(command):
+    """`2>&1` and `/dev/null` create nothing. Before 2026-09-29 every
+    `git log … 2>&1` failed the parse and cost a classifier call."""
+    assert pf.is_readonly(command, ALLOW) is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ls 2>nul",  # Git Bash creates a file called `nul`
+        "ls > /dev/null/../x",
+        "ls 2>&3",
+        "ls >&1x",
+        "ls 2 >/dev/null/x",
+    ],
+)
+def test_other_redirects_still_fail_the_parse(command):
+    assert pf.is_readonly(command, ALLOW) is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cd C:/proj && grep -n TODO src/a.py",
+        'cd "C:/my proj/scratch" && grep -o -E ".{20}x" f.js | head -3; echo ---; grep y f.js | wc -l',
+        "cd .. && ls",
+        "cd C:/proj && git log --oneline -3 2>&1 | head -2",
+    ],
+)
+def test_cd_then_a_read_is_granted(command):
+    """Changing directory changes nothing, and models prefix most reads with
+    `cd <dir> &&`: 87 of the 339 shell calls one week's judge saw began that way, seven
+    of them consecutive greps the judge then asked about (2026-09-29)."""
+    assert "cd" in DEFAULT_SHELL_READONLY
+    assert pf.is_readonly(command, ALLOW) is True
+
+
+def test_cd_does_not_launder_a_write():
+    assert pf.is_readonly("cd C:/proj && rm -rf build", ALLOW) is False
+    assert pf.is_readonly("cd C:/proj && npm install", ALLOW) is False
+
+
+def test_cd_into_a_protected_tree_is_not_granted(tmp_path):
+    assert pf.is_readonly(f"cd {tmp_path} && ls", ALLOW, protected=[str(tmp_path)]) is False
+    assert pf.is_readonly(f"cd {tmp_path / 'sub'} && cat x", ALLOW, protected=[str(tmp_path)]) is False
+
+
+def test_a_dropped_redirect_leaves_no_word_behind():
+    assert pf.split_stages("ls 2>&1 | wc -l") == ["ls", "wc -l"]
+    assert pf.split_stages("ls >/dev/null 2>&1 && git status") == ["ls", "git status"]
+    assert pf.split_stages("ls 2>&1 &") == ["ls", ""]  # a background job is still not granted
+    assert pf.is_readonly("ls 2>&1 &", ALLOW) is False
 
 
 @pytest.mark.parametrize(

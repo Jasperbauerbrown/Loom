@@ -1008,15 +1008,25 @@ cancelled `communicate()` discards everything it had already read.
 ### 9.4 Shell pre-filter (can only grant)
 Split on `&&`, `||`, `;`, `|` respecting quotes. For each stage: first token (after
 `env`-style assignments) ∈ `shell_readonly_commands` (setting; default: `ls dir cat
-type head tail less more wc grep rg find where which echo pwd printenv git-status
-git-log git-diff git-show git-branch python--version node--version npm-ls uv-pip-list
-sleep`
-with `git status` etc. matched as `git` + first arg), and no `>`/`>>`/`2>` redirection,
-and no backticks or `$(`, and no word that, taken as a path relative to the shell's
-working directory, is a protected path or sits under one (a `$VAR`/`%VAR%` path it
-cannot resolve counts as one: 2026-09-22, `cat ~/.loom/secrets.json` was granted while
-the fs tools would have asked). All stages pass → allow. Otherwise → classifier. Parse
-failure → classifier. Nothing here denies.
+type head tail less more wc grep rg find where which echo pwd printenv env tree stat
+file git-status git-log git-diff git-show git-branch git-remote python--version
+node--version npm-ls uv-pip-list pip-list sleep cd`
+with `git status` etc. matched as `git` + first arg), and no `>`/`>>`/`2>` redirection
+to a file, and no backticks or `$(`, and no word that, taken as a path relative to the
+shell's working directory, is a protected path or sits under one (a `$VAR`/`%VAR%` path
+it cannot resolve counts as one: 2026-09-22, `cat ~/.loom/secrets.json` was granted
+while the fs tools would have asked). All stages pass → allow. Otherwise → classifier.
+Parse failure → classifier. Nothing here denies.
+
+Two things the splitter tolerates (2026-09-29, from a week of judge verdicts: 87 of the
+339 shell calls it saw began `cd <dir> &&`, and most of the rest that parsed no further
+carried a `2>&1`): `cd` is on the default list, since changing directory changes
+nothing and the protected-path check sees its target like any other word; and a
+redirection that writes nowhere — `2>&1`, `1>&2`, `>/dev/null`, `2>/dev/null`,
+`&>/dev/null` — is dropped from its stage instead of failing the parse. A digit before
+`>` is the stream only when it is a word of its own, as bash reads it (`head -c
+2>/dev/null` is `head -c` with stderr dropped). `2>nul` stays a parse failure: on Git
+Bash it creates a file called `nul`.
 
 ### 9.5 Classifier
 `prompts/classify.md` with inputs: conversation kind and goal, the request that led
@@ -1064,6 +1074,21 @@ contents are unknown" and "the 'Desk' goal does not clearly authorize"):
   carried intent is ordinary. Before the label, "promoting now — this restarts me" from
   step 3 read as the intent of five later `git log` and `pytest` calls, and the judge
   asked about each for "claiming" a restart.
+- **What counts as reversible, and what a reason is** (2026-09-29, from a week of
+  verdicts: 339 shell calls judged, 69 asked, about twenty of those asks wrong by the
+  prompt's own rules while every allow held up). The prompt now says that running code
+  is not by itself irreversible and names the cases the judge had been asking about: a
+  test suite, a build, a linter or type-check, a commit on a branch (not a push), a
+  server bound to localhost that the goal calls for, a package installed into the
+  project's own venv or node_modules. A call that only reads inside the roots is an
+  allow, and not knowing why the assistant wants the read is not uncertainty about the
+  call (seven consecutive greps were asked with "I need to confirm this is what you
+  want"). "You cannot tell" is scoped to the call itself: a hidden or encoded target,
+  an unshown script, a garbled command. A program the user asked to start may talk to
+  a service on its own without that becoming a message sent on their behalf ("please
+  start the bot again" → `npm start` was asked because the bot "connects to Discord").
+  And the reason is a verdict — the rule plus the thing in the call that triggered it —
+  never a question or a request for more context.
 
 ### 9.6 Background processes (decided 2026-09-22)
 A program that must outlive a tool call — a dev server, a bot, a watcher — is started

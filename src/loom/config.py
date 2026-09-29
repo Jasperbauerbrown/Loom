@@ -175,6 +175,9 @@ DEFAULT_SHELL_READONLY = [
     "find", "where", "which", "echo", "pwd", "printenv", "env", "tree", "stat", "file",
     "git status", "git log", "git diff", "git show", "git branch", "git remote",
     "python --version", "node --version", "npm ls", "uv pip list", "pip list", "sleep",
+    # `cd` changes nothing, and models prefix most reads with `cd <dir> &&`: 87 of the
+    # 339 shell calls one week's judge saw began that way (2026-09-29).
+    "cd",
 ]
 
 FIELDS: list[Field] = [
