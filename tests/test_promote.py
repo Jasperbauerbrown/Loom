@@ -324,6 +324,12 @@ def test_install_writes_the_self_modification_procedure(app):
     note = app.vault.read(promote.PROCEDURE_PATH)
     assert "worktree" in note.body and "promote_plan" in note.body
     assert note.frontmatter.get("approved")  # written by loom itself (03 §8.4)
+    # The thread is spawned isolated, so its checkout is a root from the first turn; a
+    # checkout made by hand sat outside every root and asked on every file call
+    # (2026-09-28). The one `git worktree add` left is the warning not to.
+    assert 'isolation: "worktree"' in note.body
+    assert "releases/dev-" not in note.body and "APP_HOME>/scratch" not in note.body
+    assert note.body.count("git worktree add") == 1 and "Never make the worktree by hand" in note.body
 
 
 # ---------------------------------------------------------------------------------

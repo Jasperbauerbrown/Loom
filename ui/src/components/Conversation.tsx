@@ -11,6 +11,7 @@ import { Badge, Button, Collapsible, JsonBlock, Spinner } from "./ui";
 import { Markdown } from "./Markdown";
 import { ArtifactDrawer } from "./ArtifactDrawer";
 import { IconPaperclip } from "./Icons";
+import { allowLabels } from "../lib/approvalLabels";
 
 const PAGE = 100;
 
@@ -123,6 +124,8 @@ function ApprovalCard({ id }: { id: string }) {
   const [busy, setBusy] = useState(false);
   if (!approval || approval.status !== "pending") return null;
   const root = approval.options?.add_root;
+  // Only "Allow always" applies the tick; the labels say so once it is ticked.
+  const labels = allowLabels(Boolean(root) && addRoot);
   const decide = async (decision: ApprovalDecision) => {
     setBusy(true);
     // The backend widens the roots only on allow_always; the other decisions ignore it.
@@ -151,20 +154,34 @@ function ApprovalCard({ id }: { id: string }) {
           </span>
         </label>
       ) : null}
-      <div className="mt-2 flex gap-2">
-        <Button size="sm" variant="primary" disabled={busy} onClick={() => void decide("allow")}>
-          Allow
+      <div className="mt-2 flex flex-wrap gap-2">
+        <Button
+          size="sm"
+          variant={labels.primary === "allow" ? "primary" : "default"}
+          disabled={busy}
+          title={labels.withoutRoot || undefined}
+          onClick={() => void decide("allow")}
+        >
+          {labels.allow}
         </Button>
         <Button
           size="sm"
           disabled={busy}
-          title={`Run ${approval.tool} with exactly these arguments without asking again, in this conversation only.`}
+          title={
+            labels.withoutRoot ||
+            `Run ${approval.tool} with exactly these arguments without asking again, in this conversation only.`
+          }
           onClick={() => void decide("allow_conversation")}
         >
-          Allow for this conversation
+          {labels.conversation}
         </Button>
-        <Button size="sm" disabled={busy} onClick={() => void decide("allow_always")}>
-          Allow always
+        <Button
+          size="sm"
+          variant={labels.primary === "always" ? "primary" : "default"}
+          disabled={busy}
+          onClick={() => void decide("allow_always")}
+        >
+          {labels.always}
         </Button>
         <Button size="sm" variant="danger" disabled={busy} onClick={() => void decide("deny")}>
           Deny
