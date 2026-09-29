@@ -1567,6 +1567,18 @@ line posts a now-board item (`notify` on failure, §17) and appends the outcome 
 `promote.start`, because the stages that matter most are written while the backend is
 not running.
 
+*Planning from a release* (2026-09-28). A backend running from a release plans in a
+worktree of the supervisor's bare mirror (`releases/src.git`), whose origin is the
+development checkout and which learns of new commits only when a release is built. So
+`plan` fetches a ref the mirror cannot resolve from that origin — `git fetch --prune
+--tags origin` then `git fetch origin <ref>`, the same two commands `create_release` runs
+— and retries once; the second self-promotion had refused a commit made in the checkout
+with "does not resolve". The suite runner (step 3) finds `uv` on PATH before falling back
+to `python -m uv`: the backend's interpreter is a project or release virtualenv with no
+`uv` module, which is how the first promotion failed "No module named uv" — reported as
+`tests_failed`, since a runner that cannot start and a suite that fails are one class to
+the caller.
+
 ### 15.3 Protected paths (default rows)
 `supervisor/`, `src/loom/tools/permissions.py`, `src/loom/tools/fs_guard.py`,
 `src/loom/tools/shell_prefilter.py`, `src/loom/promote.py`,

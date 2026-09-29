@@ -138,9 +138,25 @@ def _worktree_for(repo: Path, ref: str, commit: str) -> str:
     return found
 
 
+def _fetch_from_origin(repo: Path, ref: str) -> bool:
+    """A backend running from a release resolves refs in the supervisor's mirror
+    (`releases/src.git`), which learns of new commits only when a release is built. A
+    ref that lives in the mirror's origin — the development checkout — is promotable,
+    so fetch it the way `create_release` will (2026-09-28: the second promotion, planned
+    from a release, could not see a commit made in the checkout). False when there is
+    no origin; the caller's retry decides whether the ref exists."""
+    ok, _ = _git("remote", "get-url", "origin", cwd=repo)
+    if not ok:
+        return False
+    _git("fetch", "--prune", "--tags", "origin", cwd=repo)
+    _git("fetch", "origin", ref, cwd=repo)  # a bare sha, or a branch that is not a head here
+    return True
+
+
 def plan(app: Any, ref: str) -> Plan:
     """Resolve `ref`, diff it against the live commit, and mark the protected paths.
-    Pure reading: it never writes, never asks, never promotes."""
+    Pure reading of the checkout: it never writes a file, never asks, never promotes
+    (a ref the mirror lacks is fetched from its origin, which adds objects, not files)."""
     ref = (ref or "").strip()
     if not ref:
         return Plan(ref=ref, ok=False, code="bad_ref", error="ref is empty")
@@ -149,6 +165,8 @@ def plan(app: Any, ref: str) -> Plan:
         return Plan(ref=ref, ok=False, code="no_repo",
                     error="this install has no source checkout, so there is nothing to promote")
     ok, out = _git("rev-parse", "--verify", f"{ref}^{{commit}}", cwd=repo)
+    if not ok and _fetch_from_origin(repo, ref):
+        ok, out = _git("rev-parse", "--verify", f"{ref}^{{commit}}", cwd=repo)
     if not ok:
         return Plan(ref=ref, ok=False, code="bad_ref", repo=str(repo),
                     error=f"{ref} does not resolve to a commit in {repo}: {out}")
@@ -191,10 +209,20 @@ def _is_protected(app: Any, repo: Path, relative: str) -> bool:
 # ---------------------------------------------------------------------------------
 # the test suite (03 §15.2 step 3)
 # ---------------------------------------------------------------------------------
+def uv_command() -> list[str]:
+    """How this backend runs uv: the `uv` on PATH when there is one, else this
+    interpreter's `uv` module. The interpreter is a project or release virtualenv,
+    which has no `uv` module unless someone installed one there (2026-09-28: the first
+    self-promotion failed "No module named uv" that way), while the supervisor runs uv
+    from the interpreter that launched it. PATH is the one answer both can share."""
+    found = shutil.which("uv")
+    return [found] if found else [sys.executable, "-m", "uv"]
+
+
 async def run_tests(worktree: Path | str, timeout_s: float = TEST_TIMEOUT_S) -> tuple[bool, str]:
-    """`python -m uv run pytest -q -x` in the ref's worktree. Returns (ok, output);
-    a timeout or a missing uv is a failure with its reason as the output."""
-    command = [sys.executable, "-m", "uv", "run", "pytest", "-q", "-x"]
+    """`uv run pytest -q -x` in the ref's worktree. Returns (ok, output); a timeout or
+    a missing uv is a failure with its reason as the output."""
+    command = [*uv_command(), "run", "pytest", "-q", "-x"]
     try:
         proc = await asyncio.create_subprocess_exec(
             *command, cwd=str(worktree),

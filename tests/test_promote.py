@@ -109,6 +109,40 @@ def test_plan_sees_an_unclean_worktree_holding_the_ref(app, repo):
     assert plan.worktree
 
 
+def test_plan_fetches_a_ref_that_only_the_mirror_origin_has(app, repo, monkeypatch, tmp_path):
+    """A backend running from a release plans in a worktree of the supervisor's bare
+    mirror, whose origin is the development checkout. A commit made there after the
+    mirror last fetched must still be promotable (2026-09-28)."""
+    mirror = tmp_path / "releases" / "src.git"
+    mirror.parent.mkdir(parents=True)
+    git("clone", "-q", "--bare", str(repo["path"]), str(mirror), cwd=tmp_path)
+    git("config", "remote.origin.fetch", "+refs/heads/*:refs/heads/*", cwd=mirror)
+    release = tmp_path / "releases" / "rel-1"
+    git("worktree", "add", "-q", "--detach", str(release), repo["third"], cwd=mirror)
+    monkeypatch.setattr(promote, "repo_root", lambda _app: release)
+
+    (repo["path"] / "notes.md").write_text("four\n", encoding="utf-8")
+    git("add", "-A", cwd=repo["path"])
+    git("commit", "-qm", "four", cwd=repo["path"])
+    fourth = git("rev-parse", "HEAD", cwd=repo["path"])
+
+    by_sha = promote.plan(app, fourth[:7])
+    assert by_sha.ok and by_sha.commit == fourth and by_sha.changed_files == ["notes.md"]
+    assert promote.plan(app, "main").commit == fourth  # the branch moved too
+    still_bad = promote.plan(app, "no-such-ref")
+    assert not still_bad.ok and still_bad.code == "bad_ref"
+
+
+def test_run_tests_uses_the_uv_on_path_before_this_interpreter(monkeypatch):
+    import shutil
+    import sys
+
+    monkeypatch.setattr(shutil, "which", lambda name: "C:/tools/uv.exe" if name == "uv" else None)
+    assert promote.uv_command() == ["C:/tools/uv.exe"]
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    assert promote.uv_command() == [sys.executable, "-m", "uv"]
+
+
 def test_plan_without_a_checkout_says_so(app, monkeypatch):
     monkeypatch.setattr(promote, "repo_root", lambda _app: None)
     plan = promote.plan(app, "HEAD")

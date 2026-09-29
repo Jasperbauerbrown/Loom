@@ -1197,6 +1197,14 @@ sessions do not re-litigate.
   endpoint: it opens the add dialog seeded from the source (name `<source>-copy`, then
   `-copy-2`…) minus the machine-written `token_factor_seed`, so the person tweaks before
   saving and the ordinary create path does the rest.
+- **2026-09-28** — **A promotion planned from a release fetches from the checkout.**
+  The first self-promotion moved the backend from the repo checkout into a release
+  worktree of the supervisor's bare mirror; the second could not resolve a commit made
+  in the checkout, because the mirror learns of commits only when a release is built.
+  `plan` now fetches an unresolvable ref from the mirror's origin the way
+  `create_release` does, and retries once. The suite runner finds `uv` on PATH before
+  `python -m uv`: a project or release virtualenv has no `uv` module, and the desk had
+  worked around the "No module named uv" failure by installing one into `.venv`.
 - **2026-09-28** — **Self-review is a procedure, not code.** Loom's ability to find
   its own failures — a thread looping, a tool that keeps breaking, approvals that keep
   asking, a result ignored, a false finish — is a built-in procedure note
