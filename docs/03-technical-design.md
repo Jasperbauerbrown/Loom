@@ -1356,7 +1356,7 @@ React + Vite + TypeScript + Tailwind; no component library; state via a small st
 over the WS stream (one reducer per event type) with REST for initial loads. Built into
 `ui-dist/` and served by the backend at `/`. Appearance is two settings: `general.theme`
 (system / light / dark → the `dark` class on `<html>`) and `general.palette` (default,
-slate, warm, forest, nord, mono → `data-palette` on `<html>`). A palette only overrides
+slate, warm, forest, nord, mono, grape, ocean, ember, moss → `data-palette` on `<html>`). A palette only overrides
 the Tailwind colour variables the components already use (`neutral-*` surfaces, `sky-*`
 accent, `white`), so no component knows palettes exist; the last applied pair is
 remembered in `localStorage` so a reload does not flash the default look.
@@ -1410,7 +1410,7 @@ is the last line, not a licence: the shapes crossing the bus are one shape (§12
 
 ### 13.2 Settings inventory (all UI-visible; groups map to `config.py` dataclasses)
 - **General**: display name, timezone, bind address, LAN token, theme
-  (system/light/dark), palette (default/slate/warm/forest/nord/mono).
+  (system/light/dark), palette (default/slate/warm/forest/nord/mono/grape/ocean/ember/moss).
 - **Models**: three tabs. *Providers* (CRUD: name, kind, base URL, credential from the
   secret picker, default params, concurrency, enabled; probe button lists live
   models). *Presets* (CRUD: name, provider, model picked from the probe list or typed,

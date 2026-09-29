@@ -170,6 +170,117 @@ body {
   --color-sky-950: #09090b;
 }
 
+/* grape: purple-tinted greys, violet accent. */
+:root[data-palette="grape"] {
+  --color-white: #fdfcfe;
+  --color-neutral-50: #f7f6f8;
+  --color-neutral-100: #efeef2;
+  --color-neutral-200: #dddae2;
+  --color-neutral-300: #c2bdcc;
+  --color-neutral-400: #9d94ad;
+  --color-neutral-500: #7b6f90;
+  --color-neutral-600: #655b76;
+  --color-neutral-700: #4f475c;
+  --color-neutral-800: #393342;
+  --color-neutral-900: #25212b;
+  --color-neutral-950: #141217;
+  --color-sky-50: #f5f3ff;
+  --color-sky-100: #ede9fe;
+  --color-sky-200: #ddd6fe;
+  --color-sky-300: #c4b5fd;
+  --color-sky-400: #a78bfa;
+  --color-sky-500: #8b5cf6;
+  --color-sky-600: #7c3aed; /* violet-600: white text 5.6:1 */
+  --color-sky-700: #6d28d9;
+  --color-sky-800: #5b21b6;
+  --color-sky-900: #4c1d95;
+  --color-sky-950: #2e1065;
+}
+
+/* ocean: teal-tinted greys, teal accent. */
+:root[data-palette="ocean"] {
+  --color-white: #fbfdfd;
+  --color-neutral-50: #f6f8f8;
+  --color-neutral-100: #eef2f1;
+  --color-neutral-200: #dae2e1;
+  --color-neutral-300: #bdcccb;
+  --color-neutral-400: #94adab;
+  --color-neutral-500: #6f908d;
+  --color-neutral-600: #5b7674;
+  --color-neutral-700: #475c5a;
+  --color-neutral-800: #334241;
+  --color-neutral-900: #212b2a;
+  --color-neutral-950: #121717;
+  --color-sky-50: #f0fdfa;
+  --color-sky-100: #ccfbf1;
+  --color-sky-200: #99f6e4;
+  --color-sky-300: #5eead4;
+  --color-sky-400: #2dd4bf;
+  --color-sky-500: #14b8a6;
+  --color-sky-600: #0f766e; /* teal-600: white text 5.4:1 */
+  --color-sky-700: #115e59;
+  --color-sky-800: #115e59;
+  --color-sky-900: #134e4a;
+  --color-sky-950: #042f2e;
+}
+
+/* ember: warm orange-tinted greys, orange accent. */
+:root[data-palette="ember"] {
+  --color-white: #fefefb;
+  --color-neutral-50: #f9f7f6;
+  --color-neutral-100: #f2efed;
+  --color-neutral-200: #e3ddd9;
+  --color-neutral-300: #cec3bb;
+  --color-neutral-400: #b09f92;
+  --color-neutral-500: #947d6b;
+  --color-neutral-600: #796758;
+  --color-neutral-700: #5f5045;
+  --color-neutral-800: #443a31;
+  --color-neutral-900: #2c2620;
+  --color-neutral-950: #181411;
+  --color-sky-50: #fff7ed;
+  --color-sky-100: #ffedd5;
+  --color-sky-200: #fed7aa;
+  --color-sky-300: #fdba74;
+  --color-sky-400: #fb923c;
+  --color-sky-500: #f97316;
+  --color-sky-600: #c2410c; /* one stop darker than orange-600: white text stays >= 4:1 */
+  --color-sky-700: #9a3412;
+  --color-sky-800: #9a3412;
+  --color-sky-900: #7c2d12;
+  --color-sky-950: #431407;
+}
+
+/* moss: deep green-on-dark; yellow-green accent, darker and moodier than forest.
+   Contrast (WCAG, computed 2026-09-28): white on sky-600 4.96:1, sky-400 on
+   neutral-900 7.98:1, neutral-900 on white 15.98:1, neutral-400 on neutral-950 7.0:1,
+   sky-600 on neutral-950 3.79:1 (dark-mode button fill, shipped range 2.72-4.08). */
+:root[data-palette="moss"] {
+  --color-white: #fbfdfa;
+  --color-neutral-50: #f4f7f4;
+  --color-neutral-100: #e8eee9;
+  --color-neutral-200: #d3ddd5;
+  --color-neutral-300: #b3c3b7;
+  --color-neutral-400: #8fa392;
+  --color-neutral-500: #6b8266;
+  --color-neutral-600: #556a52;
+  --color-neutral-700: #425241;
+  --color-neutral-800: #2f3b2f;
+  --color-neutral-900: #1a241c;
+  --color-neutral-950: #0d130f;
+  --color-sky-50: #f4faec;
+  --color-sky-100: #e3f2cd;
+  --color-sky-200: #cbe5a3;
+  --color-sky-300: #b5d98a;
+  --color-sky-400: #9cc45f;
+  --color-sky-500: #6a9a3d;
+  --color-sky-600: #4d7c2a; /* white text 4.96:1 */
+  --color-sky-700: #3d6322;
+  --color-sky-800: #2f4d1b;
+  --color-sky-900: #26401a;
+  --color-sky-950: #16260e;
+}
+
 /* Rendered Markdown. Dense but readable; no prose plugin (dependency-light). */
 .md {
   @apply text-[14px] leading-6;

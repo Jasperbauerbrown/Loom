@@ -1169,3 +1169,9 @@ sessions do not re-litigate.
   are deliberately untouched: Git Bash mounts `/tmp` at `TEMP`, and moving it per
   conversation would make the per-process mount table — and so the guard — disagree
   with the shell about `/tmp` again.
+- **2026-09-28** — **Four palettes added** (`general.palette`: grape, ocean, ember,
+  moss), approved by the person on 2026-09-28 from the colour-themes proposal. Same
+  mechanism as the 2026-09-21 decision — CSS-variable override blocks in
+  `ui/src/index.css`, one `choices` entry, no component changes. `moss` is a new
+  green-on-dark design meeting the proposal's contrast gates (white on accent-600 ≥ 4:1,
+  accent-400 on neutral-900 ≥ 4:1, body text ≥ 12:1, dark muted ≥ 4.5:1).

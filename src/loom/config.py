@@ -185,7 +185,7 @@ FIELDS: list[Field] = [
     Field("general.port", "int", 8500, "Port", "", "number", min=1024, max=65535, restart=True),
     Field("general.lan_token", "str", "", "LAN bearer token", "Required on every request when bound beyond loopback. Empty = loopback only.", "secret"),
     Field("general.theme", "enum", "system", "Theme", "Light or dark; system follows the OS.", "select", choices=("system", "light", "dark")),
-    Field("general.palette", "enum", "default", "Palette", "Colour palette; the theme picks its light or dark side.", "select", choices=("default", "slate", "warm", "forest", "nord", "mono")),
+    Field("general.palette", "enum", "default", "Palette", "Colour palette; the theme picks its light or dark side.", "select", choices=("default", "slate", "warm", "forest", "nord", "mono", "grape", "ocean", "ember", "moss")),
     Field("general.open_browser", "bool", True, "Open browser on start", "", "toggle"),
     # Models (rows live in providers/presets/model_roles; scalars here)
     Field("models.fallback_role", "enum", "", "Fallback role", "Role to try when a call fails fatally (auth, model missing).", "select", choices=("", "desk", "worker", "maintenance", "utility")),
