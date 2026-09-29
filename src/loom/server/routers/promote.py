@@ -4,7 +4,8 @@ Everything here goes through the same `promote.request_promotion` the `promote` 
 uses, so a click and a model call cannot reach different conclusions. The failure class
 comes back as a `code` and is mapped onto exactly one status: a protected diff that was
 not acknowledged is `409` with the file list, a missing supervisor is `503`, a bad ref
-or a dirty tree is `400`, a failing suite is `422` with the output.
+or a dirty tree is `400`. The test suite runs in the supervisor (2026-09-28), so a
+failing suite is a `failed` stage in the promote log, not a status here.
 """
 
 from __future__ import annotations
@@ -25,7 +26,6 @@ STATUS_FOR: dict[str, int] = {
     "bad_ref": 400,
     "dirty": 409,
     "protected": 409,
-    "tests_failed": 422,
     "no_supervisor": 503,
     "supervisor_error": 502,
 }

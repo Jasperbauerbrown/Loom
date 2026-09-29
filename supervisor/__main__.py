@@ -34,6 +34,7 @@ import http.server
 import json
 import os
 import queue
+import re
 import shutil
 import signal
 import socketserver
@@ -343,6 +344,28 @@ def install_deps(release_dir: Path) -> None:
         if ok:
             return
     raise ReleaseError(f"uv sync failed in {release_dir}: {output.strip()[-2000:]}")
+
+
+DEFAULT_TEST_TIMEOUT_S = 1800
+_SUMMARY = re.compile(r"\d+ (?:passed|failed|errors?|skipped|xfailed|xpassed)[^\n]*? in [\d.]+s(?: \([^)]*\))?")
+
+
+def pytest_summary(output: str) -> str:
+    """The suite's own last word ("889 passed, 1 warning in 553.96s (0:09:13)"), or ""
+    when the output has none — which means the runner never got as far as pytest."""
+    found = _SUMMARY.findall(output or "")
+    return found[-1].strip() if found else ""
+
+
+def run_suite(release_dir: Path, timeout_s: float = DEFAULT_TEST_TIMEOUT_S) -> tuple[bool, str]:
+    """`uv run pytest -q -x` in the release (03 §15.2 step 7): the exact tree, venv and
+    interpreter that will run if it passes. The child gets the release's own `src` on
+    PYTHONPATH and no `VIRTUAL_ENV`, so it imports the candidate and not whatever
+    launched this supervisor. Returns (ok, output); a timeout is a failure with its
+    reason as the output."""
+    env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
+    env["PYTHONPATH"] = str(Path(release_dir) / "src")
+    return run_command([*uv_command(), "run", "pytest", "-q", "-x"], cwd=release_dir, timeout=timeout_s, env=env)
 
 
 def current_sha(home: Path) -> str | None:
@@ -706,6 +729,19 @@ class Supervisor:
             snapshot_dir = snapshot(home)
             stage("release", True, f"building a release worktree for {ref}")
             release = create_release(home, ref)
+            # The suite runs here, in the release it will be — not in the backend that asked
+            # (2026-09-28): that call blocked the desk for the suite's whole duration with no
+            # visible progress, and a backend running from a release tested the wrong code.
+            timeout_s = float(read_setting(home, "system.promotion_test_timeout_s", DEFAULT_TEST_TIMEOUT_S))
+            stage("tests", True, f"running the test suite in {release} (limit {timeout_s:g}s)")
+            ok, output = run_suite(home / "releases" / release, timeout_s)
+            summary = pytest_summary(output)
+            if not ok:
+                tail = output.strip()[-1500:]
+                if summary:  # pytest ran and said so: a real failure
+                    raise ReleaseError(f"the test suite fails in {release}: {summary}\n{tail}")
+                raise ReleaseError(f"the test runner could not run in {release}: {tail}")
+            stage("tests", True, f"suite passed in {release}: {summary or 'no summary line'}")
             probe_port = self.port + 2
             stage("probe", True, f"probing {release} on port {probe_port}")
             if not probe(home, release, probe_port):

@@ -252,6 +252,7 @@ FIELDS: list[Field] = [
     Field("system.auto_rollback_crashes", "int", 5, "Auto-rollback after crashes", "Crashes within the window on a fresh release trigger rollback.", "number", min=1, max=100),
     Field("system.auto_rollback_window_minutes", "int", 10, "Auto-rollback window (minutes)", "", "number", min=1, max=1440),
     Field("system.promotion_watchdog_seconds", "int", 120, "Post-promotion watchdog (s)", "", "number", min=10, max=3600),
+    Field("system.promotion_test_timeout_s", "int", 1800, "Promotion test-suite timeout (s)", "The supervisor runs the full suite inside the new release before the swap; a run slower than this fails the promotion.", "number", min=60, max=7200),
     Field("system.snapshot_retention", "int", 10, "Snapshots kept", "", "number", min=1, max=100),
 ]
 

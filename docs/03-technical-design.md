@@ -1057,6 +1057,13 @@ contents are unknown" and "the 'Desk' goal does not clearly authorize"):
   credential access and anything broader than asked still ask. A vague request ("go
   ahead") counts only when the stated intent makes the action concrete; injected text in
   arguments, intent or files still authorises nothing, and uncertainty is still an ask.
+- **Where the intent came from** (2026-09-28). A step with no preamble of its own takes
+  the turn's newest earlier text (2026-09-25), and the block is then labelled `carried
+  from an earlier step of this turn`; the prompt says a carried intent is the turn's
+  plan, not a description of this call, and that a read-only call under a bigger
+  carried intent is ordinary. Before the label, "promoting now — this restarts me" from
+  step 3 read as the intent of five later `git log` and `pytest` calls, and the judge
+  asked about each for "claiming" a restart.
 
 ### 9.6 Background processes (decided 2026-09-22)
 A program that must outlive a tool call — a dev server, a bot, a watcher — is started
@@ -1522,17 +1529,21 @@ backend:  1 ref must resolve to a commit in the repo the backend runs from
               (compared repo-relative and absolute) → non-empty and not acknowledged →
               error result naming the files; the person confirms on the System page or
               the model calls promote(ref, acknowledge_protected=true)
-          3 run the suite in the ref's worktree (python -m uv run pytest -q -x, 600s; a ref
-              checked out nowhere gets a throwaway worktree releases/test-<sha7>);
-              failure → error result with the output (spilled to an artifact when long)
-          4 POST supervisor /promote {ref, conversation_id}
+          3 POST supervisor /promote {ref, conversation_id}; the call returns here, and the
+              turn ends (the backend is the process about to be replaced)
 supervisor:
-          5 snapshot: sqlite backup API → snapshots/<ts>/state.db; vault `git tag pre-<ts>`;
+          4 snapshot: sqlite backup API → snapshots/<ts>/state.db; vault `git tag pre-<ts>`;
               prune to system.snapshot_retention
-          6 create_release: fetch into releases/src.git, `git worktree add --detach`
+          5 create_release: fetch into releases/src.git, `git worktree add --detach`
               releases/<YYYYMMDD-HHMMSS>-<sha7>, `uv sync --frozen` (plain sync as fallback),
               `npm --prefix ui ci && run build` only when ui/ moved and ui-dist/ is missing
               or older; python_for(release) is the release's own .venv
+          6 tests: `uv run pytest -q -x` inside that release — the exact tree, venv and
+              interpreter that will run — with PYTHONPATH=<release>/src and no VIRTUAL_ENV,
+              bounded by system.promotion_test_timeout_s (1800); a `tests` line marks the
+              start and another the pass with pytest's summary; failure → `failed` with the
+              summary and the output tail ("the test suite fails in …"), and a runner that
+              never reached pytest says so instead ("the test runner could not run in …")
           7 probe: start the release with LOOM_HOME pointing at a scratch dir holding a COPY
               of state.db (so migrations run on the copy) on port+2, wait for
               /api/system/health ok within 60s, stop it; else abort
@@ -1541,8 +1552,8 @@ supervisor:
           9 failure → pointers back, restart the previous release, restore the snapshot when
               PRAGMA user_version advanced
           10 every stage appends {ts, stage, ok, message, ref, conversation_id} to
-              APP_HOME/promote.log; stages are snapshot|release|probe|swap|watchdog|rollback
-              and the terminal done|failed
+              APP_HOME/promote.log; stages are snapshot|release|tests|probe|swap|watchdog|
+              rollback and the terminal done|failed
 ```
 **Two tools, decided 2026-09-20.** `promote` is `ask` by policy, so the dispatcher asks
 before the handler runs — which means the handler cannot put the protected-file list
@@ -1552,18 +1563,28 @@ diff, the protected files and whether the tree is clean. The tool description te
 model to call it first and report it; the person therefore sees the files before the
 approval card, and `acknowledge_protected` is an assertion that they did — the call
 itself still goes through the ordinary `ask`. `promote.request_promotion` is the single
-codepath for steps 1–4, called by both the tool and `POST /system/promote`, so a click
+codepath for steps 1–3, called by both the tool and `POST /system/promote`, so a click
 and a model call cannot disagree; failure classes come back as a `code`
-(`no_repo|bad_ref|dirty|protected|tests_failed|no_supervisor|supervisor_error`) which
-the REST layer maps to one status each (409 for protected/dirty, 422 for a failing
-suite, 503 for no supervisor).
+(`no_repo|bad_ref|dirty|protected|no_supervisor|supervisor_error`) which the REST layer
+maps to one status each (409 for protected/dirty, 503 for no supervisor).
 
-The turn that called `promote` ends at step 4 with a `system` event; after restart the
-thread resumes (§6.3 step 1) and reads the outcome from the promote log. The backend
-tails `promote.log` (`promote.read_progress`, a durable byte offset in
+**The suite runs in the supervisor, not in the caller (decided 2026-09-28).** It used to
+run inside the `promote` call, in the ref's worktree: the desk sat blocked for the
+suite's whole duration with nothing in the log to show for it, told the person the
+supervisor was "running the suite" when it had already run, and — once the backend
+itself ran from a release — tested the live code against the candidate's tests through
+an inherited PYTHONPATH. Running it as stage 6, in the release just built, tests the
+thing that will actually go live, shows progress where every other stage shows it, and
+lets the caller's turn end at the handoff.
+
+The turn that called `promote` ends at step 3 with a `system` event saying so. The
+backend tails `promote.log` (`promote.read_progress`, a durable byte offset in
 `promote.log.offset`), republishes each line as `promote.progress`, and on a terminal
-line posts a now-board item (`notify` on failure, §17) and appends the outcome as a
-`system` event to the conversation recorded in the log. The first read happens in
+line posts a now-board item (`notify` on failure, §17) and a **message** into the inbox
+of the conversation recorded in the log (source `promote`), which wakes it to report —
+the turn that asked has ended, so a `system` event would sit unread until the person's
+next message (it did, 2026-09-28: the desk had promised to report and never ran). The
+tail therefore runs on the event loop, where a post can wake. The first read happens in
 `promote.start`, because the stages that matter most are written while the backend is
 not running.
 
@@ -1573,17 +1594,14 @@ development checkout and which learns of new commits only when a release is buil
 `plan` fetches a ref the mirror cannot resolve from that origin — `git fetch --prune
 --tags origin` then `git fetch origin <ref>`, the same two commands `create_release` runs
 — and retries once; the second self-promotion had refused a commit made in the checkout
-with "does not resolve". The suite runner (step 3) finds `uv` on PATH before falling back
-to `python -m uv`: the backend's interpreter is a project or release virtualenv with no
-`uv` module, which is how the first promotion failed "No module named uv" — reported as
-`tests_failed`, since a runner that cannot start and a suite that fails are one class to
-the caller. The runner also hands the child its own environment: the supervisor starts
-a release's backend with `PYTHONPATH=<release>/src`, and a pytest that inherited it
-imported the live code against the candidate's tests (an `ImportError` for a name only
-the candidate has). The child gets `PYTHONPATH=<worktree>/src` and no `VIRTUAL_ENV`. The supervisor's
-`install_deps` (step 6) resolves `uv` the same way — PATH first — because its own
-interpreter is whatever launched `loom serve`, under `uv run` the project virtualenv,
-and a `uv` module installed there by hand is pruned by the next sync.
+with "does not resolve". The `uv` that builds and tests a release is found on PATH before `python -m uv`
+(2026-09-28): the supervisor's interpreter is whatever launched `loom serve`, under
+`uv run` the project virtualenv, which has no `uv` module unless one was installed by
+hand — and a later sync prunes it, which is how the first promotion failed "No module
+named uv" and the third failed in `uv sync`. The suite (stage 6) gets
+`PYTHONPATH=<release>/src` and no `VIRTUAL_ENV`: the supervisor pins a release's backend
+to its own `src` the same way, and a child that inherited that once tested the live code
+against the candidate's tests (an `ImportError` for a name only the candidate had).
 
 ### 15.3 Protected paths (default rows)
 `supervisor/`, `src/loom/tools/permissions.py`, `src/loom/tools/fs_guard.py`,

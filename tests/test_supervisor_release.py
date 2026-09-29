@@ -208,11 +208,15 @@ def flow(tmp_path, monkeypatch):
     """A supervisor whose release building and probing are replaced by recorders."""
     home = tmp_path / "home"
     make_state(home, version=4)
-    calls: dict[str, object] = {"probe_ok": True, "release": "R-NEW", "probed": []}
+    calls: dict[str, object] = {"probe_ok": True, "release": "R-NEW", "probed": [],
+                                "suite": (True, "3 passed in 0.10s"), "tested": []}
 
     import supervisor.__main__ as sup
 
     monkeypatch.setattr(sup, "create_release", lambda home_, ref, **kw: calls["release"])
+    monkeypatch.setattr(sup, "run_suite", lambda release_dir, timeout_s=0: (
+        calls["tested"].append(str(release_dir)) or calls["suite"]
+    ))
     monkeypatch.setattr(sup, "probe", lambda home_, release, port, **kw: (
         calls["probed"].append(release) or calls["probe_ok"]
     ))
@@ -234,12 +238,49 @@ def test_promote_writes_previous_before_current_and_reports_every_stage(flow):
 
     assert supervisor.current() == "R-NEW" and supervisor.previous() == "R-OLD"
     assert calls["probed"] == ["R-NEW"]
+    assert calls["tested"] == [str(home / "releases" / "R-NEW")]  # the suite runs in the release itself
     assert supervisor.spawns == ["R-NEW"] and supervisor.kills == 1
-    assert [s for s, _ in stages(home)] == ["snapshot", "release", "probe", "swap", "watchdog", "done"]
+    assert [s for s, _ in stages(home)] == ["snapshot", "release", "tests", "tests", "probe", "swap", "watchdog", "done"]
+    assert "3 passed in 0.10s" in json.loads((home / "promote.log").read_text(encoding="utf-8").splitlines()[3])["message"]
     assert stages(home)[-1] == ("done", True)
     entry = json.loads((home / "promote.log").read_text(encoding="utf-8").splitlines()[-1])
     assert entry["conversation_id"] == "conv1" and entry["ref"] == "deadbeef"
     assert (home / "snapshots").is_dir()
+
+
+def test_a_failing_suite_stops_before_the_probe_and_names_the_failure(flow):
+    """The suite runs in the supervisor, in the release it built (2026-09-28): a failure
+    is a `failed` stage with pytest's own summary, and nothing is probed or swapped."""
+    home, calls = flow
+    calls["suite"] = (False, "....F\nFAILED tests/test_x.py::test_y - assert 1 == 2\n1 failed, 4 passed in 2.00s")
+    supervisor = FakeSupervisor(home)
+    supervisor.set_current("R-OLD")
+    supervisor.do_promote("deadbeef", "conv1")
+
+    assert supervisor.current() == "R-OLD" and calls["probed"] == []
+    assert supervisor.spawns == [] and supervisor.kills == 0
+    assert stages(home)[-1] == ("failed", False)
+    assert "the test suite fails in R-NEW: 1 failed, 4 passed in 2.00s" in supervisor.last_error
+    assert "assert 1 == 2" in supervisor.last_error
+
+
+def test_a_runner_that_could_not_start_is_not_a_failing_suite(flow):
+    home, calls = flow
+    calls["suite"] = (False, "python.exe: No module named uv")
+    supervisor = FakeSupervisor(home)
+    supervisor.do_promote("deadbeef")
+
+    assert stages(home)[-1] == ("failed", False)
+    assert "the test runner could not run in R-NEW: python.exe: No module named uv" in supervisor.last_error
+    assert "suite fails" not in supervisor.last_error
+
+
+def test_pytest_summary_is_the_suites_last_word():
+    from supervisor.__main__ import pytest_summary
+
+    assert pytest_summary("....\n889 passed, 1 warning in 553.96s (0:09:13)\n") == "889 passed, 1 warning in 553.96s (0:09:13)"
+    assert pytest_summary("=== 1 failed, 4 passed in 2.00s ===") == "1 failed, 4 passed in 2.00s"
+    assert pytest_summary("Creating virtual environment\npython.exe: No module named uv") == ""
 
 
 def test_a_failed_probe_changes_no_pointer(flow):

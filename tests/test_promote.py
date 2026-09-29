@@ -133,45 +133,6 @@ def test_plan_fetches_a_ref_that_only_the_mirror_origin_has(app, repo, monkeypat
     assert not still_bad.ok and still_bad.code == "bad_ref"
 
 
-def test_run_tests_uses_the_uv_on_path_before_this_interpreter(monkeypatch):
-    import shutil
-    import sys
-
-    monkeypatch.setattr(shutil, "which", lambda name: "C:/tools/uv.exe" if name == "uv" else None)
-    assert promote.uv_command() == ["C:/tools/uv.exe"]
-    monkeypatch.setattr(shutil, "which", lambda name: None)
-    assert promote.uv_command() == [sys.executable, "-m", "uv"]
-
-
-async def test_run_tests_pins_the_worktree_source_and_drops_the_active_venv(monkeypatch, tmp_path):
-    """A backend running from a release carries PYTHONPATH=<release>/src; the suite in
-    a candidate worktree must import the candidate, not the live code (2026-09-28)."""
-    import asyncio
-
-    seen: dict = {}
-
-    class _Proc:
-        returncode = 0
-
-        async def communicate(self):
-            return b"1 passed", None
-
-    async def _spawn(*command, **kwargs):
-        seen["command"] = list(command)
-        seen["kwargs"] = kwargs
-        return _Proc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", _spawn)
-    monkeypatch.setenv("PYTHONPATH", "C:/live/src")
-    monkeypatch.setenv("VIRTUAL_ENV", "C:/live/.venv")
-    ok, output = await promote.run_tests(tmp_path / "wt")
-    assert ok and output == "1 passed"
-    assert seen["command"][-4:] == ["run", "pytest", "-q", "-x"]
-    env = seen["kwargs"]["env"]
-    assert env["PYTHONPATH"] == str(tmp_path / "wt" / "src")
-    assert "VIRTUAL_ENV" not in env and seen["kwargs"]["cwd"] == str(tmp_path / "wt")
-
-
 def test_plan_without_a_checkout_says_so(app, monkeypatch):
     monkeypatch.setattr(promote, "repo_root", lambda _app: None)
     plan = promote.plan(app, "HEAD")
@@ -181,15 +142,6 @@ def test_plan_without_a_checkout_says_so(app, monkeypatch):
 # ---------------------------------------------------------------------------------
 # the promote tool (03 §15.2 steps 1–4)
 # ---------------------------------------------------------------------------------
-@pytest.fixture
-def no_tests(monkeypatch):
-    """The suite is the slow part and has its own failure test; pass it by default."""
-    async def _ok(worktree, timeout_s=promote.TEST_TIMEOUT_S):
-        return True, "2 passed"
-
-    monkeypatch.setattr(promote, "run_tests", _ok)
-
-
 @pytest.fixture
 def supervisor_ok(app, monkeypatch):
     seen: list[tuple[str, str]] = []
@@ -216,7 +168,7 @@ def test_both_tools_are_registered_with_the_right_shape(app):
     assert row["mode"] == "ask"  # the bootstrap row: a human is in the loop for the call
 
 
-async def test_promote_refuses_a_protected_diff_and_names_the_files(app, repo, no_tests, supervisor_ok):
+async def test_promote_refuses_a_protected_diff_and_names_the_files(app, repo, supervisor_ok):
     live_at(repo, repo["first"])
     result = await tool(app, "promote").handler(ctx_for(app), {"ref": repo["second"]})
     assert result.ok is False
@@ -226,7 +178,7 @@ async def test_promote_refuses_a_protected_diff_and_names_the_files(app, repo, n
     assert supervisor_ok == []  # nothing was handed over
 
 
-async def test_promote_proceeds_once_the_protected_paths_are_acknowledged(app, repo, no_tests, supervisor_ok):
+async def test_promote_proceeds_once_the_protected_paths_are_acknowledged(app, repo, supervisor_ok):
     live_at(repo, repo["first"])
     result = await tool(app, "promote").handler(
         ctx_for(app), {"ref": repo["second"], "acknowledge_protected": True}
@@ -237,26 +189,14 @@ async def test_promote_proceeds_once_the_protected_paths_are_acknowledged(app, r
     assert last and "promotion of" in last[0]["content"] and "this turn ends" in last[0]["content"]
 
 
-async def test_promote_of_an_unprotected_diff_needs_no_acknowledgement(app, repo, no_tests, supervisor_ok):
+async def test_promote_of_an_unprotected_diff_needs_no_acknowledgement(app, repo, supervisor_ok):
     """The third commit touches only `notes.md`, so nothing extra is asked."""
     live_at(repo, repo["second"])
     result = await tool(app, "promote").handler(ctx_for(app), {"ref": repo["third"]})
     assert result.ok and supervisor_ok == [(repo["third"], app.desk_id())]
 
 
-async def test_promote_stops_on_a_failing_test_suite_and_reports_the_output(app, repo, supervisor_ok, monkeypatch):
-    async def _fail(worktree, timeout_s=promote.TEST_TIMEOUT_S):
-        return False, "E   assert 1 == 2\n1 failed"
-
-    monkeypatch.setattr(promote, "run_tests", _fail)
-    live_at(repo, repo["second"])
-    result = await tool(app, "promote").handler(ctx_for(app), {"ref": repo["third"]})
-    assert result.ok is False and result.meta["code"] == "tests_failed"
-    assert "assert 1 == 2" in result.content
-    assert supervisor_ok == []
-
-
-async def test_promote_stops_on_an_unclean_worktree(app, repo, no_tests, supervisor_ok):
+async def test_promote_stops_on_an_unclean_worktree(app, repo, supervisor_ok):
     live_at(repo, repo["third"])
     (repo["path"] / "notes.md").write_text("dirty\n", encoding="utf-8")
     result = await tool(app, "promote").handler(ctx_for(app), {"ref": repo["third"]})
@@ -264,7 +204,7 @@ async def test_promote_stops_on_an_unclean_worktree(app, repo, no_tests, supervi
     assert "notes.md" in result.content and supervisor_ok == []
 
 
-async def test_promote_without_a_supervisor_says_how_to_get_one(app, repo, no_tests):
+async def test_promote_without_a_supervisor_says_how_to_get_one(app, repo):
     live_at(repo, repo["second"])
     assert not (app.home / "supervisor.token").exists()
     result = await tool(app, "promote").handler(ctx_for(app), {"ref": repo["third"]})
@@ -327,15 +267,24 @@ def test_read_progress_republishes_each_line_once(app):
     assert [e["stage"] for e in promote.read_progress(app)] == ["probe"]
 
 
-def test_a_finished_promotion_posts_an_item_and_a_system_event(app):
+def test_a_finished_promotion_posts_an_item_and_a_message_that_wakes_the_asker(app, monkeypatch):
+    """The turn that asked ended at the handoff, so the outcome must arrive the one way
+    that starts a turn: the inbox (2026-09-28: a `system` event sat unread while the desk
+    had promised to report)."""
+    from loom import conversation
+
+    woken: list[str] = []
+    monkeypatch.setattr(conversation, "wake", lambda app_, cid_: woken.append(cid_))
     cid = app.desk_id()
     write_log(app, entry("done", True, "promoted 20260920-abc1234", cid))
     promote.read_progress(app)
     posted = items.list_items(app)
     assert posted and posted[0]["source"] == "promote"
     assert "succeeded" in posted[0]["title"] and posted[0]["conversation_id"] == cid
-    last = events.last(app, cid, 1, kinds=["system"])
-    assert last and "promoted 20260920-abc1234" in last[0]["content"]
+    row = app.db.execute("SELECT source, content, delivered_at FROM inbox WHERE conversation_id=? ORDER BY id DESC LIMIT 1", (cid,)).fetchone()
+    assert row["source"] == "promote" and "promoted 20260920-abc1234" in row["content"] and row["delivered_at"] is None
+    assert woken == [cid]
+    assert not events.last(app, cid, 1, kinds=["system"])
 
 
 def test_a_failed_promotion_notifies(app):
@@ -354,16 +303,21 @@ def test_a_truncated_log_is_read_from_the_start_again(app):
     assert [e["stage"] for e in promote.read_progress(app)] == ["release"]
 
 
-async def test_start_reports_what_happened_while_the_backend_was_down(app):
+async def test_start_reports_what_happened_while_the_backend_was_down(app, monkeypatch):
     """A promotion's last stages are written while this process does not exist, so the
-    first read happens at startup."""
+    first read happens at startup — on the loop, so the message can wake the asker."""
+    from loom import conversation
+
+    woken: list[str] = []
+    monkeypatch.setattr(conversation, "wake", lambda app_, cid_: woken.append(cid_))
     cid = app.desk_id()
     write_log(app, entry("done", True, "promoted after the restart", cid))
     await promote.start(app)
     try:
         assert "promote.tail" in app.tasks
-        last = events.last(app, cid, 1, kinds=["system"])
-        assert last and "promoted after the restart" in last[0]["content"]
+        row = app.db.execute("SELECT source, content FROM inbox WHERE conversation_id=? ORDER BY id DESC LIMIT 1", (cid,)).fetchone()
+        assert row["source"] == "promote" and "promoted after the restart" in row["content"]
+        assert woken == [cid]
     finally:
         await promote.stop(app)
 
@@ -411,7 +365,7 @@ async def test_plan_endpoint_rejects_an_unknown_ref(client, repo):
     assert response.status_code == 400
 
 
-async def test_promote_endpoint_is_409_until_protected_paths_are_acknowledged(client, repo, no_tests):
+async def test_promote_endpoint_is_409_until_protected_paths_are_acknowledged(client, repo):
     live_at(repo, repo["first"])
     response = await client.post("/api/system/promote", json={"ref": repo["second"]})
     assert response.status_code == 409
@@ -419,7 +373,7 @@ async def test_promote_endpoint_is_409_until_protected_paths_are_acknowledged(cl
     assert detail["protected_files"] == ["supervisor/__main__.py"]
 
 
-async def test_promote_endpoint_is_503_without_a_supervisor(client, repo, no_tests):
+async def test_promote_endpoint_is_503_without_a_supervisor(client, repo):
     live_at(repo, repo["second"])
     response = await client.post("/api/system/promote", json={"ref": repo["third"]})
     assert response.status_code == 503

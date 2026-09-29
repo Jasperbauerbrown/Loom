@@ -1211,6 +1211,24 @@ sessions do not re-litigate.
   `ImportError` for a name only the candidate had). The supervisor's `uv sync` step
   resolves `uv` the same way; it had the same failure once the hand-installed module
   was pruned. A supervisor change is live only after `loom serve` is started again.
+- **2026-09-28** — **What a promotion feeds back, and where its suite runs.** The
+  first self-promotion showed four gaps between what the desk was told and what
+  happened. (1) The tool prompt promised "the outcome is waiting when you come back";
+  the tail only appended a `system` event, nothing woke the desk, and it never
+  reported. The outcome is now a message in the asking conversation's inbox — the one
+  mechanism that starts a turn — and the tail runs on the event loop so the post can
+  wake. (2) The suite ran inside the `promote` call, blocking the desk for nine minutes
+  with no visible progress, and the desk then told the person the supervisor was
+  "running the suite". It is now a supervisor stage, `tests`, run inside the release
+  just built, bounded by `system.promotion_test_timeout_s`, logged like every other
+  stage; the backend's runner, throwaway worktree and 600 s cap are gone. (3) A runner
+  that could not start was reported as "the test suite fails", which sent the desk on
+  a thirty-minute detour re-running the suite by hand; the stage message now
+  distinguishes the two by whether pytest's own summary line is present. (4) A step
+  with no preamble took the turn's earlier text as its intent (kept: 2026-09-25), and
+  the judge read "promoting now — this restarts me" as the intent of five later
+  read-only calls; the block is now labelled *carried from an earlier step*, and the
+  judge prompt says what that means.
 - **2026-09-28** — **Self-review is a procedure, not code.** Loom's ability to find
   its own failures — a thread looping, a tool that keeps breaking, approvals that keep
   asking, a result ignored, a false finish — is a built-in procedure note

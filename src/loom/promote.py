@@ -16,11 +16,14 @@ and a handler cannot run before the `ask` it is gated by (decided 2026-09-20, 03
                         the diff touches protected paths the handler *additionally*
                         refuses until `acknowledge_protected` is set, naming the files.
 
-`request_promotion` is the one codepath for steps 1–4 — the tool and
+`request_promotion` is the one codepath for steps 1–3 — the tool and
 `POST /api/system/promote` both call it, so a click and a model call cannot disagree.
-Steps 5–10 belong to the supervisor, which reports through `APP_HOME/promote.log`;
+Steps 4–10 belong to the supervisor, which also runs the test suite, inside the release
+it built (2026-09-28: it used to run here, blocking the desk for the suite's duration
+with nothing to show for it), and reports through `APP_HOME/promote.log`.
 `read_progress` tails that file, republishes each line as `promote.progress`, and turns
-a terminal line into a now-board item plus a `system` event in the thread that asked.
+a terminal line into a now-board item plus a message in the inbox of the conversation
+that asked — a message, because that is what wakes it to report.
 """
 
 from __future__ import annotations
@@ -28,15 +31,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
-import shutil
 import subprocess
-import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import bootstrap, items, prompts
+from . import bootstrap, conversation as conversations, items, prompts
 from .conversation import events
 from .tools import fs_guard
 from .tools.registry import Tool, ToolContext, ToolResult
@@ -47,7 +47,7 @@ NOT_RUNNING = "supervisor not running — start Loom with `loom serve` (without 
 PROGRESS_LOG = "promote.log"
 PROGRESS_OFFSET = "promote.log.offset"
 TERMINAL_STAGES = ("done", "failed")
-TEST_TIMEOUT_S = 600.0
+HANDOFF_TIMEOUT_S = 180.0  # plan (with a fetch from origin) and the handoff; the suite runs in the supervisor
 POLL_SECONDS = 2.0
 
 
@@ -103,7 +103,7 @@ class Plan:
                          "and a human approval): " + ", ".join(self.protected_files))
         else:
             lines.append("no protected paths in this diff")
-        lines.append("the test suite runs in the ref's worktree before anything is promoted")
+        lines.append("the supervisor runs the test suite inside the built release before the swap")
         if self.changed_files:
             shown = self.changed_files[:50]
             lines.append("changed:\n  " + "\n  ".join(shown))
@@ -210,79 +210,16 @@ def _is_protected(app: Any, repo: Path, relative: str) -> bool:
 # ---------------------------------------------------------------------------------
 # the test suite (03 §15.2 step 3)
 # ---------------------------------------------------------------------------------
-def uv_command() -> list[str]:
-    """How this backend runs uv: the `uv` on PATH when there is one, else this
-    interpreter's `uv` module. The interpreter is a project or release virtualenv,
-    which has no `uv` module unless someone installed one there (2026-09-28: the first
-    self-promotion failed "No module named uv" that way), while the supervisor runs uv
-    from the interpreter that launched it. PATH is the one answer both can share."""
-    found = shutil.which("uv")
-    return [found] if found else [sys.executable, "-m", "uv"]
-
-
-async def run_tests(worktree: Path | str, timeout_s: float = TEST_TIMEOUT_S) -> tuple[bool, str]:
-    """`uv run pytest -q -x` in the ref's worktree. Returns (ok, output); a timeout or
-    a missing uv is a failure with its reason as the output.
-
-    The suite must import the worktree's code, not ours: a backend running from a
-    release has `PYTHONPATH=<release>/src` from the supervisor, and a child that
-    inherits it tests the live code against the candidate's tests (2026-09-28: a new
-    test failed with an ImportError from the running release). So the child gets the
-    worktree's own `src`, and no `VIRTUAL_ENV`, which uv would otherwise try to honour."""
-    command = [*uv_command(), "run", "pytest", "-q", "-x"]
-    env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
-    env["PYTHONPATH"] = str(Path(worktree) / "src")
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *command, cwd=str(worktree), env=env,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-        )
-    except OSError as exc:
-        return False, f"could not run the test suite: {exc}"
-    try:
-        raw, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
-    except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-        return False, f"the test suite did not finish within {timeout_s:g}s"
-    output = (raw or b"").decode("utf-8", errors="replace")
-    return proc.returncode == 0, output
-
-
-async def _tests_for(app: Any, plan_: Plan) -> tuple[bool, str]:
-    """Run the suite where `ref` lives; when it lives nowhere, in a throwaway worktree
-    under `releases/test-<sha7>` that is removed again either way."""
-    if plan_.worktree:
-        return await run_tests(plan_.worktree)
-    repo = Path(plan_.repo)
-    temp = Path(app.releases_dir) / f"test-{plan_.short}"
-    temp.parent.mkdir(parents=True, exist_ok=True)
-    shutil.rmtree(temp, ignore_errors=True)
-    ok, out = await asyncio.to_thread(
-        _git, "worktree", "add", "--detach", str(temp), plan_.commit, cwd=repo, timeout=600.0
-    )
-    if not ok:
-        return False, f"could not create a worktree for {plan_.short}: {out}"
-    try:
-        return await run_tests(temp)
-    finally:
-        await asyncio.to_thread(_git, "worktree", "remove", "--force", str(temp), cwd=repo, timeout=300.0)
-        shutil.rmtree(temp, ignore_errors=True)
-
-
 # ---------------------------------------------------------------------------------
-# steps 1–4, the one codepath (tool and REST both call this)
+# steps 1–3, the one codepath (tool and REST both call this)
 # ---------------------------------------------------------------------------------
 async def request_promotion(
     app: Any,
     ref: str,
     conversation_id: str | None = None,
     acknowledge_protected: bool = False,
-    run_suite: bool = True,
 ) -> dict[str, Any]:
-    """Check, test, and hand the ref to the supervisor. Returns
+    """Check and hand the ref to the supervisor. Returns
     `{ok, code, message, plan, output?}`; `code` is the failure class (03 §17), so
     every caller can map one behaviour onto it."""
     plan_ = await asyncio.to_thread(plan, app, ref)
@@ -308,14 +245,6 @@ async def request_promotion(
         )
         return payload
 
-    if run_suite:
-        ok, output = await _tests_for(app, plan_)
-        if not ok:
-            payload["code"] = "tests_failed"
-            payload["message"] = f"the test suite fails at {plan_.short}; nothing was promoted"
-            payload["output"] = output
-            return payload
-
     client = app.supervisor or SupervisorClient(app)
     answer = await client.promote(plan_.ref, conversation_id or "")
     if not answer.get("ok"):
@@ -326,8 +255,8 @@ async def request_promotion(
     if conversation_id:
         _system_event(
             app, conversation_id,
-            f"promotion of {plan_.short} started; this turn ends here and the thread "
-            "resumes after the restart, with the outcome in the promote log",
+            f"promotion of {plan_.short} handed to the supervisor; this turn ends here, and "
+            "the outcome arrives as a message after the restart",
         )
     return {"ok": True, "code": "ok", "plan": plan_.to_json(),
             "message": f"promotion of {plan_.short} ({plan_.ref}) handed to the supervisor"}
@@ -464,9 +393,11 @@ def _set_offset(app: Any, value: int) -> None:
 
 def read_progress(app: Any) -> list[dict[str, Any]]:
     """Consume what the supervisor appended since last time: republish every line as
-    `promote.progress`, and turn a terminal line into an item and, when a thread asked
-    for the promotion, a `system` event it will read when it resumes. The offset is a
-    file, so a restart in the middle of a promotion reports it exactly once."""
+    `promote.progress`, and turn a terminal line into an item and, when a conversation
+    asked for the promotion, a message in its inbox — which wakes it to report, since
+    the turn that asked ended at the handoff (2026-09-28: a `system` event sat unread
+    while the desk had promised to report). Runs on the event loop for that reason. The
+    offset is a file, so a restart in the middle of a promotion reports it exactly once."""
     start = _offset(app)
     text, end = _read_text(log_path(app), start)
     entries = _parse(text)
@@ -499,7 +430,11 @@ def read_progress(app: Any) -> list[dict[str, Any]]:
         except Exception:  # an item must never break the tail
             log.exception("could not post the promotion item")
         if conversation_id and app.conversation(conversation_id) is not None:
-            _system_event(app, conversation_id, f"{title.lower()}: {body}")
+            try:
+                conversations.post(app, conversation_id, f"{title.lower()}: {body}",
+                                   source="promote", meta={"ref": ref, "ok": ok})
+            except Exception:  # the tail must never break on one conversation
+                log.exception("could not post the promotion outcome to %s", conversation_id)
     _set_offset(app, end)
     return entries
 
@@ -507,7 +442,7 @@ def read_progress(app: Any) -> list[dict[str, Any]]:
 async def _tail(app: Any) -> None:
     while not app.shutting_down:
         try:
-            await asyncio.to_thread(read_progress, app)
+            read_progress(app)  # on the loop: the post wakes the conversation
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -542,7 +477,7 @@ async def promote_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
             content += "\n\n" + str(outcome["output"])
         return ToolResult.error(content, code=outcome["code"], ref=ref)
     return ToolResult(
-        content=str(outcome["message"]) + "; this turn ends here and resumes after the restart",
+        content=str(outcome["message"]) + "; this turn ends here, and the outcome arrives as a message after the restart",
         meta={"ends_turn": True, "ref": ref, "commit": outcome["plan"]["commit"]},
     )
 
@@ -581,7 +516,7 @@ def tools() -> list[Tool]:
             },
             handler=promote_handler,
             destructive=True,
-            timeout_s=TEST_TIMEOUT_S + 60.0,
+            timeout_s=HANDOFF_TIMEOUT_S,
         ),
     ]
 
@@ -606,7 +541,7 @@ async def start(app: Any) -> None:
     promotion ends with a restart, so the last stages always land here), then keep
     tailing."""
     try:
-        await asyncio.to_thread(read_progress, app)
+        read_progress(app)  # on the loop: the post wakes the conversation
     except Exception:
         log.exception("could not read the promote log")
     app.spawn("promote.tail", _tail(app))
