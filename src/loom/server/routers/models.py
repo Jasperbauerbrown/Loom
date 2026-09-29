@@ -57,6 +57,7 @@ class PresetIn(BaseModel):
 
 
 class PresetPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1)  # a different name renames (cascades)
     provider: str | None = None
     model: str | None = None
     params: dict[str, Any] | None = None
@@ -183,8 +184,12 @@ async def update_preset(name: str, body: PresetPatch, app: App = Depends(get_app
         if "token_factor_seed" not in merged and "token_factor_seed" in existing:
             merged["token_factor_seed"] = existing["token_factor_seed"]
         params = db.dumps(merged)
+    new_name = (body.name or "").strip() or name
+    if new_name != name and app.db.execute("SELECT 1 FROM presets WHERE name=?", (new_name,)).fetchone():
+        raise HTTPException(status_code=409, detail=f"preset {new_name!r} already exists")
     fields, values = _patch_fields(
         {
+            "name": new_name if new_name != name else None,
             "provider": body.provider,
             "model": body.model,
             "params": params,
@@ -193,11 +198,22 @@ async def update_preset(name: str, body: PresetPatch, app: App = Depends(get_app
         }
     )
     if fields:
-        app.db.execute(
-            f"UPDATE presets SET {', '.join(fields)}, updated_at=? WHERE name=?", (*values, db.now_iso(), name)
-        )
-    app.bus.emit("models.changed", {"kind": "preset", "name": name})
-    return _preset_json(app, _require(app, "presets", "name", name, "preset"))
+        # A rename moves every reference with it in one unit. `model_roles.preset` is a
+        # foreign key on the name, so the check is deferred to the commit; conversations
+        # (live and archived) carry the name as plain text and are repointed the same way.
+        with db.transaction(app.db):
+            app.db.execute("PRAGMA defer_foreign_keys=ON")
+            app.db.execute(
+                f"UPDATE presets SET {', '.join(fields)}, updated_at=? WHERE name=?", (*values, db.now_iso(), name)
+            )
+            if new_name != name:
+                app.db.execute("UPDATE model_roles SET preset=? WHERE preset=?", (new_name, name))
+                app.db.execute("UPDATE conversations SET preset=? WHERE preset=?", (new_name, name))
+    event: dict[str, Any] = {"kind": "preset", "name": new_name}
+    if new_name != name:
+        event["renamed_from"] = name
+    app.bus.emit("models.changed", event)
+    return _preset_json(app, _require(app, "presets", "name", new_name, "preset"))
 
 
 @router.delete("/presets/{name}")

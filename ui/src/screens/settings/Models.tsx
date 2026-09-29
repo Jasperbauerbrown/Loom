@@ -22,6 +22,7 @@ import {
   Tr,
 } from "../../components/ui";
 import { cls } from "../../lib/format";
+import { copyName } from "../../lib/presets";
 import { navigate } from "../../lib/router";
 import { ScalarFields } from "./SettingsField";
 
@@ -272,6 +273,7 @@ function PresetsPanel({
 }) {
   const [editing, setEditing] = useState<Preset | null>(null);
   const [creating, setCreating] = useState(false);
+  const [duplicating, setDuplicating] = useState<Preset | null>(null);
   const [toDelete, setToDelete] = useState<Preset | null>(null);
   const [testResults, setTestResults] = useState<Record<string, { ok: boolean; latency_ms?: number; content?: string; error?: string }>>({});
   const [testing, setTesting] = useState<string | null>(null);
@@ -337,6 +339,9 @@ function PresetsPanel({
                     <Button size="sm" onClick={() => setEditing(p)}>
                       Edit
                     </Button>
+                    <Button size="sm" title="New preset with these settings" onClick={() => setDuplicating(p)}>
+                      Duplicate
+                    </Button>
                     <Button
                       size="sm"
                       variant="danger"
@@ -362,13 +367,16 @@ function PresetsPanel({
             ))}
         </div>
       )}
-      {(editing || creating) && (
+      {(editing || creating || duplicating) && (
         <PresetDialog
           preset={editing}
+          source={duplicating}
+          taken={presets.map((x) => x.name)}
           providers={providers}
           onClose={() => {
             setEditing(null);
             setCreating(false);
+            setDuplicating(null);
           }}
         />
       )}
@@ -395,21 +403,29 @@ function parseReasoning(v: unknown): { mode: "off" | "on" | "budget"; budget: st
   return { mode: "off", budget: "" };
 }
 
+/** One dialog for three jobs: edit `preset` (its name is editable; a rename cascades
+ *  on the server), create from scratch, or create a new preset seeded from `source`
+ *  (every field but the name and the machine-written token factor seed). */
 function PresetDialog({
   preset,
+  source = null,
+  taken = [],
   providers,
   onClose,
 }: {
   preset: Preset | null;
+  source?: Preset | null;
+  taken?: string[];
   providers: Provider[];
   onClose: () => void;
 }) {
-  const [name, setName] = useState(preset?.name ?? "");
-  const [provider, setProvider] = useState(preset?.provider ?? providers[0]?.name ?? "");
-  const [model, setModel] = useState(preset?.model ?? "");
-  const [notes, setNotes] = useState(preset?.notes ?? "");
-  const [enabled, setEnabled] = useState(Boolean(preset?.enabled ?? true));
-  const p = preset?.params ?? {};
+  const seed = preset ?? source;
+  const [name, setName] = useState(preset?.name ?? (source ? copyName(source.name, taken) : ""));
+  const [provider, setProvider] = useState(seed?.provider ?? providers[0]?.name ?? "");
+  const [model, setModel] = useState(seed?.model ?? "");
+  const [notes, setNotes] = useState(seed?.notes ?? "");
+  const [enabled, setEnabled] = useState(Boolean(seed?.enabled ?? true));
+  const p = seed?.params ?? {};
   const [maxTokens, setMaxTokens] = useState(String(p.max_tokens ?? ""));
   const [temperature, setTemperature] = useState(String(p.temperature ?? ""));
   const [topP, setTopP] = useState(String(p.top_p ?? ""));
@@ -461,8 +477,13 @@ function PresetDialog({
     }
     const reasoning =
       reasoningMode === "budget" ? `budget:${reasoningBudget || "0"}` : reasoningMode;
+    // An edit keeps the preset's own calibration (the server keeps it anyway); a
+    // duplicate starts uncalibrated, since the seed was measured for the source.
+    const inherited = Object.fromEntries(
+      Object.entries(seed?.params ?? {}).filter(([k]) => preset || k !== "token_factor_seed"),
+    );
     const params: Record<string, unknown> = {
-      ...(preset?.params ?? {}),
+      ...inherited,
       max_tokens: num(maxTokens),
       temperature: num(temperature),
       top_p: num(topP),
@@ -493,7 +514,7 @@ function PresetDialog({
 
   return (
     <Dialog
-      title={preset ? `Edit preset: ${preset.name}` : "Add preset"}
+      title={preset ? `Edit preset: ${preset.name}` : source ? `New preset from: ${source.name}` : "Add preset"}
       wide
       onClose={onClose}
       footer={
@@ -506,8 +527,8 @@ function PresetDialog({
       }
     >
       <div className="grid grid-cols-2 gap-x-4">
-        <FieldRow label="Name">
-          <Input value={name} disabled={!!preset} onChange={(e) => setName(e.target.value)} />
+        <FieldRow label="Name" help={preset ? "Renaming moves the roles and conversations that use it." : undefined}>
+          <Input value={name} onChange={(e) => setName(e.target.value)} />
         </FieldRow>
         <FieldRow label="Provider">
           <Select value={provider} onChange={(e) => setProvider(e.target.value)}>

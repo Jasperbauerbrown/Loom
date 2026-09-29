@@ -154,6 +154,39 @@ async def test_preset_patch_keeps_the_machine_written_token_factor_seed(client):
     assert patched.json()["params"]["max_tokens"] == 512
 
 
+async def test_preset_rename_moves_every_reference_with_it(client):
+    app = client.loom
+    app.db.execute("UPDATE conversations SET preset='fake'")
+    pointing = app.db.execute("SELECT COUNT(*) FROM conversations WHERE preset='fake'").fetchone()[0]
+    assert pointing >= 1, "the fixture should have at least the desk to repoint"
+    created_at = app.db.execute("SELECT created_at FROM presets WHERE name='fake'").fetchone()[0]
+    seen: list[dict] = []
+    app.bus.listen(lambda e: seen.append(e) if e["type"] == "models.changed" else None)
+
+    # A taken name is refused before anything moves; the same name is a plain patch.
+    assert (await client.patch("/api/presets/fake", json={"name": "fake-embed"})).status_code == 409
+    assert (await client.patch("/api/presets/fake", json={"name": "fake", "notes": "same"})).json()["notes"] == "same"
+    assert "renamed_from" not in seen[-1]["data"]
+
+    renamed = await client.patch("/api/presets/fake", json={"name": "bar", "params": {"max_tokens": 64}})
+    assert renamed.status_code == 200
+    body = renamed.json()
+    assert body["name"] == "bar" and body["params"]["max_tokens"] == 64 and body["created_at"] == created_at
+    assert set(body["usage"]["roles"]) == {"desk", "worker", "maintenance"}
+    assert seen[-1]["data"] == {"kind": "preset", "name": "bar", "renamed_from": "fake"}
+
+    assert (await client.get("/api/presets/fake")).status_code == 404
+    roles = {r["role"]: r["preset"] for r in (await client.get("/api/model-roles")).json()}
+    assert roles["desk"] == roles["worker"] == roles["maintenance"] == "bar"
+    assert app.db.execute("SELECT COUNT(*) FROM conversations WHERE preset='bar'").fetchone()[0] == pointing
+    assert app.db.execute("SELECT COUNT(*) FROM conversations WHERE preset='fake'").fetchone()[0] == 0
+    assert app.db.execute("PRAGMA foreign_key_check").fetchall() == []
+    # Role resolution follows the new name without a restart.
+    from loom.models import roles as model_roles
+
+    assert model_roles.resolve(app, role="desk").preset["name"] == "bar"
+
+
 async def test_roles_listing_and_assignment(client):
     rows = (await client.get("/api/model-roles")).json()
     assert [r["role"] for r in rows] == ["desk", "worker", "maintenance", "utility", "embedding"]
