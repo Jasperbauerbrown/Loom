@@ -111,3 +111,20 @@ export const IconPaperclip = ({ className }: P) => (
     <path d="M10.5 5.5 6.2 9.8a1.4 1.4 0 0 0 2 2l5-5a2.8 2.8 0 0 0-4-4L4.1 7.9a4.2 4.2 0 0 0 6 6l3.4-3.4" />
   </svg>
 );
+
+export const IconOverview = ({ className }: P) => (
+  <svg {...base(className)}>
+    <path d="M2.5 2.5h4.5v4.5h-4.5zM9 2.5h4.5v4.5h-4.5zM2.5 9h4.5v4.5h-4.5zM9 9h4.5v4.5h-4.5z" />
+  </svg>
+);
+
+export const IconGraph = ({ className }: P) => (
+  <svg {...base(className)}>
+    <circle cx="8" cy="8" r="1.75" />
+    <circle cx="3" cy="4" r="1.25" />
+    <circle cx="13" cy="4" r="1.25" />
+    <circle cx="4" cy="12.5" r="1.25" />
+    <circle cx="12.5" cy="12" r="1.25" />
+    <path d="M4 5 6.8 7M12 5 9.2 7M5 11.5 7 9.2M11.5 11 9 9.2" />
+  </svg>
+);

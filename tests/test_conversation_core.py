@@ -80,6 +80,17 @@ async def test_desk_turn_persists_and_streams(app, fake):
     assert 0.5 <= app.conversation(desk)["token_factor"] <= 4.0
 
 
+async def test_assistant_event_carries_provider_usage(app, fake):
+    desk = app.desk_id()
+    fake.script(Scripted(content="Hello there.", reasoning="short think"))
+    conversation.post(app, desk, "hi")
+    await _run(app, desk)
+    ev = _events(app, desk, ["assistant"])[0]
+    usage = ev["meta"]["usage"]
+    assert usage["completion_tokens"] == len("Hello there.") // 4
+    assert usage["prompt_tokens"] == max(1, fake.calls[0].chars() // 4)
+
+
 async def test_tool_call_round_trip(app, fake, tmp_path):
     desk = app.desk_id()
     f = app.vault_dir / "note.txt"
@@ -218,6 +229,24 @@ async def test_thread_without_status_write_gets_safety_net(app, fake):
     assert any(r["content"].startswith("[stopped without finishing]\nWhich format") for r in rows)
     item = app.db.execute("SELECT title FROM items WHERE kind='thread_event'").fetchone()
     assert item["title"].endswith("stopped without finishing")
+
+
+async def test_running_again_dismisses_the_thread_s_last_report_item(app, fake):
+    """The item that told the parent the thread stopped is superseded once the thread
+    runs again (03 §11.3 item lifecycle) — it would otherwise sit on the now board
+    describing a state that is no longer true."""
+    row = conversation.create_thread(app, goal="write docs", created_by="user")
+    fake.on("status", lambda req: Scripted(content='{"state":"waiting","goal":"write docs","done":"","doing":"","next":"answer question","blockers":""}'))
+    fake.script(Scripted(content="Which format do you want?"))
+    await _run(app, row["id"])
+    item = app.db.execute("SELECT id, dismissed_at FROM items WHERE kind='thread_event' AND source=?", (f"conversation:{row['id']}",)).fetchone()
+    assert item is not None and item["dismissed_at"] is None
+
+    fake.script(Scripted(content="ok, using markdown"))
+    conversation.post(app, row["id"], "markdown please")
+    await _run(app, row["id"])
+    after = app.db.execute("SELECT dismissed_at FROM items WHERE id=?", (item["id"],)).fetchone()
+    assert after["dismissed_at"] is not None
 
 
 async def test_thread_only_tools_are_not_offered_to_the_desk(app, fake):

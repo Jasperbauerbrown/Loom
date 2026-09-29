@@ -6,7 +6,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, imageUrl } from "../lib/api";
 import { parseToolCalls, store, useStore } from "../lib/store";
 import type { ApprovalDecision, ConvEvent, ImageRef, QueuedMessage, ToolCall } from "../lib/types";
-import { argsSummary, cls, compactionLabel, localTime, statusLabel, statusTitle, truncate } from "../lib/format";
+import { argsSummary, cls, compactionLabel, compactNumber, localTime, statusLabel, statusTitle, truncate } from "../lib/format";
 import { Badge, Button, Collapsible, JsonBlock, Spinner } from "./ui";
 import { Markdown } from "./Markdown";
 import { ArtifactDrawer } from "./ArtifactDrawer";
@@ -191,6 +191,28 @@ function ApprovalCard({ id }: { id: string }) {
   );
 }
 
+/** "in 12.3k · out 410" from a step's `meta.usage` (runner.py; either field may be
+ *  absent when the provider did not report it). One caption per model step: it sits
+ *  under the assistant message, or once under a tool-call round — never per tool row,
+ *  since the whole round shares one model call. */
+function UsageCaption({ meta }: { meta: Record<string, any> }) {
+  const usage = meta?.usage;
+  if (!usage || typeof usage !== "object") return null;
+  const inTok = typeof usage.prompt_tokens === "number" ? usage.prompt_tokens : null;
+  const outTok = typeof usage.completion_tokens === "number" ? usage.completion_tokens : null;
+  if (inTok === null && outTok === null) return null;
+  return (
+    <div
+      className="mt-1 text-[11px] text-neutral-500"
+      title="prompt / completion tokens the provider reported for this step"
+    >
+      {[inTok !== null ? `in ${compactNumber(inTok)}` : null, outTok !== null ? `out ${compactNumber(outTok)}` : null]
+        .filter(Boolean)
+        .join(" · ")}
+    </div>
+  );
+}
+
 /** Where a message came from, for anything that was not typed by the person. */
 function sourceLabel(source: string, meta: Record<string, unknown>): string {
   if (source.startsWith("conversation:")) return `from ${String(meta.kind ?? "thread")}`;
@@ -305,6 +327,7 @@ function EventView({
             </Collapsible>
           ) : null}
           <Markdown source={event.content} />
+          <UsageCaption meta={meta} />
         </div>
       );
     case "thinking":
@@ -342,6 +365,7 @@ function EventView({
             };
             return <ToolRow key={spec.id} call={call} onArtifact={onArtifact} awaiting={pendingCalls.has(spec.id)} />;
           })}
+          <UsageCaption meta={meta} />
         </>
       );
     }

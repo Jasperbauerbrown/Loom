@@ -37,6 +37,26 @@ export function bytes(n: number | undefined | null): string {
   return `${value >= 10 || i === 0 ? Math.round(value) : value.toFixed(1)} ${units[i]}`;
 }
 
+/** Compact token/count formatting: 410, 12.3k, 1.2M (a whole number drops the ".0",
+ *  so 1000 reads "1k" not "1.0k"). Used for token totals, where the exact number goes
+ *  in a tooltip instead. */
+export function compactNumber(n: number | undefined | null): string {
+  if (n === undefined || n === null || Number.isNaN(n)) return "0";
+  const abs = Math.abs(n);
+  const units: [number, string][] = [
+    [1_000_000_000, "B"],
+    [1_000_000, "M"],
+    [1_000, "k"],
+  ];
+  for (const [threshold, suffix] of units) {
+    if (abs >= threshold) {
+      const rounded = Math.round((n / threshold) * 10) / 10;
+      return `${rounded % 1 === 0 ? rounded.toFixed(0) : rounded.toFixed(1)}${suffix}`;
+    }
+  }
+  return String(Math.round(n));
+}
+
 export function truncate(text: string, n: number): string {
   if (text.length <= n) return text;
   return `${text.slice(0, n)}…`;

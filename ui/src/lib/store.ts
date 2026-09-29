@@ -14,6 +14,7 @@ import type {
   BusEvent,
   Connector,
   Conversation,
+  ConversationUsage,
   ConvEvent,
   Health,
   Item,
@@ -76,6 +77,8 @@ export interface State {
   approvals: Record<string, Approval>;
   items: Record<string, Item>;
   occupancy: Record<string, Occupancy>;
+  /** token totals per conversation (03 §12.1 GET …/usage), refetched on demand */
+  usage: Record<string, ConversationUsage>;
   /** inbox rows posted but not yet rendered into the transcript, per conversation */
   queued: Record<string, QueuedMessage[]>;
   /** composer text per conversation; survives navigation (and reloads via sessionStorage) */
@@ -129,6 +132,7 @@ export const initialState: State = {
   approvals: {},
   items: {},
   occupancy: {},
+  usage: {},
   queued: {},
   drafts: {},
   settings: null,
@@ -527,7 +531,13 @@ export function reduce(state: State, event: BusEvent): State {
       const row = data as Item;
       if (!row || !row.id) return state;
       const items = { ...state.items, [row.id]: row };
-      return { ...state, items, unseenCount: countUnseen(items) };
+      let toasts = state.toasts;
+      if (event.type === "item.updated" && (row.seen_at || row.dismissed_at)) {
+        // The toast mirrors the item (03 §11.3 item lifecycle): once the item is seen
+        // or dismissed on any surface, its toast follows.
+        toasts = toasts.filter((t) => t.item_id !== row.id);
+      }
+      return { ...state, items, toasts, unseenCount: countUnseen(items) };
     }
 
     case "notification": {
@@ -785,6 +795,12 @@ export class Store {
     const row = await this.guard(() => api.occupancy(id));
     if (!row) return;
     this.set((s) => ({ ...s, occupancy: { ...s.occupancy, [id]: row } }));
+  }
+
+  async loadUsage(id: string) {
+    const row = await this.guard(() => api.usage(id));
+    if (!row) return;
+    this.set((s) => ({ ...s, usage: { ...s.usage, [id]: row } }));
   }
 
   async loadSettings() {

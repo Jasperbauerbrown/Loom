@@ -137,6 +137,10 @@ class Manager:
         row = self._set(server_id, status="connected", last_error=None, tools_cache=db.dumps(tools), cached_at=db.now_iso())
         self._note(row, tools)
         self._emit(row)
+        # The failure item this server posted (if any) is answered: it connected.
+        for item in items.by_source(self.app, f"mcp:{server_id}"):
+            if item["dismissed_at"] is None:
+                items.dismiss(self.app, item["id"])
         log.info("mcp: %s connected with %d tool(s)", row["name"], len(tools))
         return row
 

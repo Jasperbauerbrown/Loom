@@ -261,6 +261,14 @@ async def set_role(role: str, body: RoleIn, app: App = Depends(get_app)) -> dict
     app.db.execute("INSERT INTO model_roles(role, preset) VALUES (?, ?) "
                    "ON CONFLICT(role) DO UPDATE SET preset=excluded.preset", (role, preset))
     app.bus.emit("models.changed", {"kind": "role", "name": role})
+    if role == "desk" and app.has_model("desk"):
+        # Same predicate `_post_choose_a_model` used to post it: once it no longer
+        # holds, the "Choose a model" item is answered.
+        from ... import items
+
+        for item in items.by_source(app, "setup"):
+            if item["dismissed_at"] is None:
+                items.dismiss(app, item["id"])
     return {"role": role, "preset": preset}
 
 

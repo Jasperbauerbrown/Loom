@@ -1281,3 +1281,20 @@ sessions do not re-litigate.
   its date, so "today" inside it is absolute by construction, and four finishes in one
   night had each cost a retry over the word. Every other note keeps the refusal, and the
   refusal's message stays as it is (the user held off on adding the date to it).
+- **2026-09-29** — **Ignore-aware search dropped from the backlog.** `fs_list` and
+  `fs_search` keep ignoring nothing; `.gitignore` awareness (tool-parity audit #4) has
+  not been felt as friction, so it is not built. Revisit only if it bites.
+- **2026-09-29** — **Token metrics: persisted per step, totals derived.** Every
+  assistant/tool_call event gets `meta.usage` (`prompt_tokens`/`completion_tokens`,
+  whichever the provider reported for that step) when the runner persists it — no
+  migration, since it rides in the existing `meta` json. Nothing new is stored: the
+  conversation's totals and its last-20-turns breakdown are summed from that json on
+  every `GET …/usage` call, the same way occupancy is computed, not calibrated or
+  cached.
+- **2026-09-29** — **Notification toasts fade, and items resolve themselves.** The web
+  toast for an interrupt item now fades after `general.notification_fade_seconds`
+  (default 6; 0 keeps it until dismissed), pausable by hovering. And the writer that
+  posted an item now resolves it through `by_source` when its cause is gone (an
+  approval decided, a thread running again, a model configured, an MCP server
+  connected, the next promotion) rather than leaving every item for a person to click;
+  opening an item's target conversation marks it seen.

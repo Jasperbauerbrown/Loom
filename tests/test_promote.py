@@ -189,6 +189,25 @@ async def test_promote_proceeds_once_the_protected_paths_are_acknowledged(app, r
     assert last and "promotion of" in last[0]["content"] and "this turn ends" in last[0]["content"]
 
 
+async def test_the_next_promotion_dismisses_the_previous_outcome_item(app, repo, supervisor_ok):
+    """A new promotion supersedes the last one's report (03 §11.3 item lifecycle): its
+    item leaves the now board the moment the next promotion is handed to the
+    supervisor, not just when a later outcome arrives."""
+    write_log(app, entry("done", True, "promoted 20260920-abc1234", app.desk_id()))
+    promote.read_progress(app)
+    previous = items.list_items(app)
+    assert previous and previous[0]["source"] == "promote" and previous[0]["dismissed_at"] is None
+
+    live_at(repo, repo["first"])
+    result = await tool(app, "promote").handler(
+        ctx_for(app), {"ref": repo["second"], "acknowledge_protected": True}
+    )
+    assert result.ok
+
+    after = app.db.execute("SELECT dismissed_at FROM items WHERE id=?", (previous[0]["id"],)).fetchone()
+    assert after["dismissed_at"] is not None
+
+
 async def test_promote_of_an_unprotected_diff_needs_no_acknowledgement(app, repo, supervisor_ok):
     """The third commit touches only `notes.md`, so nothing extra is asked."""
     live_at(repo, repo["second"])

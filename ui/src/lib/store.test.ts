@@ -284,6 +284,30 @@ describe("system events", () => {
     expect(state.toasts[0]).toMatchObject({ kind: "notification", title: "Thread finished", item_id: "i9" });
   });
 
+  it("a toast follows its item: dismissed drops it", () => {
+    const state = feed([
+      ev("notification", { title: "Thread finished", body: "ok", item_id: "i9" }),
+      ev("item.updated", { id: "i9", kind: "thread_event", title: "x", seen_at: null, dismissed_at: "t" }),
+    ]);
+    expect(state.toasts).toHaveLength(0);
+  });
+
+  it("a toast follows its item: seen drops it", () => {
+    const state = feed([
+      ev("notification", { title: "Thread finished", body: "ok", item_id: "i9" }),
+      ev("item.updated", { id: "i9", kind: "thread_event", title: "x", seen_at: "t", dismissed_at: null }),
+    ]);
+    expect(state.toasts).toHaveLength(0);
+  });
+
+  it("a toast for an unrelated item stays", () => {
+    const state = feed([
+      ev("notification", { title: "Thread finished", body: "ok", item_id: "i9" }),
+      ev("item.updated", { id: "i-other", kind: "thread_event", title: "x", seen_at: "t", dismissed_at: null }),
+    ]);
+    expect(state.toasts).toHaveLength(1);
+  });
+
   it("knowledge.changed invalidates the vault tree", () => {
     const state = reduce({ ...initialState, vaultTree: [] }, ev("knowledge.changed", { paths: ["core/self.md"] }, null));
     expect(state.vaultTree).toBeNull();

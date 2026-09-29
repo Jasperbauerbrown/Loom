@@ -252,6 +252,12 @@ async def request_promotion(
         payload["message"] = str(answer.get("error") or "the supervisor refused the promotion")
         return payload
 
+    # The next promotion is starting: the previous outcome (success or failure) is
+    # superseded, so its item leaves the now board.
+    for item in items.by_source(app, "promote"):
+        if item["dismissed_at"] is None:
+            items.dismiss(app, item["id"])
+
     if conversation_id:
         _system_event(
             app, conversation_id,

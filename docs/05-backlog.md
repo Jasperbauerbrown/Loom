@@ -6,31 +6,20 @@ it here and record it where it now lives (`03`, the decision log).
 
 Each item names its source. "Audit" means `reference/tool-parity-audit.md` §3.
 
-## Tools: coding parity (audit P1)
-- **Ignore-aware search.** `fs_list` and `fs_search` honour `.gitignore` by default
-  (`include_ignored` to opt out). `fs_search` gains `output` (content / files / count),
-  `offset` and `multiline`; `fs_list` gains mtime sorting. (Audit #4.)
+## Dropped
+- **Ignore-aware search** (audit #4) — dropped 2026-09-29: not felt as friction yet;
+  revisit only if it bites.
 
 ## Undecided (audit P2, not yet agreed)
-- `ask_user` with options, rendered like an approval (#9).
+- `ask_user` with options, rendered like an approval (#9). Paused 2026-09-29: it opens
+  four design questions — whether a thread's question goes to the person or, as today,
+  to the parent by judgment; which status it sets (`waiting_input` now means "stopped");
+  whether the answer resumes the paused call (approvals shape) or arrives as an inbox
+  message; and whether it interrupts like an approval or queues on the board.
 - Checkpoints and undo for files under the roots (#10).
 - LSP diagnostics after edits (#11).
 - MCP resources, prompts and OAuth (#12).
 - `process` watch-for-line (#13).
-
-## Appearance (Jasper, 2026-09-28)
-- **Notification lifecycle.** Notifications disappear / get marked seen when their source
-  is acknowledged — e.g. when an approval request is finalized, clear the
-  "approval required" notification automatically.
-- **Popup auto-fade.** Notification popups (the ones not on the desk) should show for a
-  few seconds, then fade.
-- **Multi-thread / desk view.** A view showing all threads (and the desk) at once,
-  beyond the current single-conversation focus.
-- **Graph view.** Graph visualization of vault links / conversation relationships.
-- **Token metrics.** Per tool call / turn / thread token totals (in and out), for
-  visibility into where context goes. Explore later.
-- **New color palettes** — approved 2026-09-28: grape, ocean, ember, moss (green-on-dark).
-  Implemented in worktree `dev-01M3N9P0KV51GQ3M7865CXHWDQ`, awaiting promotion sign-off.
 
 ## Undecided (TD audit, not yet agreed)
 - Hold a system-required power request while a turn runs or an approval is pending, so

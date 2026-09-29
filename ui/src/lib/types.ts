@@ -302,6 +302,26 @@ export interface Occupancy {
   token_factor: number;
 }
 
+/** One turn's token totals: `GET /conversations/{id}/usage` `turns` (03 §12.1) — the
+ *  `assistant`/`tool_call` steps between one `user` event and the next. */
+export interface ConversationTurnUsage {
+  user_event_id: number;
+  started_at: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  steps: number;
+}
+
+/** `GET /conversations/{id}/usage`: token totals summed from `meta.usage` across the
+ *  conversation's transcript, derived on every call and never stored (03 §12.1). */
+export interface ConversationUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  steps: number;
+  steps_with_usage: number;
+  turns: ConversationTurnUsage[];
+}
+
 export interface QueueState {
   depth: number;
   running: unknown[];
@@ -417,6 +437,28 @@ export interface Procedure {
 export interface GraphData {
   nodes: { id: string; title?: string; type?: string }[];
   edges: { src: string; dst: string }[];
+}
+
+/** `GET /conversations/graph` (03 §12.1): the desk/thread tree plus what each
+ *  conversation pins or wrote up, for the Graph screen's conversations layer. */
+export interface ConversationGraphNode {
+  id: string;
+  kind: ConversationKind;
+  title: string;
+  goal: string;
+  status: ConversationStatus;
+  parent_id: string | null;
+}
+
+export interface ConversationGraphEdge {
+  src: string;
+  dst: string;
+  kind: "spawned" | "pinned" | "walkthrough";
+}
+
+export interface ConversationGraphData {
+  nodes: ConversationGraphNode[];
+  edges: ConversationGraphEdge[];
 }
 
 export interface SecretsInfo {

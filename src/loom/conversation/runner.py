@@ -194,8 +194,20 @@ async def _turn(app, state: TurnState) -> None:  # type: ignore[no-untyped-def]
             ev = events.append(app, cid, "thinking", result.reasoning, {"step": state.steps})
             app.bus.emit("event.appended", events.get(app, ev), cid)
 
+        # Usage: the provider's own token counts for this step, when it reported them
+        # (either may be missing). Never estimated here — that is calibration's job
+        # (§6.6); this is the raw number for the /usage endpoint and the UI captions.
+        usage_meta: dict[str, int] = {}
+        if result.usage.prompt_tokens is not None:
+            usage_meta["prompt_tokens"] = result.usage.prompt_tokens
+        if result.usage.completion_tokens is not None:
+            usage_meta["completion_tokens"] = result.usage.completion_tokens
+
         if not result.tool_calls:
-            ev = events.append(app, cid, "assistant", result.content, {"step": state.steps, "cancelled": state.cancelled, "finish_reason": result.finish_reason})
+            meta = {"step": state.steps, "cancelled": state.cancelled, "finish_reason": result.finish_reason}
+            if usage_meta:
+                meta["usage"] = usage_meta
+            ev = events.append(app, cid, "assistant", result.content, meta)
             row = events.get(app, ev)
             app.bus.emit("message.end", {"event_id": ev, "event": row}, cid)
             app.bus.emit("event.appended", row, cid)
@@ -204,7 +216,10 @@ async def _turn(app, state: TurnState) -> None:  # type: ignore[no-untyped-def]
 
         # tool calls: persist first (persist before act), then dispatch
         calls_json = [{"id": c.id, "name": c.name, "arguments": c.arguments} for c in result.tool_calls]
-        ev = events.append(app, cid, "tool_call", db.dumps(calls_json), {"text": result.content, "step": state.steps, "reasoning_chars": len(result.reasoning or "")})
+        tool_call_meta = {"text": result.content, "step": state.steps, "reasoning_chars": len(result.reasoning or "")}
+        if usage_meta:
+            tool_call_meta["usage"] = usage_meta
+        ev = events.append(app, cid, "tool_call", db.dumps(calls_json), tool_call_meta)
         row = events.get(app, ev)
         app.bus.emit("message.end", {"event_id": ev, "event": row}, cid)
         app.bus.emit("event.appended", row, cid)

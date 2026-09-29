@@ -9,6 +9,8 @@ import type {
   Artifact,
   Connector,
   Conversation,
+  ConversationGraphData,
+  ConversationUsage,
   ConvEvent,
   CoreMeter,
   GraphData,
@@ -210,6 +212,8 @@ export const api = {
   clearConversation: (id: string) => post<Conversation>(`/conversations/${id}/clear`),
   archive: (id: string) => post<Conversation>(`/conversations/${id}/archive`),
   occupancy: (id: string) => get<Occupancy>(`/conversations/${id}/occupancy`),
+  /** Token totals from `meta.usage`, derived on every call (03 §12.1). */
+  usage: (id: string) => get<ConversationUsage>(`/conversations/${id}/usage`),
   conversationArtifacts: (id: string) => get<Artifact[]>(`/conversations/${id}/artifacts`),
 
   // -- artifacts -------------------------------------------------------------
@@ -275,13 +279,16 @@ export const api = {
   vaultDiff: (sha: string, path?: string) => get<{ diff: string }>("/vault/diff", { sha, path }),
   revert: (commit: string, path?: string) =>
     post<unknown>("/vault/revert", { commit, ...(path ? { path } : {}) }),
-  vaultGraph: async (center?: string, depth = 1): Promise<GraphData> => {
-    const raw = await get<any>("/vault/graph", { center, depth });
+  vaultGraph: async (center?: string, depth = 1, limit?: number): Promise<GraphData> => {
+    const raw = await get<any>("/vault/graph", { center, depth, limit });
     return {
       nodes: (raw?.nodes ?? []).map((n: any) => ({ id: n.id ?? n.path, title: n.title, type: n.type })),
       edges: (raw?.edges ?? []).map((e: any) => ({ src: e.src, dst: e.dst })),
     };
   },
+  /** The desk/thread tree, pinned notes and walkthroughs as graph nodes/edges — the
+   *  Graph screen's conversations layer (03 §13.1). */
+  conversationGraph: () => get<ConversationGraphData>("/conversations/graph"),
   /** A thread's status: the `status` events in its transcript. */
   conversationStatus: (id: string) => get<ThreadStatus>(`/conversations/${id}/status`),
   saveConversationStatus: (id: string, fields: Record<string, string>) =>

@@ -67,6 +67,37 @@ async def list_conversations(
     return [_row(app, r["id"]) for r in app.db.execute(sql, params)]
 
 
+@router.get("/conversations/graph")
+async def conversations_graph(app=Depends(get_app)) -> dict[str, Any]:
+    """The desk/thread tree plus what each conversation pins or wrote up, for the Graph
+    screen's conversations layer (03 §13.1). Registered before `/{conversation_id}` so
+    "graph" is never captured as an id."""
+    rows = app.db.execute(
+        "SELECT id, kind, title, goal, status, parent_id, pinned_notes, walkthrough "
+        "FROM conversations WHERE status!='archived' ORDER BY id"
+    ).fetchall()
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+    for r in rows:
+        nodes.append(
+            {
+                "id": r["id"],
+                "kind": r["kind"],
+                "title": r["title"],
+                "goal": r["goal"],
+                "status": r["status"],
+                "parent_id": r["parent_id"],
+            }
+        )
+        if r["parent_id"]:
+            edges.append({"src": r["parent_id"], "dst": r["id"], "kind": "spawned"})
+        for note in db.loads(r["pinned_notes"], []):
+            edges.append({"src": r["id"], "dst": note, "kind": "pinned"})
+        if r["walkthrough"]:
+            edges.append({"src": r["id"], "dst": r["walkthrough"], "kind": "walkthrough"})
+    return {"nodes": nodes, "edges": edges}
+
+
 class CreateThread(BaseModel):
     kind: str = "thread"
     goal: str
@@ -299,6 +330,14 @@ async def archive(conversation_id: str, app=Depends(get_app)) -> dict[str, Any]:
 async def get_occupancy(conversation_id: str, app=Depends(get_app)) -> dict[str, Any]:
     row = _row(app, conversation_id)
     return occupancy(app, row)
+
+
+@router.get("/conversations/{conversation_id}/usage")
+async def get_usage(conversation_id: str, app=Depends(get_app)) -> dict[str, Any]:
+    """Token totals from `meta.usage` on this conversation's transcript (03 §12.1);
+    derived on every call, never stored."""
+    _row(app, conversation_id)
+    return events.usage_summary(app, conversation_id)
 
 
 @router.get("/conversations/{conversation_id}/artifacts")

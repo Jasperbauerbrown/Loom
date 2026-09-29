@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactionLabel, duration, normaliseNotePath, statusLabel, statusTitle } from "./format";
+import { compactNumber, compactionLabel, duration, normaliseNotePath, statusLabel, statusTitle } from "./format";
 
 describe("statusLabel", () => {
   it("shows a thread that ended its turn without finishing as stopped, with a gloss", () => {
@@ -42,6 +42,24 @@ describe("normaliseNotePath", () => {
   });
   it("is empty for empty input", () => {
     expect(normaliseNotePath("   ")).toBe("");
+  });
+});
+
+describe("compactNumber", () => {
+  it("shows small counts exactly", () => {
+    expect(compactNumber(0)).toBe("0");
+    expect(compactNumber(410)).toBe("410");
+    expect(compactNumber(999)).toBe("999");
+  });
+  it("abbreviates thousands and millions, dropping a whole .0", () => {
+    expect(compactNumber(1000)).toBe("1k");
+    expect(compactNumber(12345)).toBe("12.3k");
+    expect(compactNumber(1234567)).toBe("1.2M");
+  });
+  it("is 0 for null/undefined/NaN", () => {
+    expect(compactNumber(null)).toBe("0");
+    expect(compactNumber(undefined)).toBe("0");
+    expect(compactNumber(NaN)).toBe("0");
   });
 });
 

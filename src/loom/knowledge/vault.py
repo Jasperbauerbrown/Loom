@@ -494,6 +494,10 @@ class Vault:
         self._stamp(note.path, fm, "user")
         self._atomic_write(self.resolve(note.path), notes.emit(fm, note.body))
         self._after_write(note.path, f"user: approve procedure {row['name']}")
+        # The watcher's "needs approval" item is answered.
+        for item in items.by_source(self.app, f"vault:{row['path']}"):
+            if item["dismissed_at"] is None:
+                items.dismiss(self.app, item["id"])
         out = self.find_procedure(name)
         return out if out is not None else row
 

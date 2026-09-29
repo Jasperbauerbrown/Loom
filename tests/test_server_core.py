@@ -255,6 +255,25 @@ async def test_the_setup_item_returns_once_the_person_dismisses_it_and_still_has
     ).fetchone()[0] == 2
 
 
+async def test_configuring_the_desk_role_dismisses_the_choose_a_model_item(client):
+    """The writer that posts "Choose a model" checks the same predicate to answer it
+    (03 §11.3 item lifecycle): once a desk preset is set, `has_model("desk")` holds and
+    the item is gone."""
+    app = client.loom
+    from loom.server.app import _post_choose_a_model
+
+    app.db.execute("UPDATE model_roles SET preset=NULL WHERE role='desk'")
+    _post_choose_a_model(app)
+    row = app.db.execute("SELECT id, dismissed_at FROM items WHERE kind='setup' AND source='setup'").fetchone()
+    assert row is not None and row["dismissed_at"] is None
+
+    response = await client.put("/api/model-roles/desk", json={"preset": "fake"})
+    assert response.status_code == 200
+
+    after = app.db.execute("SELECT dismissed_at FROM items WHERE id=?", (row["id"],)).fetchone()
+    assert after["dismissed_at"] is not None
+
+
 async def test_the_setup_endpoints_are_gone(client):
     # GET falls to the SPA catch-all, which 404s anything under /api/; because that
     # catch-all owns GET on every path, the vanished POST reads as 405.
@@ -355,3 +374,59 @@ async def test_events_tail_returns_the_newest_page_ascending(client):
     assert [e["content"] for e in newest] == ["m3", "m4"]
     before = (await client.get(f"/api/conversations/{desk}/events", params={"limit": 2, "before": newest[0]["id"]})).json()
     assert [e["content"] for e in before] == ["m1", "m2"]
+
+
+async def test_usage_endpoint_sums_meta_and_groups_by_turn(client):
+    from loom.conversation import events as ev
+
+    app = client.loom
+    desk = app.desk_id()
+    u1 = ev.append(app, desk, "user", "hi")
+    ev.append(app, desk, "assistant", "hello", {"usage": {"prompt_tokens": 10, "completion_tokens": 4}})
+    u2 = ev.append(app, desk, "user", "again")
+    ev.append(app, desk, "tool_call", "[]", {"usage": {"prompt_tokens": 20, "completion_tokens": 5}})
+    ev.append(app, desk, "tool_result", "ok", {"call_id": "x", "ok": True})
+    ev.append(app, desk, "assistant", "done", {"usage": {"prompt_tokens": 8}})  # completion not reported
+
+    body = (await client.get(f"/api/conversations/{desk}/usage")).json()
+    assert body["prompt_tokens"] == 38
+    assert body["completion_tokens"] == 9
+    assert body["steps"] == 3
+    assert body["steps_with_usage"] == 3
+    assert len(body["turns"]) == 2
+    t1, t2 = body["turns"]
+    assert t1["user_event_id"] == u1 and (t1["prompt_tokens"], t1["completion_tokens"], t1["steps"]) == (10, 4, 1)
+    assert t2["user_event_id"] == u2 and (t2["prompt_tokens"], t2["completion_tokens"], t2["steps"]) == (28, 5, 2)
+    assert (await client.get("/api/conversations/nope/usage")).status_code == 404
+
+
+# ---------------------------------------------------------------------------------
+# conversations graph (the Graph screen's conversations layer, 03 §13.1)
+# ---------------------------------------------------------------------------------
+async def test_conversations_graph_has_spawn_pinned_and_walkthrough_edges(client):
+    from loom.conversation import events as ev
+
+    app = client.loom
+    desk = app.desk_id()
+    app.vault.write("projects/x.md", "Project x.", op="create", frontmatter={"type": "project"})
+    r = await client.post(
+        "/api/conversations", json={"goal": "build x", "notes": ["projects/x.md"], "parent_id": desk}
+    )
+    assert r.status_code == 201
+    tid = r.json()["id"]
+    ev.update(app, tid, walkthrough="daily/2026-09-29.md")
+
+    body = (await client.get("/api/conversations/graph")).json()
+    assert set(body) == {"nodes", "edges"}
+    ids = {n["id"] for n in body["nodes"]}
+    assert {desk, tid} <= ids
+    thread_node = next(n for n in body["nodes"] if n["id"] == tid)
+    assert set(thread_node) == {"id", "kind", "title", "goal", "status", "parent_id"}
+    assert thread_node["parent_id"] == desk
+
+    assert {"src": desk, "dst": tid, "kind": "spawned"} in body["edges"]
+    assert {"src": tid, "dst": "projects/x.md", "kind": "pinned"} in body["edges"]
+    assert {"src": tid, "dst": "daily/2026-09-29.md", "kind": "walkthrough"} in body["edges"]
+
+    # "graph" is not swallowed by /conversations/{id}
+    assert (await client.get(f"/api/conversations/{tid}")).status_code == 200

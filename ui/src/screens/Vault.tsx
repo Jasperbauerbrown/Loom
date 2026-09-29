@@ -190,7 +190,7 @@ export function Vault({ path }: { path: string }) {
             </button>
             {showGraph && graphCenter ? (
               <div className="mt-2">
-                <GraphView center={graphCenter} onSelect={(p) => (window.location.hash = notePath(p))} />
+                <GraphView center={graphCenter} onSelect={(p) => (window.location.hash = notePath(p))} compact />
               </div>
             ) : null}
 

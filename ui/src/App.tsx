@@ -5,11 +5,14 @@ import { deskId, store, useStore } from "./lib/store";
 import { WsClient } from "./lib/ws";
 import { href, navigate, useRoute } from "./lib/router";
 import { cls } from "./lib/format";
+import { api } from "./lib/api";
 import { Toasts } from "./components/Toasts";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import {
   IconApprovals,
   IconDesk,
+  IconGraph,
+  IconOverview,
   IconSettings,
   IconSystem,
   IconThreads,
@@ -18,7 +21,9 @@ import {
 import { Desk } from "./screens/Desk";
 import { ThreadView } from "./screens/ThreadView";
 import { Threads } from "./screens/Threads";
+import { Overview } from "./screens/Overview";
 import { Vault } from "./screens/Vault";
+import { Graph } from "./screens/Graph";
 import { Approvals } from "./screens/Approvals";
 import { Settings } from "./screens/Settings";
 import { System } from "./screens/System";
@@ -207,7 +212,9 @@ export default function App() {
           badge={unseen || undefined}
         />
         <NavLink to="/threads" icon={<IconThreads />} label="Threads" active={route.name === "threads" || (route.name === "conversation" && route.param !== desk)} />
+        <NavLink to="/overview" icon={<IconOverview />} label="Overview" active={route.name === "overview"} />
         <NavLink to="/vault" icon={<IconVault />} label="Vault" active={route.name === "vault"} />
+        <NavLink to="/graph" icon={<IconGraph />} label="Graph" active={route.name === "graph"} />
         <NavLink
           to="/approvals"
           icon={<IconApprovals />}
@@ -233,8 +240,12 @@ export default function App() {
           <div className="min-h-0 flex-1">
             {route.name === "threads" ? (
               <Threads />
+            ) : route.name === "overview" ? (
+              <Overview />
             ) : route.name === "vault" ? (
               <Vault path={route.param} />
+            ) : route.name === "graph" ? (
+              <Graph path={route.param} />
             ) : route.name === "approvals" ? (
               <Approvals />
             ) : route.name === "settings" ? (
@@ -261,6 +272,28 @@ function ConversationRoute({ id }: { id: string }) {
   useEffect(() => {
     if (!conversation) void store.loadConversation(id);
   }, [id, conversation]);
+
+  // Opening a conversation is how its own items get answered (03 §11.3 item
+  // lifecycle): every unseen, undismissed item whose action points here — an approval,
+  // a thread's finish/failure report — is marked seen once the person is looking at it.
+  // Re-runs if a new such item arrives while the view stays open.
+  const unseenIds = useStore((s) =>
+    Object.values(s.items)
+      .filter(
+        (it) =>
+          !it.seen_at &&
+          !it.dismissed_at &&
+          it.action.kind === "open_conversation" &&
+          it.action.conversation_id === id,
+      )
+      .map((it) => it.id)
+      .sort(),
+  );
+  useEffect(() => {
+    for (const itemId of unseenIds) void store.guard(() => api.seenItem(itemId));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unseenIds]);
+
   if (conversation?.kind === "thread") return <ThreadView id={id} />;
   return <Desk id={id} />;
 }

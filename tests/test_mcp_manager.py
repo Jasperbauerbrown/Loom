@@ -92,6 +92,24 @@ async def test_failure_sets_error_posts_one_item_and_unregisters(app):
     app.shutting_down = False
 
 
+async def test_a_successful_reconnect_dismisses_the_failure_item(app):
+    """The item this server posted on failure is answered once it connects (03 §11.3
+    item lifecycle) — a retry that eventually works must not leave a stale complaint."""
+    row = await make(app, mode="exit")
+    setup = [i for i in items.list_items(app) if i["kind"] == "setup"]
+    assert len(setup) == 1 and setup[0]["dismissed_at"] is None
+
+    task = app.tasks.get(f"mcp:retry:{row['id']}")
+    if task is not None:
+        task.cancel()
+    await app.mcp.update(row["id"], args=[SERVER, "normal"])
+    await app.mcp.connect(row["id"])
+
+    after = [i for i in items.list_items(app, include_dismissed=True) if i["kind"] == "setup"]
+    assert len(after) == 1 and after[0]["dismissed_at"] is not None
+    await app.mcp.disconnect(row["id"])
+
+
 async def test_missing_secret_names_itself(app):
     row = await make(app, enabled=False)
     await app.mcp.update(row["id"], enabled=False, env={"TOKEN": "{{secret:NOPE}}"})

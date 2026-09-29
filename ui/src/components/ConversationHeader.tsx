@@ -1,10 +1,10 @@
 // Conversation header: occupancy meter, queue indicator, the preset actually in use,
 // and the connection dot. Shared by the desk and thread views.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { store, useStore } from "../lib/store";
-import { cls } from "../lib/format";
+import { cls, compactNumber } from "../lib/format";
 import { notePath } from "../lib/router";
 import { Badge, Button, Confirm } from "./ui";
 
@@ -39,6 +39,43 @@ function OccupancyMeter({ id }: { id: string }) {
         {Math.round(fraction * 100)}% of {Math.round(occupancy.limit_tokens / 1000)}k
       </span>
     </div>
+  );
+}
+
+/** Token totals for the whole conversation (03 §12.1 GET …/usage): compact numbers here,
+ *  exact totals and the last turn's in/out/steps in the tooltip. Fetched on mount (and on
+ *  switching conversations); refetched, lightly debounced, when this conversation's event
+ *  count changes — so a streaming turn does not hammer the endpoint step by step. */
+function UsageBadge({ id }: { id: string }) {
+  const usage = useStore((s) => s.usage[id], Object.is);
+  const eventCount = useStore((s) => s.events[id]?.length ?? 0, Object.is);
+  const seenId = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!id) return;
+    if (seenId.current !== id) {
+      seenId.current = id;
+      void store.loadUsage(id);
+      return;
+    }
+    const t = setTimeout(() => void store.loadUsage(id), 600);
+    return () => clearTimeout(t);
+  }, [id, eventCount]);
+
+  if (!usage || (!usage.prompt_tokens && !usage.completion_tokens)) return null;
+  const last = usage.turns[usage.turns.length - 1];
+  const title = [
+    `${usage.prompt_tokens.toLocaleString()} prompt / ${usage.completion_tokens.toLocaleString()} completion tokens over ${usage.steps} step${usage.steps === 1 ? "" : "s"}`,
+    last
+      ? `last turn: in ${last.prompt_tokens.toLocaleString()} · out ${last.completion_tokens.toLocaleString()} (${last.steps} step${last.steps === 1 ? "" : "s"})`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" — ");
+  return (
+    <Badge tone="neutral" title={title}>
+      tokens in {compactNumber(usage.prompt_tokens)} · out {compactNumber(usage.completion_tokens)}
+    </Badge>
   );
 }
 
@@ -110,6 +147,7 @@ export function ConversationHeader({ id, children }: { id: string; children?: Re
         />
       ) : null}
       <OccupancyMeter id={id} />
+      <UsageBadge id={id} />
       {queue.depth > 0 || (queue.running?.length ?? 0) > 0 ? (
         <Badge tone="sky" title="Model queue: running / queued">
           queue {queue.running?.length ?? 0}/{queue.depth}

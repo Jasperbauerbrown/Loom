@@ -62,6 +62,25 @@ def test_new_unapproved_procedure_posts_one_setup_item(app):
     assert len([r for r in app.db.execute("SELECT 1 FROM items WHERE kind='setup'")]) == 1
 
 
+def test_approving_a_procedure_dismisses_its_setup_item(app):
+    """Approval is the completion signal for the "needs approval" item (03 §11.3 item
+    lifecycle): once the person approves it, its row leaves the now board."""
+    app.index.rebuild()
+    folder = app.vault.root / "procedures" / "third-party"
+    folder.mkdir(parents=True)
+    (folder / "SKILL.md").write_text(
+        "---\nname: third-party\ndescription: installed by hand\n---\nsteps\n", encoding="utf-8"
+    )
+    app.watcher.scan_once()
+    row = app.db.execute("SELECT id, dismissed_at FROM items WHERE kind='setup'").fetchone()
+    assert row is not None and row["dismissed_at"] is None
+
+    app.vault.approve_procedure("third-party")
+
+    after = app.db.execute("SELECT dismissed_at FROM items WHERE id=?", (row["id"],)).fetchone()
+    assert after["dismissed_at"] is not None
+
+
 def test_an_approved_procedure_posts_nothing(app):
     app.vault.write(
         "procedures/mine/SKILL.md",

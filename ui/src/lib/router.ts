@@ -1,10 +1,11 @@
-// A ~40-line hash router. Routes are `#/c/<id>`, `#/threads`, `#/vault/<path>`,
-// `#/approvals`, `#/settings/<group>`, `#/system`; the desk is `#/`.
+// A ~40-line hash router. Routes are `#/c/<id>`, `#/threads`, `#/overview`,
+// `#/vault/<path>`, `#/graph/<path>`, `#/approvals`, `#/settings/<group>`, `#/system`;
+// the desk is `#/`.
 
 import { useSyncExternalStore } from "react";
 
 export interface Route {
-  name: "desk" | "conversation" | "threads" | "vault" | "approvals" | "settings" | "system";
+  name: "desk" | "conversation" | "threads" | "overview" | "vault" | "graph" | "approvals" | "settings" | "system";
   param: string;
 }
 
@@ -20,8 +21,12 @@ function parse(hash: string): Route {
       return { name: "conversation", param: decodeURIComponent(param) };
     case "threads":
       return { name: "threads", param: decodeURIComponent(param) };
+    case "overview":
+      return { name: "overview", param: "" };
     case "vault":
       return { name: "vault", param: decodeURIComponent(param) };
+    case "graph":
+      return { name: "graph", param: decodeURIComponent(param) };
     case "approvals":
       return { name: "approvals", param: "" };
     case "settings":
@@ -52,6 +57,10 @@ export function href(path: string): string {
 
 export function notePath(path: string): string {
   return href(`/vault/${path.split("/").map(encodeURIComponent).join("/")}`);
+}
+
+export function graphPath(path: string): string {
+  return href(`/graph/${path.split("/").map(encodeURIComponent).join("/")}`);
 }
 
 export function useRoute(): Route {

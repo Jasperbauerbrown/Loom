@@ -180,6 +180,9 @@ conversations(id TEXT PK /*ULID*/, kind TEXT /*desk|thread*/, parent_id TEXT,
 events(id INTEGER PK, conversation_id TEXT, kind TEXT
        /*user|assistant|tool_call|tool_result|thinking|system|compaction|status*/,
        content TEXT, meta TEXT /*json*/, ts TEXT)              -- append-only
+       -- meta.usage on assistant/tool_call rows: {prompt_tokens?, completion_tokens?}, whichever
+       -- the provider reported for that step (client.py); never stored elsewhere — GET
+       -- …/usage (§12.1) sums it on every call. Token metrics, 2026-09-29.
 events_fts  -- FTS5 external-content table over events.content for user/assistant/tool_result
 
 inbox(id INTEGER PK, conversation_id TEXT, source TEXT
@@ -1325,6 +1328,13 @@ toast + badge; a connector surface delivers if it registered as a notification t
 in settings). *Queue* → item only; it appears in the desk's now board (slot [5]) and
 the UI's board panel. Turns produced by triggers run at priority 1.
 
+The web toast now fades after `general.notification_fade_seconds` (0 keeps it until
+dismissed; hovering pauses the countdown) and disappears outright when its item is seen
+or dismissed from any surface — the toast mirrors the item, it does not outlive it. Item
+lifecycle: the writer that posted an item resolves it through `by_source` when its cause
+is gone (an approval decided, a thread running again, a model configured, an MCP server
+connected, the next promotion). Opening an item's target conversation marks it seen.
+
 ## 12. Surface API
 
 ### 12.1 REST (prefix `/api`; as built 2026-09-20)
@@ -1337,6 +1347,8 @@ POST /conversations/{id}/images  (raw image bytes; Content-Type image/*) → {id
 GET  /conversations/{id}/images/{image_id} → the bytes, immutable cache headers; 404 on miss or a malformed id
 POST /conversations/{id}/cancel         POST /conversations/{id}/archive (→ {…, worktree_message} when a checkout was released)     POST /conversations/{id}/clear (409 while running)
 GET  /conversations/{id}/occupancy      GET  /conversations/{id}/artifacts     GET /artifacts/{id}?offset&limit
+GET  /conversations/{id}/usage → {prompt_tokens, completion_tokens, steps, steps_with_usage, turns: [{user_event_id, started_at, prompt_tokens, completion_tokens, steps}]}
+     (totals summed from `meta.usage` over the conversation's assistant/tool_call events, §4.2; `turns` is the last 20, grouped by the preceding user event; derived on every call, never stored)
 GET  /processes?conversation_id&status  GET  /processes/{id}   GET /processes/{id}/logs?offset&limit   POST /processes/{id}/stop   (§9.6; starting one is a model action, `shell(background=true)`)
 GET  /conversations/{id}/inbox          rows posted but not yet in the transcript (surfaces render them as *queued*)
 GET  /conversations/{id}/status         → {fields|null, owner|null, source: note|transcript|none}   PUT /conversations/{id}/status {fields} (owner `user`; a note block keeps its owner)
@@ -1346,6 +1358,7 @@ GET  /vault/tree                        GET  /vault/note?path   PUT /vault/note 
 GET  /vault/search?q&type&k             GET  /vault/history?path   GET /vault/recent-changes?n   GET /vault/diff?sha&path
 POST /vault/revert {commit, path?}      GET  /vault/graph?center&depth   GET /vault/core   GET /vault/wanted
 GET  /vault/procedures                  POST /vault/procedures/{name}/approve
+GET  /conversations/graph → {nodes: [{id, kind, title, goal, status, parent_id}], edges: [{src, dst, kind: spawned|pinned|walkthrough}]}  (registered before /conversations/{id}; the Graph screen's conversations layer)
 GET  /settings  PATCH /settings {key: value}          (values + schema + groups; all-or-nothing validation)
 GET/POST /providers  GET/PATCH/DELETE /providers/{name}   POST /providers/{name}/probe
 GET/POST /presets    GET/PATCH/DELETE /presets/{name}     POST /presets/{name}/test
@@ -1444,9 +1457,11 @@ is the last line, not a licence: the shapes crossing the bus are one shape (§12
   thumbnail chip until sent; user bubbles, queued cards and tool rows with images show a
   thumbnail strip served from `GET …/images/{id}` (click opens the full image). Right rail:
   **Now board** (items grouped: needs you / threads / queued / processes — each
-  running process with Stop and a log drawer), each item actionable. Inbox rows posted
+  running process with Stop and a log drawer), each item actionable. An interrupt item
+  also raises a toast, which fades on its own timer (or stays if configured to) and
+  disappears the moment its item is seen or dismissed anywhere. Inbox rows posted
   by a background process carry a *from process* caption. Header: occupancy meter (used/limit, colour by proximity to compaction),
-  queue indicator, model role in use.
+  queue indicator, model role in use, token totals (in/out, from `meta.usage`).
 - **Threads**. List (status, goal, last update, depth tree). Thread view = same
   conversation component + a **Status/plan panel** rendering the status as an editable
   form (`GET`/`PUT /conversations/{id}/status`), the **pinned notes** (links; unpin; add
@@ -1454,11 +1469,25 @@ is the last line, not a licence: the shapes crossing the bus are one shape (§12
   the daily-log note), artifacts, a **Processes** section (the processes this
   conversation started: status, pid, log size, Stop, log drawer; §9.6), and "spawned by" links. Create-thread dialog: goal,
   notes to pin (optional), roots, role.
+- **Overview** (`#/overview`). The desk and every active thread (running,
+  waiting_approval, waiting_input, newest first) side by side, each pane the same
+  conversation component and composer — read one, answer another, without switching
+  screens. A "Show finished" toggle adds done/failed threads (archived never appear); a
+  column selector (1/2/3, remembered per browser) sets the grid. Panes fill the
+  viewport in equal-height rows and scroll internally; the page scrolls when there are
+  more than fit. No threads: the desk pane plus a one-line "No active threads".
 - **Vault**. Tree by type; note view/edit (Markdown editor with wikilink completion and
   frontmatter form); backlinks and outgoing links; search (fused); **Recent changes**
   (git log with diff and revert); wanted notes (dangling links); core block fill meters;
-  optional graph view (`/vault/graph`) rendered with inline SVG — start focused, expand
-  on demand, no physics simulation.
+  a compact graph panel (see **Graph** below) with an "Open in Graph" link.
+- **Graph** (`#/graph/<path>`). Vault links and conversations as one inline-SVG picture,
+  no physics. Focused mode centres a note in hop rings — a deterministic radial tree,
+  each ring's nodes inside their parent's angular sector — and clicking a node expands
+  its own depth-1 graph in place; a whole-vault mode lays every note on one circle with
+  low-opacity chord edges. An optional conversations layer overlays the desk/thread tree
+  (`GET /conversations/graph`) as rounded, status-tinted nodes with dashed spawn edges
+  and pinned/walkthrough edges into note nodes. Pan/zoom is plain SVG-viewBox pointer
+  math; note types get a small fixed set of hues, shown in a legend.
 - **Approvals** badge + list (pending across all conversations), each with the
   classifier reason if any and the `allow always` option; when the guard suggested a
   root, adding it is an opt-in checkbox (unchecked by default) that pairs with
@@ -1478,7 +1507,8 @@ is the last line, not a licence: the shapes crossing the bus are one shape (§12
 
 ### 13.2 Settings inventory (all UI-visible; groups map to `config.py` dataclasses)
 - **General**: display name, timezone, bind address, LAN token, theme
-  (system/light/dark), palette (default/slate/warm/forest/nord/mono/grape/ocean/ember/moss).
+  (system/light/dark), palette (default/slate/warm/forest/nord/mono/grape/ocean/ember/moss),
+  notification fade seconds (0 = stays until dismissed).
 - **Models**: three tabs. *Providers* (CRUD: name, kind, base URL, credential from the
   secret picker, default params, concurrency, enabled; probe button lists live
   models). *Presets* (CRUD: name, provider, model picked from the probe list or typed,
