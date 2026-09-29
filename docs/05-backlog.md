@@ -18,6 +18,20 @@ Each item names its source. "Audit" means `reference/tool-parity-audit.md` §3.
 - MCP resources, prompts and OAuth (#12).
 - `process` watch-for-line (#13).
 
+## Appearance (Jasper, 2026-09-28)
+- **Notification lifecycle.** Notifications disappear / get marked seen when their source
+  is acknowledged — e.g. when an approval request is finalized, clear the
+  "approval required" notification automatically.
+- **Popup auto-fade.** Notification popups (the ones not on the desk) should show for a
+  few seconds, then fade.
+- **Multi-thread / desk view.** A view showing all threads (and the desk) at once,
+  beyond the current single-conversation focus.
+- **Graph view.** Graph visualization of vault links / conversation relationships.
+- **Token metrics.** Per tool call / turn / thread token totals (in and out), for
+  visibility into where context goes. Explore later.
+- **New color palettes** — approved 2026-09-28: grape, ocean, ember, moss (green-on-dark).
+  Implemented in worktree `dev-01M3N9P0KV51GQ3M7865CXHWDQ`, awaiting promotion sign-off.
+
 ## Undecided (TD audit, not yet agreed)
 - Hold a system-required power request while a turn runs or an approval is pending, so
   the machine does not sleep mid-task. Battery policy is the person's call. (F7)

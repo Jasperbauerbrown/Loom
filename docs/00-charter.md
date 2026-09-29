@@ -1175,3 +1175,39 @@ sessions do not re-litigate.
   `ui/src/index.css`, one `choices` entry, no component changes. `moss` is a new
   green-on-dark design meeting the proposal's contrast gates (white on accent-600 ≥ 4:1,
   accent-400 on neutral-900 ≥ 4:1, body text ≥ 12:1, dark muted ≥ 4.5:1).
+- **2026-09-28** — **The root checkbox says which button applies it.** A self-mod
+  thread's every file call asked, although the person had ticked "also allow this root"
+  on each card: the tick only applies with `allow always` (2026-09-21, unchanged), and
+  they had answered `allow`. The checkbox keeps that pairing, but ticking it now
+  relabels the buttons — "Allow always and add the root" (primary) against "Allow,
+  without adding the root" — on both surfaces from one helper.
+- **2026-09-28** — **A self-mod thread is spawned isolated.** The procedure note still
+  told the thread to `git worktree add releases/dev-<id>` itself, wording from before
+  isolation became a property of any thread (2026-09-24); that checkout was outside
+  every root, so every read and edit into it asked. Step 1 is now `conversation_create`
+  with `isolation: "worktree"`, which makes the checkout the thread's first root by
+  construction; the scratch `LOOM_HOME` moves into the thread's own scratch folder
+  (2026-09-25) for the same reason. §15.1 says the same thing in one voice now.
+- **2026-09-28** — **Presets can be renamed and duplicated.** A preset's name was
+  immutable, so changing it or making a near-copy meant retyping every parameter.
+  `PATCH /presets/{name}` now accepts `name`: one transaction with deferred foreign-key
+  checks updates the row and repoints `model_roles` and every conversation (live or
+  archived) that names it; a taken name is a 409 before anything moves, and the
+  `models.changed` event carries `renamed_from`. *Duplicate* is a UI affordance, not an
+  endpoint: it opens the add dialog seeded from the source (name `<source>-copy`, then
+  `-copy-2`…) minus the machine-written `token_factor_seed`, so the person tweaks before
+  saving and the ordinary create path does the rest.
+- **2026-09-28** — **Self-review is a procedure, not code.** Loom's ability to find
+  its own failures — a thread looping, a tool that keeps breaking, approvals that keep
+  asking, a result ignored, a false finish — is a built-in procedure note
+  (`procedures/self-review/SKILL.md`, from `prompts/templates/procedure-self-review.md`)
+  over the observability that already exists: `conversation_read`, `transcript_search`,
+  the daily log, artifacts, the backend log. It attributes each finding by one question
+  — would a capable model with these tools have failed the same way? — so a recurring
+  "model" failure is filed as harness and a weak model's mistake earns no scaffolding
+  (§2.1), names the smallest change, writes to the daily log, and changes nothing
+  itself. Two small things in code, both general: the built-in procedures are one table
+  (`vault.BUILTIN_PROCEDURES`) ensured by `knowledge.install`, replacing the one-off in
+  `promote.install`; and a rendered tool result carries the harness's verdict when the
+  call was not simply allowed (`ask → allow: <reason>`), which is what permission
+  friction looks like from inside a transcript.

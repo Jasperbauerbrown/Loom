@@ -275,6 +275,19 @@ code; unapproved skills are indexed but not loadable. A procedure the agent writ
 itself (`knowledge_write` with the harness as actor) is stamped `approved: <iso>` at
 write time — the approval gate exists for code that arrived from outside.
 
+Loom ships two procedures of its own, `vault.BUILTIN_PROCEDURES`, ensured by
+`knowledge.install` from `prompts/templates/procedure-<name>.md` and so approved at
+write time; an edited or deleted one is never overwritten (`ensure_note` fills gaps
+only). *self-modification* (§15.1) is how Loom changes its own code. *self-review*
+(2026-09-28) is how Loom examines a thread, or a stretch of the desk, for failures of
+the harness or the model — loops, a tool that keeps breaking, approvals that keep
+asking, results ignored, false finishes — attributes each (harness, model, environment,
+the ask) by asking whether a capable model with the same tools would have failed the
+same way, names the smallest change, and writes the review to the daily log. It is prose
+over the observability that already exists (`conversation_read`, `transcript_search`,
+the daily log, artifacts, the backend log); the one thing added for it is the verdict on
+rendered results (§6.7).
+
 ### 4.4 Artifacts
 Tool output longer than `tool_output_cap` (default 8,000 chars) is written to
 `artifacts/<conv>/<event>.txt`; the tool result carries head (2,000) + tail (1,000) +
@@ -865,7 +878,7 @@ Registry = native tools + MCP tools (prefixed `mcp_<server>_<tool>`) + connector
 | `screenshot` | capture a monitor, the whole virtual screen, a region or a window (by title, Windows) as an image; `scale` downsizes; via PowerShell/System.Drawing on Windows, `screencapture` on macOS, `grim`/`gnome-screenshot`/`import`/`scrot` on Linux — no dependency. `window=` captures the window's own pixels (`PrintWindow` with `PW_RENDERFULLCONTENT`, falling back to the rect copy when it fails or comes back all black), so an occluded window is still readable; `region=` and `monitor=` capture whatever is visible at that spot. A failure is plain text on stdout with a non-zero exit, and a `#< CLIXML` stream is decoded, so the model reads "no window whose title contains …" rather than PowerShell's serialised error (2026-09-24) | yes | allow |
 | `knowledge_*`, `procedure_load`, `transcript_search`, `artifact_recall` | §8.4 | mixed | allow (core/ → ask) |
 | `status_update` | publish the thread's status as a `status` event in its own transcript; threads only (`kinds`) | no | allow |
-| `conversation_create / send / read / list / finish` | §6.7; `create` takes `notes` to pin and `isolation`/`isolation_root` (a git worktree of its own, §15.1); `finish` is threads only (`kinds`) and delivers the summary, the walkthrough section and the ids of everything the thread produced | read/list yes | allow |
+| `conversation_create / send / read / list / finish` | §6.7; `create` takes `notes` to pin and `isolation`/`isolation_root` (a git worktree of its own, §15.1); `read` renders each result as `TOOL RESULT (ok|ERROR; <policy> → <decision>: <reason>)`, the verdict present only when the harness did not simply allow the call (asked, classified, auto-approved) — what a self-review reads permission friction off (§4.3); `finish` is threads only (`kinds`) and delivers the summary, the walkthrough section and the ids of everything the thread produced | read/list yes | allow |
 | `schedule_create / list / delete` | §11 | list yes | allow (caps enforced) |
 | `item_post` | put a notification/setup item on the now board | no | allow |
 | `secret_set` | store a secret the user pasted (value never echoed) | no | ask |
@@ -1285,6 +1298,7 @@ GET  /vault/procedures                  POST /vault/procedures/{name}/approve
 GET  /settings  PATCH /settings {key: value}          (values + schema + groups; all-or-nothing validation)
 GET/POST /providers  GET/PATCH/DELETE /providers/{name}   POST /providers/{name}/probe
 GET/POST /presets    GET/PATCH/DELETE /presets/{name}     POST /presets/{name}/test
+     (PATCH with a different `name` renames: roles and conversations are repointed in the same transaction)
 GET  /model-roles    PUT /model-roles/{role} {preset}     GET /models?provider → {providers: [{provider, models, error}]}
 GET  /tool-policies  PUT/DELETE /tool-policies/{tool}     (tool may be a path-class key `<tool>:<prefix>`)
 GET/POST /roots  DELETE /roots?path      GET/POST /protected-paths  DELETE /protected-paths?path → 202 + approval
@@ -1397,7 +1411,10 @@ is the last line, not a licence: the shapes crossing the bus are one shape (§12
 - **Approvals** badge + list (pending across all conversations), each with the
   classifier reason if any and the `allow always` option; when the guard suggested a
   root, adding it is an opt-in checkbox (unchecked by default) that pairs with
-  `allow always` — the same on the inline card and the Approvals screen.
+  `allow always` — the same on the inline card and the Approvals screen. Ticking it
+  relabels the three allowing buttons (`allowLabels`): "Allow always and add the root"
+  becomes the primary button and the other two say "without adding the root", so the
+  tick is never mistaken for a decision on its own.
 - **Settings** — every knob (§13.2), rendered from schema.
 - **System**. Version and release pointer, supervisor status, promote/rollback with
   progress (a ref → the plan from `GET /system/promote/plan`, with the protected files
@@ -1419,7 +1436,10 @@ is the last line, not a licence: the shapes crossing the bus are one shape (§12
   the per-image token estimate, notes;
   "test" runs one short completion; shows calibrated
   `token_factor_seed` read-only; usage count of roles/threads pointing at it; delete
-  blocked while referenced). *Roles* (five dropdowns → preset; `fallback_role`;
+  blocked while referenced; the name is editable and a rename moves every role and
+  conversation with it; *Duplicate* opens the add dialog seeded from an existing
+  preset — every field but the name and the token factor seed — for the "similar but
+  tweaked" case, 2026-09-28). *Roles* (five dropdowns → preset; `fallback_role`;
   `background_max_tokens`). Every conversation's header shows which preset it is
   using, and a thread's create dialog and detail panel let the user pick one.
 - **Conversation**: step budgets (desk/thread), `compact_threshold`,
@@ -1478,15 +1498,21 @@ case that also needs a scratch `LOOM_HOME`.
 
 The assistant's own repo is cloned once into `APP_HOME/releases/src.git` (bare) with
 worktrees `releases/<id>/` per release; `current` names the live one. A self-mod thread
-gets its own worktree as a root — under `releases/dev-<thread>/`, since a release
-worktree belongs beside the other releases — plus a scratch `LOOM_HOME` pointing at
-`APP_HOME/scratch/<thread>/` so tests and a staging run never touch live state.
+is spawned with `isolation="worktree"` from the repository the backend runs from, so its
+checkout is `APP_HOME/worktrees/<thread>` on `loom/<thread>` like any isolated thread's
+and is its first root from the first turn (2026-09-28; it used to make
+`releases/dev-<thread>/` by hand, which sat outside every root and asked on every file
+call). `releases/` holds promoted releases and the throwaway `test-<sha7>` worktrees
+only. Its scratch `LOOM_HOME` lives in the thread's own scratch folder
+(`artifacts/<thread>/loom-home/`, already inside the roots) so tests and a staging run
+never touch live state.
 
-That workflow is a **procedure note, not code** (charter §5.9): `promote.install`
+That workflow is a **procedure note, not code** (charter §5.9): `knowledge.install`
 ensures `procedures/self-modification/SKILL.md` exists in the vault from
-`prompts/templates/procedure-self-modification.md` (written by Loom, so approved at
-write time, §8.4). Changing how self-modification is done is a vault edit; only
-isolation, promotion-with-rollback and protected paths are Python.
+`prompts/templates/procedure-self-modification.md` with the other built-in procedures
+(`vault.BUILTIN_PROCEDURES`, §4.3; written by Loom, so approved at write time, §8.4).
+Changing how self-modification is done is a vault edit; only isolation,
+promotion-with-rollback and protected paths are Python.
 
 ### 15.2 `promote(ref)` flow (tool → backend → supervisor)
 ```
@@ -1577,7 +1603,8 @@ prompts/maintenance-consolidate.md  / maintenance-curate.md
 prompts/status-safety-net.md
 prompts/preset-test.md       the one short completion `POST /presets/{name}/test` sends
 prompts/templates/*.md       new note templates (device, project, connector, procedure SKILL.md,
-                             procedure-self-modification: the vault's own self-mod workflow)
+                             procedure-self-modification and procedure-self-review: the
+                             built-in procedures, §4.3)
 ```
 Nothing in these files references mutable state (model names, paths, rosters).
 
