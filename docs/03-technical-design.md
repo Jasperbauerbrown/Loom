@@ -1374,7 +1374,8 @@ GET/POST /schedules  GET/PATCH/DELETE /schedules/{id}   POST /schedules/{id}/run
 GET  /maintenance    POST /maintenance/run
 GET  /system/health  /system/version  /system/queue  /system/logs?since&level&limit → {records}
 POST /system/reindex                    POST /system/open {path}  (folder in the OS file manager; APP_HOME or allowed roots only)
-GET  /system/promote/plan?ref   POST /system/promote {ref, acknowledge_protected}   POST /system/rollback
+GET  /system/promote/plan?ref   POST /system/promote {ref, acknowledge_protected, skip_tests}   POST /system/rollback
+POST /system/pull
 GET  /system/promote/log   GET /system/snapshots   GET /system/supervisor   POST /system/restart
 ```
 Update verbs: `PATCH` for partial row updates (providers, presets, conversations, mcp
@@ -1500,7 +1501,8 @@ is the last line, not a licence: the shapes crossing the bus are one shape (§12
   progress (a ref → the plan from `GET /system/promote/plan`, with the protected files
   shown as an explicit "I have read these" checkbox that sets `acknowledge_protected`;
   stages stream from `promote.progress` and the history comes from
-  `GET /system/promote/log`), logs tail,
+  `GET /system/promote/log`; "Update from remote" pulls the checkout and runs that flow
+  on the new head with "Skip the test suite" ticked, §15.2), logs tail,
   queue, connector and MCP status, reindex, snapshot list, and maintenance: whether a
   pass is running, when the nightly one is next due, the last pass's report, and a
   *run maintenance now* button (`POST /maintenance/run`, live via `maintenance.progress`).
@@ -1686,6 +1688,21 @@ named uv" and the third failed in `uv sync`. The suite (stage 6) gets
 `PYTHONPATH=<release>/src` and no `VIRTUAL_ENV`: the supervisor pins a release's backend
 to its own `src` the same way, and a child that inherited that once tested the live code
 against the candidate's tests (an `ImportError` for a name only the candidate had).
+
+**Update from remote (decided 2026-09-29).** Releases are per machine, so a commit
+verified and pushed from one machine must still be promoted on each other one. The
+System page's "Update from remote" button makes that one click. `POST /system/pull`
+(`promote.pull_checkout`) finds the development checkout: the backend's repo, or, from a
+release, the local-path origin it was built from. It fetches the checkout branch's
+upstream and fast-forwards it. It never merges, rebases or stashes, and it refuses a
+dirty, detached, upstream-less or diverged checkout with the reason
+(`dirty|detached|no_upstream|diverged` are 409, `fetch_failed` is 502). Git runs with
+`GIT_TERMINAL_PROMPT=0`, so a missing credential fails instead of hanging. The page then
+plans the new head as usual and ticks "Skip the test suite", since the commit was tested
+where it was pushed from. If the plan names protected paths, the acknowledgement
+checkbox is still required; otherwise the Promote confirmation opens directly. There is
+no automatic sync and no "verified" marker: pushing is the person's statement that a
+commit is verified. When the new head is already the live commit, it says so and stops.
 
 ### 15.3 Protected paths (default rows)
 `supervisor/`, `src/loom/tools/permissions.py`, `src/loom/tools/fs_guard.py`,

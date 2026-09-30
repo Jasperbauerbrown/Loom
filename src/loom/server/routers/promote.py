@@ -29,6 +29,10 @@ STATUS_FOR: dict[str, int] = {
     "protected": 409,
     "no_supervisor": 503,
     "supervisor_error": 502,
+    "detached": 409,
+    "no_upstream": 409,
+    "diverged": 409,
+    "fetch_failed": 502,
 }
 
 
@@ -63,6 +67,16 @@ async def promote(body: dict[str, Any] = Body(default={}), app: App = Depends(ge
         elif outcome.get("output"):
             detail = {"message": outcome["message"], "output": outcome["output"][-4000:]}
         raise HTTPException(status_code=STATUS_FOR.get(outcome["code"], 400), detail=detail)
+    return outcome
+
+
+@router.post("/system/pull")
+async def pull(app: App = Depends(get_app)) -> dict[str, Any]:
+    """Update from remote, first half: fast-forward the development checkout from its
+    upstream. The UI then plans and promotes `after` through `/system/promote`."""
+    outcome = await asyncio.to_thread(promote_mod.pull_checkout, app)
+    if not outcome["ok"]:
+        raise HTTPException(status_code=STATUS_FOR.get(outcome["code"], 400), detail=outcome["message"])
     return outcome
 
 

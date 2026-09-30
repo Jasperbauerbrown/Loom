@@ -519,6 +519,20 @@ export interface MaintenanceStage {
 // -- promotion (03 §15) -------------------------------------------------------
 // `promote.Plan.to_json()`.
 
+/** `POST /system/pull`: the development checkout fast-forwarded from its upstream. */
+export interface PullResult {
+  ok: boolean;
+  code: string;
+  message: string;
+  checkout: string;
+  branch: string;
+  upstream: string;
+  before: string;
+  after: string;
+  commits: string[];
+  live_commit: string;
+}
+
 export interface PromotePlan {
   ref: string;
   ok: boolean;
