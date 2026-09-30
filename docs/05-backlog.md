@@ -25,6 +25,18 @@ Each item names its source. "Audit" means `reference/tool-parity-audit.md` §3.
   the in-flight process of a foreground `shell`, stops processes this turn started,
   cancels the turn's own sub-threads, and the UI says what was stopped.
 
+## Permissions (Jasper, 2026-09-29)
+- **Desk auto-approve must actually work.** With `permissions.desk_auto_approve` on, the
+  desk still asks in practice. The switch lives in `dispatch.py` `_auto_approved`, which
+  is consulted twice (a non-protected fs-guard ask; a policy ask/classify) and grants
+  only when the context's conversation row says `kind == "desk"`, the tool is not
+  `shell`, or the shell command splits cleanly and names no protected path. Suspects:
+  a `ToolContext` built without `kind` (resumed calls via `_repair`, calls dispatched
+  from a sub-step), a shell command the pre-filter cannot split (quotes, heredocs,
+  `&&` chains) falling to the ordinary path, MCP tool names taking a path that skips
+  the check. Reproduce with a test per suspect, fix, and make the tool row say why a
+  desk call asked despite the switch.
+
 ## Dropped
 - **Ignore-aware search** (audit #4) — dropped 2026-09-29: not felt as friction yet;
   revisit only if it bites.
