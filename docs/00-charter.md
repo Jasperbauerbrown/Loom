@@ -1310,3 +1310,39 @@ sessions do not re-litigate.
   (`POST /system/pull`, refusing anything but a clean fast-forward) and promotes the new
   head with the suite skipped. Rejected: a pushed "verified" marker (pushing already says
   it) and automatic polling or promotion (the person decides when a machine updates).
+- **2026-09-29** — **Graph layout: deterministic force relaxation replaces "no physics".**
+  The whole-vault circle-with-chords picture was unreadable, and the radial tree tangled
+  once expanded. The Graph screen now runs a pure force-directed relaxation (FR with
+  Barnes–Hut, fixed iteration count, no randomness, computed synchronously in
+  `ui/src/lib/graphForce.ts`, about 180 ms at 500 notes) seeded from the old
+  deterministic layouts: the radial tree when focused, and a link-ordered spiral in place
+  of the circle for the whole vault. There is still no live simulation ticking forever;
+  motion is a short eased tween between settled layouts, which respects
+  `prefers-reduced-motion`. Incremental changes (expand, layer toggle) re-relax warm from
+  the positions on screen. Dragged nodes are fixed inputs to the next relaxation until
+  released. Also decided:
+  1. Label level of detail is greedy collision-free placement by priority, not a zoom
+     threshold.
+  2. Note-type hues are fixed per folder type and never use the palette-owned `sky-*`
+     ramp, which is reserved for emphasis (centre, selection, highlighted neighbourhood).
+  3. Double-click centres; single click selects and expands (in whole-vault mode it only
+     selects).
+- **2026-09-29** — **The Overview is a window manager, not a grid.** Conversations on the
+  Overview are free-form windows: they move, resize, snap, stack, minimise to a dock,
+  maximise, and tile or cascade on command. This replaces the fixed 1/2/3-column grid and
+  the "Show finished" toggle. The column counts are now Tile presets, and finished
+  threads are opened from the Windows menu. There is one mode (free-form) with one-shot
+  arrangement commands, not a grid mode beside a free mode. Visibility follows one rule:
+  active conversations appear by themselves, anything opened explicitly stays until
+  closed, and a closed window stays closed until reopened. Geometry is stored per
+  browser as workspace fractions (a convenience like the old column choice, so it is not
+  a setting). All geometry and window state is pure and unit-tested. Drags write the DOM
+  directly and commit once, so many live transcripts stay smooth.
+- **2026-09-29** — **Palettes de-hazed.** The tinted palettes looked foggy even after their lightness was matched to warm's. The cause was a tinted page white (off-white under every screen, so white and neutral-50 separated at only 1.02:1), dusty mid-stop chroma in muted text, and nord's disordered Polar Night dark ramp. Changes:
+  - The tinted neutral ramps (forest, grape, ocean, ember, moss, and nord's light side) now come from one OKLCH recipe: Tailwind neutral's lightness per stop, a slightly wider dark end (800 29.5%, 900 22%, 950 13.5%), chroma capped at 0.028 (moss 0.032, on its own yellower hue so it no longer shares forest's stops), and the palette's hue.
+  - The page is pure white. Warm keeps a lighter paper tint and a deeper neutral-50.
+  - A palette may add a dark-only block, `:root.dark[data-palette=…]`, which is still only variables. Nord uses one to put Polar Night in order: #242933 body, #2e3440 panels, #3b4252 raised surfaces, #4c566a borders. Its accent-600 is darkened to #4c6f99, so white text on it is 5.2:1.
+  - Mono's accent 700–950 is now a real ramp, so dark badges have a background.
+  - Contrast gates, recorded above each block in `index.css`: body text ≥ 12:1, muted neutral-500 on white ≥ 4.5:1, white on accent-600 ≥ 4.5:1, accent-400 on neutral-900 ≥ 4.5:1.
+  - Default and slate are unchanged (stock Tailwind). Note that default's own white on sky-600 is 4.02:1.
+- **2026-09-29** — **Solid dark surfaces.** The nav, now board, tool rows, the note editor's frontmatter box and Overview title bars used translucent `neutral-900/50–60` over the body, which blended panels into the page (a haze source the palette pass found); they are solid `neutral-900` now. Row dividers (`neutral-800/70`) and the Overview's recessed workspace stay translucent on purpose.
