@@ -532,7 +532,6 @@ export interface PromotePlan {
   dirty_files: string[];
   clean: boolean;
   worktree: string;
-  tests_required: boolean;
   repo: string;
 }
 

@@ -5,7 +5,8 @@ uses, so a click and a model call cannot reach different conclusions. The failur
 comes back as a `code` and is mapped onto exactly one status: a protected diff that was
 not acknowledged is `409` with the file list, a missing supervisor is `503`, a bad ref
 or a dirty tree is `400`. The test suite runs in the supervisor (2026-09-28), so a
-failing suite is a `failed` stage in the promote log, not a status here.
+failing suite is a `failed` stage in the promote log, not a status here; `skip_tests`
+in the body is passed through and shows in that log as a skipped `tests` stage.
 """
 
 from __future__ import annotations
@@ -49,6 +50,7 @@ async def promote(body: dict[str, Any] = Body(default={}), app: App = Depends(ge
         app, ref,
         conversation_id=str((body or {}).get("conversation_id") or "") or None,
         acknowledge_protected=bool((body or {}).get("acknowledge_protected")),
+        skip_tests=(body or {}).get("skip_tests") is True,
     )
     if not outcome["ok"]:
         detail: Any = outcome["message"]

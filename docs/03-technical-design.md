@@ -1603,8 +1603,8 @@ backend:  1 ref must resolve to a commit in the repo the backend runs from
               (compared repo-relative and absolute) → non-empty and not acknowledged →
               error result naming the files; the person confirms on the System page or
               the model calls promote(ref, acknowledge_protected=true)
-          3 POST supervisor /promote {ref, conversation_id}; the call returns here, and the
-              turn ends (the backend is the process about to be replaced)
+          3 POST supervisor /promote {ref, conversation_id, skip_tests}; the call returns
+              here, and the turn ends (the backend is the process about to be replaced)
 supervisor:
           4 snapshot: sqlite backup API → snapshots/<ts>/state.db; vault `git tag pre-<ts>`;
               prune to system.snapshot_retention
@@ -1617,7 +1617,8 @@ supervisor:
               bounded by system.promotion_test_timeout_s (1800); a `tests` line marks the
               start and another the pass with pytest's summary; failure → `failed` with the
               summary and the output tail ("the test suite fails in …"), and a runner that
-              never reached pytest says so instead ("the test runner could not run in …")
+              never reached pytest says so instead ("the test runner could not run in …");
+              `skip_tests: true` replaces the run with one ok `tests` line saying SKIPPED
           7 probe: start the release with LOOM_HOME pointing at a scratch dir holding a COPY
               of state.db (so migrations run on the copy) on port+2, wait for
               /api/system/health ok within 60s, stop it; else abort
@@ -1641,6 +1642,15 @@ codepath for steps 1–3, called by both the tool and `POST /system/promote`, so
 and a model call cannot disagree; failure classes come back as a `code`
 (`no_repo|bad_ref|dirty|protected|no_supervisor|supervisor_error`) which the REST layer
 maps to one status each (409 for protected/dirty, 503 for no supervisor).
+
+**The suite can be skipped, visibly (decided 2026-09-29).** `promote(ref, skip_tests)`,
+`POST /system/promote {skip_tests}` and the System page's "Skip the test suite" checkbox
+(off for every new plan, repeated in the confirmation) all pass one boolean through
+`request_promotion` to the supervisor. Only a real `true` skips. A skip drops step 6
+alone: the promote log still carries a `tests` stage saying SKIPPED, and the probe and
+watchdog run as always. The tool's prose forbids the model from setting it unless the
+person asked for this promotion, and the `ask` approval shows the argument. The plan no
+longer carries `tests_required`, since the plan cannot know what the promotion will say.
 
 **The suite runs in the supervisor, not in the caller (decided 2026-09-28).** It used to
 run inside the `promote` call, in the ref's worktree: the desk sat blocked for the

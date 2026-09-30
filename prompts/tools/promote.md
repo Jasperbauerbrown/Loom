@@ -11,6 +11,12 @@ Call `promote_plan(ref)` first and tell the person what it says. Then `promote(r
    scratch copy of the state, swaps and restarts, and watches health. Every stage lands
    in the promote log and on the System page; a failing suite, or anything else that
    does not hold, is rolled back automatically with the reason.
+4. `skip_tests: true` leaves the suite out; the probe and the health watch still run.
+   Never set it on your own judgement, not for speed, not because you ran some tests
+   yourself, and not because a commit looks small. Set it only when the person has told
+   you, in this conversation and for this promotion, to skip the tests (for example
+   because the commit already passed the suite on another machine). Say that you are
+   skipping them when you report the plan.
 
 Once this returns, the turn is over: you are the process being replaced. Say so and
 stop. The outcome arrives as a message in this conversation when it is known, minutes

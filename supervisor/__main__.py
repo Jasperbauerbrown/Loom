@@ -11,11 +11,11 @@ inside `auto_rollback_window_minutes` on a release promoted within that window r
 that cannot stay up cannot be fixed from inside itself.
 
 A loopback HTTP server on `port + 1` answers `GET /status`, `POST /restart`,
-`POST /promote {ref}` and `POST /rollback`; every request must carry
+`POST /promote {ref, skip_tests?}` and `POST /rollback`; every request must carry
 `X-Supervisor-Token` matching `H/supervisor.token` (random, owner-only).
 
 Promotion is the whole of 03 §15.2 steps 5–10: snapshot, build the release worktree,
-probe it on a scratch home, swap the pointer, restart, watch health, and restore
+run the suite in it (unless the request said `skip_tests`, which is logged), probe it on a scratch home, swap the pointer, restart, watch health, and restore
 everything (pointers, and the database when migrations ran) if it does not hold. Every
 stage appends a JSON line to `H/promote.log`, which the backend tails and republishes
 as `promote.progress`; the backend cannot be told directly because it is the thing
@@ -707,14 +707,20 @@ class Supervisor:
         elif action == "stop":
             self.stopping = True
         elif action == "promote":
-            self.do_promote(str(command.get("ref") or ""), str(command.get("conversation_id") or ""))
+            self.do_promote(str(command.get("ref") or ""), str(command.get("conversation_id") or ""),
+                            skip_tests=bool(command.get("skip_tests")))
         elif action == "rollback":
             self.do_rollback(str(command.get("conversation_id") or ""))
 
-    def do_promote(self, ref: str, conversation_id: str = "") -> None:
-        """03 §15.2 steps 5–10. Snapshot, build, probe, swap, watch — and on any failure
-        put back exactly what was changed, in reverse order. Persist before act: the
-        snapshot exists before the worktree, `previous` before `current`."""
+    def do_promote(self, ref: str, conversation_id: str = "", skip_tests: bool = False) -> None:
+        """03 §15.2 steps 5–10. Snapshot, build, test, probe, swap, watch — and on any
+        failure put back exactly what was changed, in reverse order. Persist before act:
+        the snapshot exists before the worktree, `previous` before `current`.
+
+        `skip_tests` drops only the suite (decided 2026-09-29: a commit already tested on
+        another machine should not cost the suite's minutes again). The `tests` stage
+        still appears in the log, saying it was skipped, so a skip is never silent; the
+        probe and the watchdog run either way."""
         home = self.home
         before_current, before_previous = self.current(), self.previous()
         before_version = user_version(home / "state.db")
@@ -732,16 +738,19 @@ class Supervisor:
             # The suite runs here, in the release it will be — not in the backend that asked
             # (2026-09-28): that call blocked the desk for the suite's whole duration with no
             # visible progress, and a backend running from a release tested the wrong code.
-            timeout_s = float(read_setting(home, "system.promotion_test_timeout_s", DEFAULT_TEST_TIMEOUT_S))
-            stage("tests", True, f"running the test suite in {release} (limit {timeout_s:g}s)")
-            ok, output = run_suite(home / "releases" / release, timeout_s)
-            summary = pytest_summary(output)
-            if not ok:
-                tail = output.strip()[-1500:]
-                if summary:  # pytest ran and said so: a real failure
-                    raise ReleaseError(f"the test suite fails in {release}: {summary}\n{tail}")
-                raise ReleaseError(f"the test runner could not run in {release}: {tail}")
-            stage("tests", True, f"suite passed in {release}: {summary or 'no summary line'}")
+            if skip_tests:
+                stage("tests", True, f"test suite SKIPPED for {release}, as the promotion asked")
+            else:
+                timeout_s = float(read_setting(home, "system.promotion_test_timeout_s", DEFAULT_TEST_TIMEOUT_S))
+                stage("tests", True, f"running the test suite in {release} (limit {timeout_s:g}s)")
+                ok, output = run_suite(home / "releases" / release, timeout_s)
+                summary = pytest_summary(output)
+                if not ok:
+                    tail = output.strip()[-1500:]
+                    if summary:  # pytest ran and said so: a real failure
+                        raise ReleaseError(f"the test suite fails in {release}: {summary}\n{tail}")
+                    raise ReleaseError(f"the test runner could not run in {release}: {tail}")
+                stage("tests", True, f"suite passed in {release}: {summary or 'no summary line'}")
             probe_port = self.port + 2
             stage("probe", True, f"probing {release} on port {probe_port}")
             if not probe(home, release, probe_port):
@@ -878,6 +887,7 @@ class Supervisor:
                     supervisor.commands.put({
                         "action": "promote", "ref": ref,
                         "conversation_id": str(payload.get("conversation_id") or ""),
+                        "skip_tests": payload.get("skip_tests") is True,
                     })
                 elif path == "/rollback":
                     supervisor.commands.put({
