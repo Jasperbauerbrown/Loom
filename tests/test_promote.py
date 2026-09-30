@@ -442,6 +442,81 @@ async def test_promote_endpoint_passes_skip_tests_through(client, repo, supervis
     assert response.status_code == 200 and skips == [True, False]
 
 
+# ---------------------------------------------------------------------------------
+# update from remote: pull_checkout (2026-09-29)
+# ---------------------------------------------------------------------------------
+@pytest.fixture
+def synced(tmp_path, app, repo, monkeypatch):
+    """`repo` pushed to a bare remote, and a checkout of it that is two commits behind:
+    the machine that has not pulled yet."""
+    remote = tmp_path / "remote.git"
+    git("clone", "-q", "--bare", str(repo["path"]), str(remote), cwd=tmp_path)
+    checkout = tmp_path / "checkout"
+    git("clone", "-q", str(remote), str(checkout), cwd=tmp_path)
+    git("config", "user.email", "t@example.invalid", cwd=checkout)
+    git("config", "user.name", "t", cwd=checkout)
+    git("reset", "-q", "--hard", repo["first"], cwd=checkout)
+    monkeypatch.setattr(promote, "repo_root", lambda _app: checkout)
+    return {**repo, "remote": remote, "checkout": checkout}
+
+
+def test_pull_fast_forwards_a_checkout_that_is_behind(app, synced):
+    out = promote.pull_checkout(app)
+    assert out["ok"] and out["code"] == "ok"
+    assert out["before"] == synced["first"] and out["after"] == synced["third"]
+    assert len(out["commits"]) == 2 and "pulled 2 commit(s)" in out["message"]
+    assert git("rev-parse", "HEAD", cwd=synced["checkout"]) == synced["third"]
+
+
+def test_pull_when_up_to_date_changes_nothing(app, synced):
+    promote.pull_checkout(app)
+    again = promote.pull_checkout(app)
+    assert again["ok"] and again["commits"] == [] and "already up to date" in again["message"]
+
+
+def test_pull_from_a_release_updates_the_checkout_it_was_built_from(app, synced, tmp_path, monkeypatch):
+    """A backend running from a release: its origin is the checkout (a local path), so
+    the checkout is what gets pulled, and the live commit is the release's."""
+    release = tmp_path / "release"
+    git("clone", "-q", str(synced["checkout"]), str(release), cwd=tmp_path)
+    monkeypatch.setattr(promote, "repo_root", lambda _app: release)
+    assert promote.checkout_root(app) == synced["checkout"]
+    out = promote.pull_checkout(app)
+    assert out["ok"] and out["after"] == synced["third"] and out["live_commit"] == synced["first"]
+    assert git("rev-parse", "HEAD", cwd=release) == synced["first"]  # the release is untouched
+
+
+def test_pull_refuses_a_dirty_checkout(app, synced):
+    (synced["checkout"] / "notes.md").write_text("local edit\n", encoding="utf-8")
+    out = promote.pull_checkout(app)
+    assert not out["ok"] and out["code"] == "dirty" and "notes.md" in out["message"]
+    assert git("rev-parse", "HEAD", cwd=synced["checkout"]) == synced["first"]
+
+
+def test_pull_refuses_a_diverged_branch_and_merges_nothing(app, synced):
+    (synced["checkout"] / "local.md").write_text("mine\n", encoding="utf-8")
+    git("add", "-A", cwd=synced["checkout"])
+    git("commit", "-qm", "local", cwd=synced["checkout"])
+    local = git("rev-parse", "HEAD", cwd=synced["checkout"])
+    out = promote.pull_checkout(app)
+    assert not out["ok"] and out["code"] == "diverged"
+    assert git("rev-parse", "HEAD", cwd=synced["checkout"]) == local
+
+
+def test_pull_refuses_a_detached_checkout(app, synced):
+    git("checkout", "-q", "--detach", "HEAD", cwd=synced["checkout"])
+    out = promote.pull_checkout(app)
+    assert not out["ok"] and out["code"] == "detached"
+
+
+async def test_pull_endpoint_answers_with_the_new_head_or_a_409(client, synced):
+    response = await client.post("/api/system/pull")
+    assert response.status_code == 200 and response.json()["after"] == synced["third"]
+    (synced["checkout"] / "notes.md").write_text("local edit\n", encoding="utf-8")
+    response = await client.post("/api/system/pull")
+    assert response.status_code == 409 and "uncommitted" in response.json()["detail"]
+
+
 async def test_promote_endpoint_requires_a_ref(client):
     assert (await client.post("/api/system/promote", json={})).status_code == 400
 

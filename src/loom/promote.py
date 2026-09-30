@@ -18,6 +18,11 @@ and a handler cannot run before the `ask` it is gated by (decided 2026-09-20, 03
                         `skip_tests` tells the supervisor to leave out the suite
                         (2026-09-29); the approval card shows it among the arguments.
 
+`pull_checkout` is the first half of "Update from remote" (2026-09-29): it fast-forwards
+the development checkout from its upstream, so a commit verified and pushed from another
+machine can be promoted here without a terminal. The System page then plans and
+promotes the new head through the ordinary path, with the suite skipped.
+
 `request_promotion` is the one codepath for steps 1–3 — the tool and
 `POST /api/system/promote` both call it, so a click and a model call cannot disagree.
 Steps 4–10 belong to the supervisor, which also runs the test suite, inside the release
@@ -33,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -57,10 +63,13 @@ POLL_SECONDS = 2.0
 # git (subprocess; no GitPython — 03 §19)
 # ---------------------------------------------------------------------------------
 def _git(*args: str, cwd: Path | str, timeout: float = 120.0) -> tuple[bool, str]:
-    """Run git and return (ok, output). A missing git is a failure like any other."""
+    """Run git and return (ok, output). A missing git is a failure like any other, and
+    git never prompts: a fetch that needs credentials it does not have fails instead of
+    waiting on a terminal nobody is watching."""
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     try:
         proc = subprocess.run(
-            ["git", *args], cwd=str(cwd), capture_output=True, text=True, timeout=timeout
+            ["git", *args], cwd=str(cwd), capture_output=True, text=True, timeout=timeout, env=env,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f"git: {exc}"
@@ -201,6 +210,88 @@ def plan(app: Any, ref: str) -> Plan:
         changed_files=changed, protected_files=protected, dirty_files=dirty,
         clean=not dirty, worktree=worktree.replace("\\", "/"), repo=str(repo).replace("\\", "/"),
     )
+
+
+# ---------------------------------------------------------------------------------
+# update from remote: fast-forward the development checkout (2026-09-29)
+# ---------------------------------------------------------------------------------
+def checkout_root(app: Any) -> Path | None:
+    """The development checkout: the repo the backend runs from, or, when that is a
+    release, the checkout it was built from. A release's origin is a local path (the
+    supervisor's mirror clones the checkout), the checkout's origin is the real remote,
+    so follow local-directory origins until one is not."""
+    repo = repo_root(app)
+    for _ in range(3):  # release worktree -> checkout; one spare hop
+        if repo is None:
+            return None
+        ok, url = _git("remote", "get-url", "origin", cwd=repo)
+        target = Path(url.strip()) if ok and url.strip() else None
+        if target is None or not target.is_dir() or not (target / ".git").exists():
+            return repo
+        repo = target
+    return repo
+
+
+def pull_checkout(app: Any) -> dict[str, Any]:
+    """Fetch the checkout's upstream and fast-forward its branch. Returns
+    `{ok, code, message, checkout, branch, upstream, before, after, commits, live_commit}`;
+    `code` is `ok|no_repo|detached|no_upstream|dirty|fetch_failed|diverged`. It never
+    merges, rebases or stashes: anything but a clean fast-forward is refused with the
+    reason, because the checkout is the person's working tree."""
+    root = checkout_root(app)
+    live = repo_root(app)
+    _, head = _git("rev-parse", "HEAD", cwd=live) if live else (False, "")
+    out: dict[str, Any] = {"ok": False, "code": "no_repo", "message": "", "checkout": "",
+                           "branch": "", "upstream": "", "before": "", "after": "",
+                           "commits": [], "live_commit": head.strip().splitlines()[-1] if head.strip() else ""}
+    if root is None:
+        out["message"] = "this install has no source checkout, so there is nothing to update"
+        return out
+    out["checkout"] = str(root).replace("\\", "/")
+
+    def refuse(code: str, message: str) -> dict[str, Any]:
+        out.update(code=code, message=message)
+        return out
+
+    ok, branch = _git("symbolic-ref", "--short", "-q", "HEAD", cwd=root)
+    if not ok or not branch.strip():
+        return refuse("detached", f"the checkout at {out['checkout']} is not on a branch")
+    out["branch"] = branch.strip()
+    ok, upstream = _git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", cwd=root)
+    if not ok or not upstream.strip():
+        return refuse("no_upstream", f"branch {out['branch']} has no upstream to pull from")
+    out["upstream"] = upstream.strip().splitlines()[-1]
+    ok, status = _git("status", "--porcelain", cwd=root)
+    dirty = [line.strip().split(None, 1)[-1] for line in status.splitlines() if line.strip()] if ok else []
+    if dirty:
+        return refuse("dirty", f"the checkout at {out['checkout']} has uncommitted changes "
+                               f"({', '.join(dirty[:10])}); commit or stash them first")
+    remote = out["upstream"].split("/", 1)[0]
+    ok, fetched = _git("fetch", "--prune", remote, cwd=root)
+    if not ok:
+        return refuse("fetch_failed", f"could not fetch {remote}: {fetched[-500:]}")
+    _, before = _git("rev-parse", "HEAD", cwd=root)
+    out["before"] = before.strip()
+    ok, counts = _git("rev-list", "--left-right", "--count", "HEAD...@{u}", cwd=root)
+    ahead, behind = (int(n) for n in counts.split()) if ok and len(counts.split()) == 2 else (0, 0)
+    if ahead and behind:
+        return refuse("diverged", f"{out['branch']} and {out['upstream']} have diverged "
+                                  f"({ahead} local, {behind} remote commit(s)); reconcile them in a terminal")
+    if behind:
+        ok, merged = _git("merge", "--ff-only", "@{u}", cwd=root)
+        if not ok:
+            return refuse("diverged", f"could not fast-forward {out['branch']}: {merged[-500:]}")
+    _, after = _git("rev-parse", "HEAD", cwd=root)
+    out["after"] = after.strip()
+    if out["after"] != out["before"]:
+        _, log_ = _git("log", "--oneline", f"{out['before']}..{out['after']}", cwd=root)
+        out["commits"] = [line for line in log_.splitlines() if line.strip()]
+    pulled = len(out["commits"])
+    state = f"pulled {pulled} commit(s)" if pulled else "already up to date with the remote"
+    live_note = "; that is the live commit" if out["after"] == out["live_commit"] else ""
+    out.update(ok=True, code="ok",
+               message=f"{out['branch']} {state} at {out['after'][:7]}{live_note}")
+    return out
 
 
 def _is_protected(app: Any, repo: Path, relative: str) -> bool:

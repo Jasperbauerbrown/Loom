@@ -1304,3 +1304,9 @@ sessions do not re-litigate.
   checkbox); the supervisor then writes a SKIPPED `tests` stage instead of running it,
   and still probes and watches health. The model may set it only when the person told
   it to for that promotion (tool prose), and the approval card shows it.
+- **2026-09-29** — **"Update from remote" is one button, not a sync service.** Pulling
+  verified work onto another machine meant a terminal pull plus a full promotion there.
+  The System page's button fast-forwards the checkout from its upstream
+  (`POST /system/pull`, refusing anything but a clean fast-forward) and promotes the new
+  head with the suite skipped. Rejected: a pushed "verified" marker (pushing already says
+  it) and automatic polling or promotion (the person decides when a machine updates).

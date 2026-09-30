@@ -1,7 +1,9 @@
 // Release & promotion (03 §15, §13.1). The flow is plan-before-promote: a ref is
 // resolved by `/system/promote/plan` first, the protected paths in the diff are shown,
 // and the Promote button stays disabled until they are acknowledged. "Skip the test
-// suite" is off for every new plan and is repeated in the confirmation. Progress is the
+// suite" is off for every new plan and is repeated in the confirmation. "Update from
+// remote" pulls the checkout, then runs that same flow on the new head with the suite
+// skipped (it was verified where it was pushed from). Progress is the
 // persisted `promote.log` plus the live `promote.progress` events the store collects —
 // the backend is restarted mid-promotion, so the file is the source of truth.
 
@@ -28,6 +30,7 @@ export function PromotePanel() {
   const [ref, setRef] = useState("");
   const [plan, setPlan] = useState<PromotePlan | null>(null);
   const [planning, setPlanning] = useState(false);
+  const [pulling, setPulling] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
   const [skipTests, setSkipTests] = useState(false);
@@ -39,18 +42,42 @@ export function PromotePanel() {
     void store.loadPromote();
   }, []);
 
-  async function doPlan() {
+  async function doPlan(target = ref.trim()): Promise<PromotePlan | null> {
     setPlanning(true);
     setPlanError(null);
     setAcknowledged(false);
     setSkipTests(false);
     try {
-      setPlan(await api.promotePlan(ref.trim()));
+      const planned = await api.promotePlan(target);
+      setPlan(planned);
+      return planned;
     } catch (e) {
       setPlan(null);
       setPlanError(e instanceof ApiError ? e.message : String((e as Error)?.message ?? e));
+      return null;
     } finally {
       setPlanning(false);
+    }
+  }
+
+  async function doUpdate() {
+    setPulling(true);
+    try {
+      const pulled = await store.guard(() => api.pullCheckout());
+      if (!pulled) return;
+      if (pulled.after === pulled.live_commit) {
+        store.toast("info", "Already up to date", pulled.message);
+        return;
+      }
+      store.toast("info", "Pulled from remote", pulled.message);
+      setRef(pulled.after);
+      const planned = await doPlan(pulled.after);
+      if (!planned?.ok) return;
+      setSkipTests(true);
+      // Protected paths still need the checkbox above; otherwise go straight to confirm.
+      if (planned.protected_files.length === 0) setConfirmPromote(true);
+    } finally {
+      setPulling(false);
     }
   }
 
@@ -143,7 +170,7 @@ export function PromotePanel() {
             placeholder="main / commit sha"
           />
         </FieldRow>
-        <Button disabled={!ref.trim() || planning} onClick={doPlan}>
+        <Button disabled={!ref.trim() || planning} onClick={() => void doPlan()}>
           {planning ? <Spinner /> : null} Plan
         </Button>
         <Button
@@ -153,6 +180,13 @@ export function PromotePanel() {
           onClick={() => setConfirmPromote(true)}
         >
           Promote
+        </Button>
+        <Button
+          disabled={!supervised || pulling || planning}
+          title="Pull the checkout from its remote, then promote the new head with the test suite skipped"
+          onClick={() => void doUpdate()}
+        >
+          {pulling ? <Spinner /> : null} Update from remote
         </Button>
         <Button variant="danger" disabled={!supervised} onClick={() => setConfirmRollback(true)}>
           Rollback

@@ -25,6 +25,7 @@ import type {
   Procedure,
   PromoteLogEntry,
   PromotePlan,
+  PullResult,
   ProtectedPath,
   Provider,
   QueuedMessage,
@@ -395,6 +396,8 @@ export const api = {
    *  `skip_tests` leaves the supervisor's suite out; the promote log says so. */
   promote: (ref: string, acknowledge_protected = false, skip_tests = false) =>
     post<unknown>("/system/promote", { ref, acknowledge_protected, skip_tests }),
+  /** Fast-forward the checkout from its upstream; 409 when dirty, detached or diverged. */
+  pullCheckout: () => post<PullResult>("/system/pull", {}),
   promoteLog: (limit = 200) => get<PromoteLogEntry[]>("/system/promote/log", { limit }),
   rollback: () => post<unknown>("/system/rollback"),
   restart: () => post<unknown>("/system/restart"),
