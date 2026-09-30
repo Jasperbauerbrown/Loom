@@ -150,7 +150,7 @@ export function NowBoard() {
   const recent = processes.filter((p) => !isLive(p) && p.conversation_id === deskId).slice(0, 5);
 
   return (
-    <aside className="h-full overflow-y-auto border-l border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-900/50">
+    <aside className="h-full overflow-y-auto border-l border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-900">
       <h2 className="mb-3 px-1 text-[13px] font-semibold">Now</h2>
 
       <Group title="Needs you" count={needsYou}>

@@ -1437,7 +1437,7 @@ over the WS stream (one reducer per event type) with REST for initial loads. Bui
 (system / light / dark → the `dark` class on `<html>`) and `general.palette` (default,
 slate, warm, forest, nord, mono, grape, ocean, ember, moss → `data-palette` on `<html>`). A palette only overrides
 the Tailwind colour variables the components already use (`neutral-*` surfaces, `sky-*`
-accent, `white`), so no component knows palettes exist; the last applied pair is
+accent, `white`), so no component knows palettes exist (a palette may add a dark-only block, `:root.dark[data-palette=…]`, still only variables — nord uses one to order its Polar Night stops); the last applied pair is
 remembered in `localStorage` so a reload does not flash the default look.
 
 A render error is an expected input, not the end of the session: one `ErrorBoundary`
@@ -1470,25 +1470,79 @@ is the last line, not a licence: the shapes crossing the bus are one shape (§12
   the daily-log note), artifacts, a **Processes** section (the processes this
   conversation started: status, pid, log size, Stop, log drawer; §9.6), and "spawned by" links. Create-thread dialog: goal,
   notes to pin (optional), roots, role.
-- **Overview** (`#/overview`). The desk and every active thread (running,
-  waiting_approval, waiting_input, newest first) side by side, each pane the same
-  conversation component and composer — read one, answer another, without switching
-  screens. A "Show finished" toggle adds done/failed threads (archived never appear); a
-  column selector (1/2/3, remembered per browser) sets the grid. Panes fill the
-  viewport in equal-height rows and scroll internally; the page scrolls when there are
-  more than fit. No threads: the desk pane plus a one-line "No active threads".
+- **Overview** (`#/overview`). A workspace of conversation windows, each the same
+  conversation component and composer as the desk and threads, so you can read one and
+  answer another without switching screens. **Which windows show:** the desk and every
+  active thread (running, waiting_approval, waiting_input, newest first) appear by
+  themselves. Anything opened from the **Windows** menu (every non-archived
+  conversation, finished and idle threads included, with a filter) stays open until you
+  close it, even after its thread finishes. A closed window stays closed until you bring
+  it back from that menu, even if its thread becomes active again; the toolbar and dock
+  show "N hidden". Archived conversations never have a window. **Windows** move by the
+  title bar and resize from any edge or corner. They snap to the workspace edges and to
+  neighbouring windows' edges (10px threshold, 8px gap; hold Alt to place freely) with
+  guide lines, stay inside the workspace, and have a minimum size of 300×220. Clicking
+  a window raises it. Double-clicking the title bar maximises or restores it within the
+  workspace, and dragging a maximised window pulls it out under the pointer. Minimise
+  sends a window to the **dock**, a strip of chips (status dot, title, approval count,
+  unread dot) where a click focuses or restores and a click on the focused chip
+  minimises. Each title bar shows the status, role · preset (when the window is wide
+  enough), pending approvals, an unread dot, and open-full-screen / minimise / maximise /
+  close. **Attention:** a window and its chip glow amber while the conversation waits on
+  you (waiting_* or a pending approval) and sky while it runs. A window with events since
+  you last focused it shows an unread dot; opening the Overview does not count as news.
+  **Layout commands:** Tile (an auto grid, or the presets 1 / 2 / 3 columns and side by
+  side), Cascade, and Reset (confirmed: re-tile everything, restore minimised and
+  maximised windows, bring back closed ones, and drop hand-opened ones). A new window
+  goes into the first free spot beside the others without moving them. If there is no
+  free spot it cascades onto a corner no other window occupies. **New thread** uses the
+  Threads create dialog and opens the thread as a focused window.
+  **Keyboard:** Alt+] / Alt+[ cycle windows and put the caret in that window's composer,
+  Alt+Enter maximises or restores, Esc restores a maximised window, Alt+M minimises, and
+  Alt+T tiles. A shortcuts popover lists them. The layout (geometry as fractions of the
+  workspace, stacking, minimised / maximised / closed / opened) is remembered per browser
+  (`loom.overview.layout`). It is validated on load and pruned of archived or deleted
+  conversations, and it survives resizing the window. **Narrower than 900px** the windows
+  stack in page flow: there is no dragging, and minimise collapses a window to its
+  header. With no windows open, the workspace offers the Windows menu.
 - **Vault**. Tree by type; note view/edit (Markdown editor with wikilink completion and
   frontmatter form); backlinks and outgoing links; search (fused); **Recent changes**
   (git log with diff and revert); wanted notes (dangling links); core block fill meters;
   a compact graph panel (see **Graph** below) with an "Open in Graph" link.
-- **Graph** (`#/graph/<path>`). Vault links and conversations as one inline-SVG picture,
-  no physics. Focused mode centres a note in hop rings — a deterministic radial tree,
-  each ring's nodes inside their parent's angular sector — and clicking a node expands
-  its own depth-1 graph in place; a whole-vault mode lays every note on one circle with
-  low-opacity chord edges. An optional conversations layer overlays the desk/thread tree
-  (`GET /conversations/graph`) as rounded, status-tinted nodes with dashed spawn edges
-  and pinned/walkthrough edges into note nodes. Pan/zoom is plain SVG-viewBox pointer
-  math; note types get a small fixed set of hues, shown in a legend.
+- **Graph** (`#/graph/<path>`). Vault links and conversations drawn as one inline-SVG
+  picture. A layout is a deterministic seed followed by a fixed-step force relaxation
+  (`ui/src/lib/graphForce.ts`: Fruchterman–Reingold with Barnes–Hut repulsion that fades
+  beyond a range, springs, linear gravity and fixed nodes, no randomness, no live
+  simulation). The same graph always lands in the same place. Focused mode seeds a radial tree in
+  hop rings around the note (each ring's nodes inside their parent's angular sector) and
+  keeps the centre fixed at the origin. Whole-vault mode (first 500 notes) seeds a
+  link-ordered sunflower spiral, so it clusters by links and leaves unlinked notes in a
+  ring nearby. Clicking a note selects it and expands its depth-1 graph in place. That
+  expansion, like a layer toggle, re-relaxes warm from the positions already on screen,
+  so the picture barely moves. Positions and the view ease between layouts (skipped
+  under `prefers-reduced-motion`). Node size follows degree. The centre gets an accent
+  halo and the selection an accent ring. Edges are soft curves (the two halves of a
+  mutual link bow apart). Hovering or selecting a node highlights its neighbourhood and
+  fades the rest. Labels carry a background halo and are decluttered by priority (centre,
+  selection, hovered node, highlighted neighbours, then hubs), each placed below, above,
+  right or left of its node and never over another label or a dot. More labels appear
+  as you zoom in. Pan, wheel-zoom around the cursor, and +/−/fit buttons (keys `+` `-`
+  `0`) work on a view stored as a centre and a scale, so the viewBox keeps the element's
+  aspect ratio. Dragging a node pins it until "release dragged nodes" re-runs the layout.
+  Double-clicking a note centres on it (on a conversation, it opens the conversation),
+  and Escape clears the selection. A search box centres on any note. The selected-node
+  card shows title, type, path and outgoing/backlink counts in view, with Open note /
+  Centre here / Open conversation. The optional conversations layer
+  (`GET /conversations/graph`) overlays the desk/thread tree as status-tinted pills,
+  with dashed spawn edges and violet pinned / dotted amber walkthrough edges into note
+  nodes. A floating legend lists note types with counts (hover a type to pick its notes
+  out) and, with the layer on, status tints and edge kinds. Every colour is a Tailwind
+  utility or `currentColor`, so the palettes and dark mode apply. Note types get a fixed
+  hue per vault folder type (project, person, device, topic, core, course, procedure,
+  connector, log); other types hash into the same set. The accent `sky-*` ramp is kept
+  for emphasis, never used as a type hue. The Vault side panel embeds a compact variant
+  with the same drawing: fixed height, a depth selector, hover and click-to-open, a
+  small type legend and an "Open in Graph" link.
 - **Approvals** badge + list (pending across all conversations), each with the
   classifier reason if any and the `allow always` option; when the guard suggested a
   root, adding it is an opt-in checkbox (unchecked by default) that pairs with

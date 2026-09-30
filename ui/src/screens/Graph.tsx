@@ -8,7 +8,7 @@ import type { VaultTreeNode } from "../lib/types";
 import { store, useStore } from "../lib/store";
 import { navigate, graphPath } from "../lib/router";
 import { GraphView, recallGraphCenter } from "../components/vault/GraphView";
-import { Spinner } from "../components/ui";
+import { Empty, Spinner } from "../components/ui";
 
 function firstNotePath(nodes: VaultTreeNode[] | null): string | null {
   for (const node of nodes ?? []) {
@@ -38,6 +38,14 @@ export function Graph({ path }: { path: string }) {
   }, [path, fallback, vaultTree]);
 
   const center = path || fallback;
+
+  if (!center && vaultTree !== null && !firstNotePath(vaultTree)) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <Empty>The vault has no notes yet — the graph appears once there is one.</Empty>
+      </div>
+    );
+  }
 
   if (!center) {
     return (

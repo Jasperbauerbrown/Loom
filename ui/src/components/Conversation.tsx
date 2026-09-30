@@ -68,7 +68,7 @@ function ImageStrip({
 function ToolRow({ call, onArtifact, awaiting }: { call: ToolCall; onArtifact: (id: string) => void; awaiting?: boolean }) {
   const result = call.result;
   return (
-    <div className="my-1.5 rounded-md border border-neutral-200 bg-neutral-50 px-2.5 py-1.5 dark:border-neutral-800 dark:bg-neutral-900/60">
+    <div className="my-1.5 rounded-md border border-neutral-200 bg-neutral-50 px-2.5 py-1.5 dark:border-neutral-800 dark:bg-neutral-900">
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-mono text-[12.5px] font-medium">{call.name}</span>
         {call.policy ? (
@@ -425,7 +425,10 @@ export function StatusLine({ status }: { status: string }) {
   );
 }
 
-export function Conversation({ id }: { id: string }) {
+/** `dense`: the tighter layout for small windows (the Overview's): less padding, a
+ *  one-line composer to start with a shorter placeholder, and no status badge by the
+ *  composer — the window's own header shows the status. Behaviour is identical. */
+export function Conversation({ id, dense = false }: { id: string; dense?: boolean }) {
   const events = useStore((s) => s.events[id] ?? EMPTY, Object.is);
   const streaming = useStore((s) => s.streaming[id], Object.is);
   const toolCalls = useStore((s) => s.toolCalls, Object.is);
@@ -563,13 +566,13 @@ export function Conversation({ id }: { id: string }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto px-4 py-2">
+      <div ref={scroller} onScroll={onScroll} className={cls("min-h-0 flex-1 overflow-y-auto py-2", dense ? "px-3" : "px-4")}>
         <div ref={content}>
         {!historyComplete && events.length > 0 ? (
           <div className="py-2 text-center text-[11.5px] text-neutral-500">scroll up for earlier events</div>
         ) : null}
         {events.length === 0 && !streaming ? (
-          <div className="py-16 text-center text-[13px] text-neutral-500">
+          <div className={cls("text-center text-[13px] text-neutral-500", dense ? "py-8" : "py-16")}>
             Nothing here yet. Say something below.
           </div>
         ) : null}
@@ -606,9 +609,9 @@ export function Conversation({ id }: { id: string }) {
         </div>
       </div>
 
-      <div className="border-t border-neutral-200 px-4 py-2.5 dark:border-neutral-800">
-        <div className="mb-1.5 flex items-center gap-2">
-          <StatusLine status={status} />
+      <div className={cls("border-t border-neutral-200 dark:border-neutral-800", dense ? "px-3 py-2" : "px-4 py-2.5")}>
+        <div className={cls("mb-1.5 flex items-center gap-2", dense && !running && !conversation?.step_budget && "hidden")}>
+          {dense ? null : <StatusLine status={status} />}
           {conversation?.step_budget ? (
             <span className="text-[11.5px] text-neutral-500">step budget {conversation.step_budget}</span>
           ) : null}
@@ -697,11 +700,15 @@ export function Conversation({ id }: { id: string }) {
                 void send();
               }
             }}
-            rows={Math.min(8, Math.max(2, draft.split("\n").length))}
+            rows={Math.min(dense ? 6 : 8, Math.max(dense ? 1 : 2, draft.split("\n").length))}
             placeholder={
-              running
-                ? "Message Loom — queued until the next step (Enter sends)"
-                : "Message Loom — Enter sends, Shift+Enter for a newline"
+              dense
+                ? running
+                  ? "Queued until the next step"
+                  : "Message — Enter sends"
+                : running
+                  ? "Message Loom — queued until the next step (Enter sends)"
+                  : "Message Loom — Enter sends, Shift+Enter for a newline"
             }
             className={cls(
               "w-full resize-none rounded-md border border-neutral-300 bg-white px-3 py-2 text-[13px] focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 dark:border-neutral-700 dark:bg-neutral-900",

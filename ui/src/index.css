@@ -8,7 +8,17 @@
      badges, focus rings) and `white`; Tailwind v4 utilities read those ramps through
      `var(--color-*)`, so a palette is nothing more than a block of variable overrides
      below, and no component knows palettes exist. Each ramp keeps Tailwind's ordering
-     (50 lightest → 950 darkest) because the `dark:` variants lean on the 800–950 end. */
+     (50 lightest → 950 darkest) because the `dark:` variants lean on the 800–950 end.
+     A palette whose dark side needs different stops adds a `:root.dark[data-palette=…]`
+     block (nord); it is still only variables.
+   Tinted neutral ramps (forest, grape, ocean, ember, moss, nord's light side) are built
+   in OKLCH on one recipe (2026-09-29): Tailwind neutral's lightness per stop, with the
+   dark end spread (800 29.5%, 900 22%, 950 13.5%) so body/panel/border separate; chroma
+   capped at 0.028 so mid-grey muted text stays grey, not dusty; the palette's own hue.
+   The page stays pure `white` — a tinted white washed every light screen and flattened
+   white against neutral-50. Contrast gates (WCAG): body text >= 12:1, muted
+   (neutral-500) on white >= 4.5:1, white on sky-600 >= 4.5:1, sky-400 on neutral-900
+   >= 4.5:1. */
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
@@ -61,10 +71,13 @@ body {
   --color-sky-950: #1e1b4b;
 }
 
-/* warm: stone greys on a paper-tinted white, amber accent. */
+/* warm: stone greys on a paper-tinted white, amber accent. The paper is lighter and
+   neutral-50 a touch deeper (2026-09-29) so the sidebar separates from the page (50 on
+   white 1.05:1, was 1.02). Contrast: neutral-900 on white 17.2:1, white on sky-600
+   4.94:1, sky-400 on neutral-900 10.5:1. */
 :root[data-palette="warm"] {
-  --color-white: #fffcf7;
-  --color-neutral-50: #fafaf9;
+  --color-white: #fffdf9;
+  --color-neutral-50: #f8f7f4;
   --color-neutral-100: #f5f5f4;
   --color-neutral-200: #e7e5e4;
   --color-neutral-300: #d6d3d1;
@@ -88,21 +101,21 @@ body {
   --color-sky-950: #451a03;
 }
 
-/* forest: green-tinted greys, emerald accent. Neutral lightness matches warm's ramp
-   (hue/chroma kept) so text and borders read as clearly. */
+/* forest: green-tinted greys (hue 155), emerald accent. Contrast (2026-09-29):
+   neutral-900 on white 17.2:1, neutral-500 on white 4.69:1, white on sky-600 5.48:1,
+   sky-400 on neutral-900 8.97:1; dark 900/950 1.16:1, 800 on 950 1.45:1. */
 :root[data-palette="forest"] {
-  --color-white: #fbfdfb;
-  --color-neutral-50: #f8fbf8;
-  --color-neutral-100: #f1f7f2;
-  --color-neutral-200: #dfe9e1;
-  --color-neutral-300: #c8d9cc;
-  --color-neutral-400: #91ab98;
-  --color-neutral-500: #5d7b65;
-  --color-neutral-600: #415b49;
-  --color-neutral-700: #334639;
-  --color-neutral-800: #1c2a21;
-  --color-neutral-900: #121d16;
-  --color-neutral-950: #070c08;
+  --color-neutral-50: #f9fbf9;
+  --color-neutral-100: #f2f6f3;
+  --color-neutral-200: #e0e7e2;
+  --color-neutral-300: #cdd7d0;
+  --color-neutral-400: #97a59b;
+  --color-neutral-500: #67786c;
+  --color-neutral-600: #46574c;
+  --color-neutral-700: #35443a;
+  --color-neutral-800: #243028;
+  --color-neutral-900: #141d17;
+  --color-neutral-950: #050a06;
   --color-sky-50: #ecfdf5;
   --color-sky-100: #d1fae5;
   --color-sky-200: #a7f3d0;
@@ -116,39 +129,56 @@ body {
   --color-sky-950: #022c22;
 }
 
-/* nord: Snow Storm for the light stops, Polar Night for the dark ones, Frost accent.
-   Light/mid stops re-lit to warm's ramp (hue kept) for clarity; 800-950 stay the
-   Nord Polar Night colours — dark-mode contrast there is already high and they are
-   the palette's identity. */
+/* nord: Snow Storm light side, Polar Night dark side, Frost accent. The light side
+   uses the tinted-ramp recipe (hue 262): neutral-900 on white 17.3:1 (was 9.6). */
 :root[data-palette="nord"] {
-  --color-white: #f8f9fb;
-  --color-neutral-50: #f7faff;
-  --color-neutral-100: #f1f5fc;
-  --color-neutral-200: #e0e6f1;
-  --color-neutral-300: #ccd4e2;
-  --color-neutral-400: #9aa4b6;
-  --color-neutral-500: #687386;
-  --color-neutral-600: #48546a;
-  --color-neutral-700: #374154;
-  --color-neutral-800: #434c5e;
-  --color-neutral-900: #3b4252;
-  --color-neutral-950: #2e3440;
+  --color-neutral-50: #f9fafc;
+  --color-neutral-100: #f3f5f9;
+  --color-neutral-200: #e2e5ec;
+  --color-neutral-300: #cfd4de;
+  --color-neutral-400: #99a1af;
+  --color-neutral-500: #6a7484;
+  --color-neutral-600: #4a5362;
+  --color-neutral-700: #39404e;
+  --color-neutral-800: #272d38;
+  --color-neutral-900: #161b23;
+  --color-neutral-950: #06080e;
   --color-sky-50: #eef5f8;
   --color-sky-100: #dcecf1;
   --color-sky-200: #bfdfe8;
   --color-sky-300: #a3d1de;
   --color-sky-400: #88c0d0;
   --color-sky-500: #81a1c1;
-  --color-sky-600: #5e81ac;
-  --color-sky-700: #4d6b91;
+  --color-sky-600: #4c6f99;
+  --color-sky-700: #42618a;
   --color-sky-800: #3f5877;
   --color-sky-900: #33465e;
   --color-sky-950: #232f40;
 }
 
+/* nord, dark side: Polar Night in order — nord0 #2e3440 panels (900) on a deeper
+   #242933 body, nord1/nord3 for raised surfaces and borders. The old ramp had 700
+   darker than 900 (borders on panels 1.02:1) and a nord0 body under 500 muted text
+   (2.6:1). Now: neutral-100 on 950 13.4:1, neutral-400 6.5:1, neutral-500 4.6:1,
+   700 on 900 1.69:1, white on sky-600 5.20:1, sky-400 on neutral-900 6.24:1, badge
+   sky-300 on sky-950 5.9:1. */
+:root.dark[data-palette="nord"] {
+  --color-neutral-400: #a3adbf;
+  --color-neutral-500: #8791a5;
+  --color-neutral-600: #616e88;
+  --color-neutral-700: #4c566a;
+  --color-neutral-800: #3b4252;
+  --color-neutral-900: #2e3440;
+  --color-neutral-950: #242933;
+  --color-sky-950: #33455f;
+}
+
 /* mono: zinc greys and a grey accent. Primary buttons keep `text-white`, so the accent
-   stops they use stay dark enough in both themes: 700 (light mode) is near-black and
-   600 (dark mode) a mid grey, while 300–400 (dark-mode links) stay light. */
+   stops they use stay dark in both themes: 700 (light mode) is zinc-700 and 600 (dark
+   mode) a mid grey, while 300–400 (dark-mode links) stay light. The 700–950 accent
+   stops are a real ramp now (2026-09-29): sky-950 was the page colour, so dark badges
+   had no background (1.00:1); now 1.34:1 with sky-300 text at 8.9:1. White on sky-700
+   10.4:1, on sky-600 7.7:1. */
 :root[data-palette="mono"] {
   --color-neutral-50: #fafafa;
   --color-neutral-100: #f4f4f5;
@@ -168,26 +198,27 @@ body {
   --color-sky-400: #b4b4bb;
   --color-sky-500: #71717a;
   --color-sky-600: #52525b;
-  --color-sky-700: #27272a;
-  --color-sky-800: #18181b;
-  --color-sky-900: #101012;
-  --color-sky-950: #09090b;
+  --color-sky-700: #3f3f46;
+  --color-sky-800: #333338;
+  --color-sky-900: #2c2c30;
+  --color-sky-950: #27272a;
 }
 
-/* grape: purple-tinted greys, violet accent. Neutral lightness matches warm's ramp. */
+/* grape: purple-tinted greys (hue 300), violet accent. Contrast (2026-09-29):
+   neutral-900 on white 17.3:1, neutral-500 on white 4.76:1, white on sky-600 5.70:1,
+   sky-400 on neutral-900 6.37:1; dark 900/950 1.16:1, 800 on 950 1.43:1. */
 :root[data-palette="grape"] {
-  --color-white: #fdfcfe;
-  --color-neutral-50: #faf9fb;
-  --color-neutral-100: #f5f4f8;
-  --color-neutral-200: #e7e4ec;
-  --color-neutral-300: #d6d1e0;
-  --color-neutral-400: #a79eb8;
-  --color-neutral-500: #786c8d;
-  --color-neutral-600: #584e68;
-  --color-neutral-700: #443c51;
-  --color-neutral-800: #292331;
-  --color-neutral-900: #1b1821;
-  --color-neutral-950: #0b090e;
+  --color-neutral-50: #fafafc;
+  --color-neutral-100: #f6f4f9;
+  --color-neutral-200: #e6e4eb;
+  --color-neutral-300: #d5d2dd;
+  --color-neutral-400: #a39ead;
+  --color-neutral-500: #767082;
+  --color-neutral-600: #544f60;
+  --color-neutral-700: #423d4c;
+  --color-neutral-800: #2e2a36;
+  --color-neutral-900: #1c1922;
+  --color-neutral-950: #09070d;
   --color-sky-50: #f5f3ff;
   --color-sky-100: #ede9fe;
   --color-sky-200: #ddd6fe;
@@ -201,20 +232,21 @@ body {
   --color-sky-950: #2e1065;
 }
 
-/* ocean: teal-tinted greys, teal accent. Neutral lightness matches warm's ramp. */
+/* ocean: teal-tinted greys (hue 192), teal accent. Contrast (2026-09-29):
+   neutral-900 on white 17.3:1, neutral-500 on white 4.66:1, white on sky-600 5.47:1,
+   sky-400 on neutral-900 9.27:1; dark 900/950 1.16:1, 800 on 950 1.45:1. */
 :root[data-palette="ocean"] {
-  --color-white: #fbfdfd;
-  --color-neutral-50: #f8fafa;
-  --color-neutral-100: #f2f6f5;
-  --color-neutral-200: #dfe8e7;
-  --color-neutral-300: #c8d7d6;
-  --color-neutral-400: #90a9a7;
-  --color-neutral-500: #5a7a77;
-  --color-neutral-600: #3f5a58;
-  --color-neutral-700: #314544;
-  --color-neutral-800: #1b2928;
-  --color-neutral-900: #121c1b;
-  --color-neutral-950: #070c0c;
+  --color-neutral-50: #f8fbfa;
+  --color-neutral-100: #f1f6f6;
+  --color-neutral-200: #dee7e7;
+  --color-neutral-300: #cad8d7;
+  --color-neutral-400: #92a6a4;
+  --color-neutral-500: #617977;
+  --color-neutral-600: #405756;
+  --color-neutral-700: #304543;
+  --color-neutral-800: #20302f;
+  --color-neutral-900: #111d1d;
+  --color-neutral-950: #030a09;
   --color-sky-50: #f0fdfa;
   --color-sky-100: #ccfbf1;
   --color-sky-200: #99f6e4;
@@ -228,20 +260,21 @@ body {
   --color-sky-950: #042f2e;
 }
 
-/* ember: warm orange-tinted greys, orange accent. Neutral lightness matches warm's ramp. */
+/* ember: orange-tinted greys (hue 60), orange accent. Contrast (2026-09-29):
+   neutral-900 on white 17.3:1, neutral-500 on white 4.76:1, white on sky-600 5.18:1,
+   sky-400 on neutral-900 7.65:1; dark 900/950 1.16:1, 800 on 950 1.44:1. */
 :root[data-palette="ember"] {
-  --color-white: #fefefb;
-  --color-neutral-50: #fbf9f8;
-  --color-neutral-100: #f7f4f2;
-  --color-neutral-200: #eae4e0;
-  --color-neutral-300: #ddd1c9;
-  --color-neutral-400: #b1a093;
-  --color-neutral-500: #846e5c;
-  --color-neutral-600: #615042;
-  --color-neutral-700: #4c3e33;
-  --color-neutral-800: #2d241c;
-  --color-neutral-900: #1e1913;
-  --color-neutral-950: #0d0a07;
+  --color-neutral-50: #fcfaf8;
+  --color-neutral-100: #f8f4f1;
+  --color-neutral-200: #eae4df;
+  --color-neutral-300: #dcd2cb;
+  --color-neutral-400: #ac9e94;
+  --color-neutral-500: #807063;
+  --color-neutral-600: #5e4f43;
+  --color-neutral-700: #4b3d32;
+  --color-neutral-800: #352a22;
+  --color-neutral-900: #211912;
+  --color-neutral-950: #0c0704;
   --color-sky-50: #fff7ed;
   --color-sky-100: #ffedd5;
   --color-sky-200: #fed7aa;
@@ -255,23 +288,23 @@ body {
   --color-sky-950: #431407;
 }
 
-/* moss: deep green-on-dark; yellow-green accent, darker and moodier than forest.
-   Neutrals re-lit to warm's ramp 2026-09-29 (hue kept). Contrast (WCAG, computed
-   2026-09-29): white on sky-600 4.96:1, sky-400 on neutral-900 8.7:1, neutral-900 on
-   white 17.0:1, neutral-400 on neutral-950 8.0:1, sky-600 on neutral-950 3.97:1. */
+/* moss: deep green-on-dark; yellow-green accent, darker and moodier than forest: a
+   yellower hue (132) and a little more chroma than the other tinted ramps (0.032 max),
+   so it no longer shares forest's light stops. Contrast (2026-09-29): neutral-900 on
+   white 17.2:1, neutral-500 on white 4.66:1, white on sky-600 4.96:1, sky-400 on
+   neutral-900 8.60:1, neutral-400 on neutral-950 7.79:1; dark 800 on 950 1.45:1. */
 :root[data-palette="moss"] {
-  --color-white: #fbfdfa;
-  --color-neutral-50: #f8fbf8;
-  --color-neutral-100: #f1f7f2;
-  --color-neutral-200: #dfe9e1;
-  --color-neutral-300: #c8d9cc;
-  --color-neutral-400: #95aa98;
-  --color-neutral-500: #637a5e;
-  --color-neutral-600: #465a43;
-  --color-neutral-700: #364635;
-  --color-neutral-800: #1e2a1e;
-  --color-neutral-900: #131c15;
-  --color-neutral-950: #070c08;
+  --color-neutral-50: #f9fbf8;
+  --color-neutral-100: #f3f6f1;
+  --color-neutral-200: #e2e7df;
+  --color-neutral-300: #d0d7cb;
+  --color-neutral-400: #9ba594;
+  --color-neutral-500: #6c7864;
+  --color-neutral-600: #4c5644;
+  --color-neutral-700: #3a4433;
+  --color-neutral-800: #273021;
+  --color-neutral-900: #161d11;
+  --color-neutral-950: #060a04;
   --color-sky-50: #f4faec;
   --color-sky-100: #e3f2cd;
   --color-sky-200: #cbe5a3;
