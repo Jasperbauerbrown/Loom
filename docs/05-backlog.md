@@ -6,6 +6,13 @@ it here and record it where it now lives (`03`, the decision log).
 
 Each item names its source. "Audit" means `reference/tool-parity-audit.md` §3.
 
+## LAN access (Jasper, 2026-09-29)
+- **Token prompt in the web UI.** With `general.lan_token` set, every `/api` call and
+  `/ws` need the token, but nothing in the UI ever writes `loom_token` to browser
+  storage — a LAN browser (and loopback, once the token is set) gets 401 with no way
+  in short of devtools. On a 401, prompt for the token, store it, retry; a Settings
+  entry to clear it. Mostly `ui/src/lib/api.ts` plus one dialog.
+
 ## Dropped
 - **Ignore-aware search** (audit #4) — dropped 2026-09-29: not felt as friction yet;
   revisit only if it bites.
