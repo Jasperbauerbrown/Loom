@@ -272,7 +272,7 @@ export const ConversationWindow = memo(function ConversationWindow({
             stacked ? "" : maximized ? "cursor-default" : "cursor-grab active:cursor-grabbing",
             focused
               ? "border-neutral-200 bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-900"
-              : "border-neutral-200 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900/60",
+              : "border-neutral-200 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900",
           )}
           style={{ touchAction: "none" }}
         >

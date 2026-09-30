@@ -173,7 +173,7 @@ export function NoteEditor({
       </div>
 
       {fmFields || fmRaw !== null ? (
-        <div className="mb-3 rounded-md border border-neutral-200 bg-neutral-50 px-3 py-1 dark:border-neutral-800 dark:bg-neutral-900/60">
+        <div className="mb-3 rounded-md border border-neutral-200 bg-neutral-50 px-3 py-1 dark:border-neutral-800 dark:bg-neutral-900">
           {fmFields ? (
             editing ? (
               <div>

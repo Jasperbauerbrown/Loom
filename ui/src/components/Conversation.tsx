@@ -68,7 +68,7 @@ function ImageStrip({
 function ToolRow({ call, onArtifact, awaiting }: { call: ToolCall; onArtifact: (id: string) => void; awaiting?: boolean }) {
   const result = call.result;
   return (
-    <div className="my-1.5 rounded-md border border-neutral-200 bg-neutral-50 px-2.5 py-1.5 dark:border-neutral-800 dark:bg-neutral-900/60">
+    <div className="my-1.5 rounded-md border border-neutral-200 bg-neutral-50 px-2.5 py-1.5 dark:border-neutral-800 dark:bg-neutral-900">
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-mono text-[12.5px] font-medium">{call.name}</span>
         {call.policy ? (

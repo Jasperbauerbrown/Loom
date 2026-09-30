@@ -197,7 +197,7 @@ export default function App() {
 
   return (
     <div className="flex h-full">
-      <nav className="flex w-52 shrink-0 flex-col gap-1 border-r border-neutral-200 bg-neutral-50 p-2.5 dark:border-neutral-800 dark:bg-neutral-900/60">
+      <nav className="flex w-52 shrink-0 flex-col gap-1 border-r border-neutral-200 bg-neutral-50 p-2.5 dark:border-neutral-800 dark:bg-neutral-900">
         <div className="mb-2 flex items-center justify-between px-1">
           <a href={href("/")} className="text-[15px] font-semibold tracking-tight">
             Loom
