@@ -13,6 +13,18 @@ Each item names its source. "Audit" means `reference/tool-parity-audit.md` §3.
   in short of devtools. On a 401, prompt for the token, store it, retry; a Settings
   entry to clear it. Mostly `ui/src/lib/api.ts` plus one dialog.
 
+## Cancel (Jasper, 2026-09-29)
+- **Cancel must stop everything the turn is doing.** Today `POST …/cancel` sets a flag
+  that the runner reads between steps and on each streamed delta (`runner.py`
+  `_call_model`), then closes the HTTP stream. Gaps: a model call still waiting in the
+  priority queue or in prompt processing (no delta yet) is not interrupted; a running
+  tool call (`shell` up to its timeout, `http`, MCP) runs to completion because the
+  dispatcher's `wait_for` watches only the timeout; background processes the turn
+  started keep running; sub-threads the turn spawned keep running. Wanted: cancel
+  wakes the queue wait and the tool wait (one cancellation signal both await), kills
+  the in-flight process of a foreground `shell`, stops processes this turn started,
+  cancels the turn's own sub-threads, and the UI says what was stopped.
+
 ## Dropped
 - **Ignore-aware search** (audit #4) — dropped 2026-09-29: not felt as friction yet;
   revisit only if it bites.
