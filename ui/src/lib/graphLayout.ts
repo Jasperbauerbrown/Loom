@@ -1,6 +1,9 @@
-// Pure layout math for the Graph screen (03 §13.1): deterministic radial trees and
-// circle layouts, no physics simulation. Kept dependency-free and framework-free so it
-// tests without touching React or the DOM.
+// Pure layout math for the Graph screen (03 §13.1). A layout is a deterministic seed
+// (a radial tree around a focused note, or a link-ordered sunflower spiral for the
+// whole vault) followed by a fixed number of force-directed relaxation steps
+// (`forceLayout` in `./graphForce`): no randomness, no live simulation, the same graph
+// always lands in the same place. This module holds the seeds, merging and boxes; both
+// are dependency-free and framework-free so they test without touching React or the DOM.
 
 export interface LayoutNode {
   id: string;
