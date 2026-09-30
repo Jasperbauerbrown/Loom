@@ -37,6 +37,18 @@ Each item names its source. "Audit" means `reference/tool-parity-audit.md` §3.
   the check. Reproduce with a test per suspect, fix, and make the tool row say why a
   desk call asked despite the switch.
 
+## Promotion (Jasper, 2026-09-29)
+- **Promote must find `uv` on a machine where it is not on PATH.** The 2026-09-29
+  21:02 promotion of `f0ff96e` failed at `uv sync`: `supervisor/__main__.py`
+  `uv_command()` tries `shutil.which("uv")`, then `sys.executable -m uv` — and under
+  `uv run` that interpreter is the project venv, which has no `uv` module (the same
+  failure as 2026-09-28; the retry at 21:41 got past it, cause unknown). On this box uv
+  is a pip user package under system Python 3.11, reachable only as `python -m uv`.
+  Wanted: a resolution chain that ends in something that works — PATH, the venv, the
+  user-site `Scripts/uv.exe`, every `py -0p` interpreter's `-m uv` — remembered once it
+  succeeds, and a `system.uv_path` setting as the override, UI-visible like every
+  other knob. The failure message names what was tried.
+
 ## Dropped
 - **Ignore-aware search** (audit #4) — dropped 2026-09-29: not felt as friction yet;
   revisit only if it bites.
