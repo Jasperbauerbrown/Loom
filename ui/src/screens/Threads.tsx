@@ -63,7 +63,15 @@ function orderTree(threads: Conversation[]): { row: Conversation; indent: number
   return out;
 }
 
-function NewThreadDialog({ onClose }: { onClose: () => void }) {
+/** The create-thread dialog. By default a created thread is opened full-screen; the
+ *  Overview passes `onCreated` to open it as a window instead. */
+export function NewThreadDialog({
+  onClose,
+  onCreated,
+}: {
+  onClose: () => void;
+  onCreated?: (created: Conversation) => void;
+}) {
   const presets = useStore((s) => s.presets, (a, b) => a.length === b.length);
   const [goal, setGoal] = useState("");
   const [notes, setNotes] = useState<string[]>([]);
@@ -100,7 +108,8 @@ function NewThreadDialog({ onClose }: { onClose: () => void }) {
     setSubmitting(false);
     if (!created) return;
     onClose();
-    navigate(`/c/${created.id}`);
+    if (onCreated) onCreated(created);
+    else navigate(`/c/${created.id}`);
   }
 
   return (
