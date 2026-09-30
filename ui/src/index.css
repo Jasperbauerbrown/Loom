@@ -88,20 +88,21 @@ body {
   --color-sky-950: #451a03;
 }
 
-/* forest: green-tinted greys, emerald accent. */
+/* forest: green-tinted greys, emerald accent. Neutral lightness matches warm's ramp
+   (hue/chroma kept) so text and borders read as clearly. */
 :root[data-palette="forest"] {
   --color-white: #fbfdfb;
-  --color-neutral-50: #f4f7f4;
-  --color-neutral-100: #e8eee9;
-  --color-neutral-200: #d3ddd5;
-  --color-neutral-300: #b3c3b7;
-  --color-neutral-400: #86a08d;
-  --color-neutral-500: #62806a;
-  --color-neutral-600: #4a6452;
-  --color-neutral-700: #3b4f41;
-  --color-neutral-800: #2b3a30;
-  --color-neutral-900: #1c2720;
-  --color-neutral-950: #0d130f;
+  --color-neutral-50: #f8fbf8;
+  --color-neutral-100: #f1f7f2;
+  --color-neutral-200: #dfe9e1;
+  --color-neutral-300: #c8d9cc;
+  --color-neutral-400: #91ab98;
+  --color-neutral-500: #5d7b65;
+  --color-neutral-600: #415b49;
+  --color-neutral-700: #334639;
+  --color-neutral-800: #1c2a21;
+  --color-neutral-900: #121d16;
+  --color-neutral-950: #070c08;
   --color-sky-50: #ecfdf5;
   --color-sky-100: #d1fae5;
   --color-sky-200: #a7f3d0;
@@ -115,17 +116,20 @@ body {
   --color-sky-950: #022c22;
 }
 
-/* nord: Snow Storm for the light stops, Polar Night for the dark ones, Frost accent. */
+/* nord: Snow Storm for the light stops, Polar Night for the dark ones, Frost accent.
+   Light/mid stops re-lit to warm's ramp (hue kept) for clarity; 800-950 stay the
+   Nord Polar Night colours — dark-mode contrast there is already high and they are
+   the palette's identity. */
 :root[data-palette="nord"] {
   --color-white: #f8f9fb;
-  --color-neutral-50: #eceff4;
-  --color-neutral-100: #e5e9f0;
-  --color-neutral-200: #d8dee9;
-  --color-neutral-300: #bfc7d5;
-  --color-neutral-400: #a3adbf;
-  --color-neutral-500: #7b869a;
-  --color-neutral-600: #616e85;
-  --color-neutral-700: #4c566a;
+  --color-neutral-50: #f7faff;
+  --color-neutral-100: #f1f5fc;
+  --color-neutral-200: #e0e6f1;
+  --color-neutral-300: #ccd4e2;
+  --color-neutral-400: #9aa4b6;
+  --color-neutral-500: #687386;
+  --color-neutral-600: #48546a;
+  --color-neutral-700: #374154;
   --color-neutral-800: #434c5e;
   --color-neutral-900: #3b4252;
   --color-neutral-950: #2e3440;
@@ -170,20 +174,20 @@ body {
   --color-sky-950: #09090b;
 }
 
-/* grape: purple-tinted greys, violet accent. */
+/* grape: purple-tinted greys, violet accent. Neutral lightness matches warm's ramp. */
 :root[data-palette="grape"] {
   --color-white: #fdfcfe;
-  --color-neutral-50: #f7f6f8;
-  --color-neutral-100: #efeef2;
-  --color-neutral-200: #dddae2;
-  --color-neutral-300: #c2bdcc;
-  --color-neutral-400: #9d94ad;
-  --color-neutral-500: #7b6f90;
-  --color-neutral-600: #655b76;
-  --color-neutral-700: #4f475c;
-  --color-neutral-800: #393342;
-  --color-neutral-900: #25212b;
-  --color-neutral-950: #141217;
+  --color-neutral-50: #faf9fb;
+  --color-neutral-100: #f5f4f8;
+  --color-neutral-200: #e7e4ec;
+  --color-neutral-300: #d6d1e0;
+  --color-neutral-400: #a79eb8;
+  --color-neutral-500: #786c8d;
+  --color-neutral-600: #584e68;
+  --color-neutral-700: #443c51;
+  --color-neutral-800: #292331;
+  --color-neutral-900: #1b1821;
+  --color-neutral-950: #0b090e;
   --color-sky-50: #f5f3ff;
   --color-sky-100: #ede9fe;
   --color-sky-200: #ddd6fe;
@@ -197,20 +201,20 @@ body {
   --color-sky-950: #2e1065;
 }
 
-/* ocean: teal-tinted greys, teal accent. */
+/* ocean: teal-tinted greys, teal accent. Neutral lightness matches warm's ramp. */
 :root[data-palette="ocean"] {
   --color-white: #fbfdfd;
-  --color-neutral-50: #f6f8f8;
-  --color-neutral-100: #eef2f1;
-  --color-neutral-200: #dae2e1;
-  --color-neutral-300: #bdcccb;
-  --color-neutral-400: #94adab;
-  --color-neutral-500: #6f908d;
-  --color-neutral-600: #5b7674;
-  --color-neutral-700: #475c5a;
-  --color-neutral-800: #334241;
-  --color-neutral-900: #212b2a;
-  --color-neutral-950: #121717;
+  --color-neutral-50: #f8fafa;
+  --color-neutral-100: #f2f6f5;
+  --color-neutral-200: #dfe8e7;
+  --color-neutral-300: #c8d7d6;
+  --color-neutral-400: #90a9a7;
+  --color-neutral-500: #5a7a77;
+  --color-neutral-600: #3f5a58;
+  --color-neutral-700: #314544;
+  --color-neutral-800: #1b2928;
+  --color-neutral-900: #121c1b;
+  --color-neutral-950: #070c0c;
   --color-sky-50: #f0fdfa;
   --color-sky-100: #ccfbf1;
   --color-sky-200: #99f6e4;
@@ -224,20 +228,20 @@ body {
   --color-sky-950: #042f2e;
 }
 
-/* ember: warm orange-tinted greys, orange accent. */
+/* ember: warm orange-tinted greys, orange accent. Neutral lightness matches warm's ramp. */
 :root[data-palette="ember"] {
   --color-white: #fefefb;
-  --color-neutral-50: #f9f7f6;
-  --color-neutral-100: #f2efed;
-  --color-neutral-200: #e3ddd9;
-  --color-neutral-300: #cec3bb;
-  --color-neutral-400: #b09f92;
-  --color-neutral-500: #947d6b;
-  --color-neutral-600: #796758;
-  --color-neutral-700: #5f5045;
-  --color-neutral-800: #443a31;
-  --color-neutral-900: #2c2620;
-  --color-neutral-950: #181411;
+  --color-neutral-50: #fbf9f8;
+  --color-neutral-100: #f7f4f2;
+  --color-neutral-200: #eae4e0;
+  --color-neutral-300: #ddd1c9;
+  --color-neutral-400: #b1a093;
+  --color-neutral-500: #846e5c;
+  --color-neutral-600: #615042;
+  --color-neutral-700: #4c3e33;
+  --color-neutral-800: #2d241c;
+  --color-neutral-900: #1e1913;
+  --color-neutral-950: #0d0a07;
   --color-sky-50: #fff7ed;
   --color-sky-100: #ffedd5;
   --color-sky-200: #fed7aa;
@@ -252,22 +256,22 @@ body {
 }
 
 /* moss: deep green-on-dark; yellow-green accent, darker and moodier than forest.
-   Contrast (WCAG, computed 2026-09-28): white on sky-600 4.96:1, sky-400 on
-   neutral-900 7.98:1, neutral-900 on white 15.98:1, neutral-400 on neutral-950 7.0:1,
-   sky-600 on neutral-950 3.79:1 (dark-mode button fill, shipped range 2.72-4.08). */
+   Neutrals re-lit to warm's ramp 2026-09-29 (hue kept). Contrast (WCAG, computed
+   2026-09-29): white on sky-600 4.96:1, sky-400 on neutral-900 8.7:1, neutral-900 on
+   white 17.0:1, neutral-400 on neutral-950 8.0:1, sky-600 on neutral-950 3.97:1. */
 :root[data-palette="moss"] {
   --color-white: #fbfdfa;
-  --color-neutral-50: #f4f7f4;
-  --color-neutral-100: #e8eee9;
-  --color-neutral-200: #d3ddd5;
-  --color-neutral-300: #b3c3b7;
-  --color-neutral-400: #8fa392;
-  --color-neutral-500: #6b8266;
-  --color-neutral-600: #556a52;
-  --color-neutral-700: #425241;
-  --color-neutral-800: #2f3b2f;
-  --color-neutral-900: #1a241c;
-  --color-neutral-950: #0d130f;
+  --color-neutral-50: #f8fbf8;
+  --color-neutral-100: #f1f7f2;
+  --color-neutral-200: #dfe9e1;
+  --color-neutral-300: #c8d9cc;
+  --color-neutral-400: #95aa98;
+  --color-neutral-500: #637a5e;
+  --color-neutral-600: #465a43;
+  --color-neutral-700: #364635;
+  --color-neutral-800: #1e2a1e;
+  --color-neutral-900: #131c15;
+  --color-neutral-950: #070c08;
   --color-sky-50: #f4faec;
   --color-sky-100: #e3f2cd;
   --color-sky-200: #cbe5a3;
