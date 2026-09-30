@@ -1731,10 +1731,15 @@ not running.
 *Planning from a release* (2026-09-28). A backend running from a release plans in a
 worktree of the supervisor's bare mirror (`releases/src.git`), whose origin is the
 development checkout and which learns of new commits only when a release is built. So
-`plan` fetches a ref the mirror cannot resolve from that origin — `git fetch --prune
---tags origin` then `git fetch origin <ref>`, the same two commands `create_release` runs
-— and retries once; the second self-promotion had refused a commit made in the checkout
-with "does not resolve". The `uv` that builds and tests a release is found on PATH before `python -m uv`
+`plan`, when its repo is that mirror (a worktree whose `core.bare` is true), fetches
+from the origin *before* resolving any ref — `git fetch --prune --tags origin` then
+`git fetch origin <ref>`, the same two commands `create_release` runs. The second
+self-promotion had refused a commit made in the checkout with "does not resolve"; and
+until 2026-09-30 the fetch ran only for a ref that did not resolve, so a branch name
+resolved to the mirror's stale copy (where it stood at the last promotion) and the plan
+and approval card showed no change while the supervisor, which fetches first, built the
+new head. A development checkout (not bare, origin a real remote) still fetches only a
+ref it cannot resolve. The `uv` that builds and tests a release is found on PATH before `python -m uv`
 (2026-09-28): the supervisor's interpreter is whatever launched `loom serve`, under
 `uv run` the project virtualenv, which has no `uv` module unless one was installed by
 hand — and a later sync prunes it, which is how the first promotion failed "No module

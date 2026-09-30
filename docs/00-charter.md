@@ -1346,3 +1346,10 @@ sessions do not re-litigate.
   - Contrast gates, recorded above each block in `index.css`: body text ≥ 12:1, muted neutral-500 on white ≥ 4.5:1, white on accent-600 ≥ 4.5:1, accent-400 on neutral-900 ≥ 4.5:1.
   - Default and slate are unchanged (stock Tailwind). Note that default's own white on sky-600 is 4.02:1.
 - **2026-09-29** — **Solid dark surfaces.** The nav, now board, tool rows, the note editor's frontmatter box and Overview title bars used translucent `neutral-900/50–60` over the body, which blended panels into the page (a haze source the palette pass found); they are solid `neutral-900` now. Row dividers (`neutral-800/70`) and the Overview's recessed workspace stay translucent on purpose.
+- **2026-09-30** — **A plan in the mirror fetches first.** Planning from a release
+  resolved a branch name against the supervisor's mirror, whose branches stand where
+  they were at the last promotion, so `promote main` showed "no change" on the plan and
+  approval card while the supervisor (which fetches before building) built the new head.
+  `plan` now fetches from the mirror's origin (the local checkout, so cheap) before
+  resolving any ref whenever its repo is the bare mirror; a development checkout keeps
+  fetching only a ref it cannot resolve, since its origin is the network remote.

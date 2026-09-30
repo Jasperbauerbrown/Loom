@@ -150,6 +150,14 @@ def _worktree_for(repo: Path, ref: str, commit: str) -> str:
     return found
 
 
+def _plans_in_mirror(repo: Path) -> bool:
+    """True when `repo` is a release worktree of the supervisor's bare mirror
+    (`releases/src.git`): a worktree reads its repository's config, and only the mirror
+    is bare. A development checkout is not, and its origin is a real remote."""
+    ok, out = _git("config", "--bool", "--get", "core.bare", cwd=repo)
+    return ok and out.strip() == "true"
+
+
 def _fetch_from_origin(repo: Path, ref: str) -> bool:
     """A backend running from a release resolves refs in the supervisor's mirror
     (`releases/src.git`), which learns of new commits only when a release is built. A
@@ -168,7 +176,8 @@ def _fetch_from_origin(repo: Path, ref: str) -> bool:
 def plan(app: Any, ref: str) -> Plan:
     """Resolve `ref`, diff it against the live commit, and mark the protected paths.
     Pure reading of the checkout: it never writes a file, never asks, never promotes
-    (a ref the mirror lacks is fetched from its origin, which adds objects, not files)."""
+    (in the supervisor's mirror every plan first fetches from its origin, which adds
+    objects, not files)."""
     ref = (ref or "").strip()
     if not ref:
         return Plan(ref=ref, ok=False, code="bad_ref", error="ref is empty")
@@ -176,8 +185,15 @@ def plan(app: Any, ref: str) -> Plan:
     if repo is None:
         return Plan(ref=ref, ok=False, code="no_repo",
                     error="this install has no source checkout, so there is nothing to promote")
+    # In the mirror a branch name resolves to wherever that branch stood at the last
+    # promotion, so fetch first, as `create_release` does: otherwise the plan (and the
+    # approval card) describe a stale commit while the supervisor builds the new one
+    # (2026-09-30). The origin is the local checkout, so this is cheap.
+    mirror = _plans_in_mirror(repo)
+    if mirror:
+        _fetch_from_origin(repo, ref)
     ok, out = _git("rev-parse", "--verify", f"{ref}^{{commit}}", cwd=repo)
-    if not ok and _fetch_from_origin(repo, ref):
+    if not ok and not mirror and _fetch_from_origin(repo, ref):
         ok, out = _git("rev-parse", "--verify", f"{ref}^{{commit}}", cwd=repo)
     if not ok:
         return Plan(ref=ref, ok=False, code="bad_ref", repo=str(repo),

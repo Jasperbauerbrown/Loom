@@ -132,6 +132,38 @@ def test_plan_fetches_a_ref_that_only_the_mirror_origin_has(app, repo, monkeypat
     assert not still_bad.ok and still_bad.code == "bad_ref"
 
 
+def test_plan_in_the_mirror_fetches_before_resolving_a_branch(app, repo, monkeypatch, tmp_path):
+    """The mirror already has `main`, just stale: a plan must still see where the
+    checkout's `main` stands now, not where it stood at the last promotion (2026-09-30)."""
+    mirror = tmp_path / "releases" / "src.git"
+    mirror.parent.mkdir(parents=True)
+    git("clone", "-q", "--bare", str(repo["path"]), str(mirror), cwd=tmp_path)
+    git("config", "remote.origin.fetch", "+refs/heads/*:refs/heads/*", cwd=mirror)
+    release = tmp_path / "releases" / "rel-1"
+    git("worktree", "add", "-q", "--detach", str(release), repo["third"], cwd=mirror)
+    monkeypatch.setattr(promote, "repo_root", lambda _app: release)
+
+    git("checkout", "-q", "main", cwd=repo["path"])
+    (repo["path"] / "notes.md").write_text("four\n", encoding="utf-8")
+    git("add", "-A", cwd=repo["path"])
+    git("commit", "-qm", "four", cwd=repo["path"])
+    fourth = git("rev-parse", "HEAD", cwd=repo["path"])
+    assert git("rev-parse", "main", cwd=mirror) == repo["third"]  # stale before the plan
+
+    plan = promote.plan(app, "main")
+    assert plan.ok and plan.commit == fourth and plan.changed_files == ["notes.md"]
+
+
+def test_plan_in_a_checkout_does_not_fetch_a_ref_it_resolves(app, repo, monkeypatch):
+    """A development checkout's origin is a real remote: a ref that resolves locally is
+    planned without touching the network."""
+    calls: list[str] = []
+    monkeypatch.setattr(promote, "_fetch_from_origin", lambda _repo, ref: calls.append(ref) or True)
+    live_at(repo, repo["first"])
+    assert promote.plan(app, "main").ok
+    assert calls == []
+
+
 def test_plan_without_a_checkout_says_so(app, monkeypatch):
     monkeypatch.setattr(promote, "repo_root", lambda _app: None)
     plan = promote.plan(app, "HEAD")
