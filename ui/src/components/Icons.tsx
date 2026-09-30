@@ -128,3 +128,64 @@ export const IconGraph = ({ className }: P) => (
     <path d="M4 5 6.8 7M12 5 9.2 7M5 11.5 7 9.2M11.5 11 9 9.2" />
   </svg>
 );
+
+export const IconMinimize = ({ className }: P) => (
+  <svg {...base(className)}>
+    <path d="M4 11.5h8" />
+  </svg>
+);
+
+export const IconMaximize = ({ className }: P) => (
+  <svg {...base(className)}>
+    <rect x="3.5" y="3.5" width="9" height="9" rx="1" />
+  </svg>
+);
+
+export const IconRestore = ({ className }: P) => (
+  <svg {...base(className)}>
+    <rect x="3" y="5.5" width="7.5" height="7.5" rx="1" />
+    <path d="M5.5 5.5V3.5a.5.5 0 0 1 .5-.5h6.5a.5.5 0 0 1 .5.5V10a.5.5 0 0 1-.5.5h-2" />
+  </svg>
+);
+
+export const IconExternal = ({ className }: P) => (
+  <svg {...base(className)}>
+    <path d="M9.5 2.5h4v4M13.5 2.5 8 8" />
+    <path d="M11.5 9.5v3.5a.5.5 0 0 1-.5.5H3a.5.5 0 0 1-.5-.5V5a.5.5 0 0 1 .5-.5h3.5" />
+  </svg>
+);
+
+export const IconTile = ({ className }: P) => (
+  <svg {...base(className)}>
+    <rect x="2.5" y="2.5" width="11" height="11" rx="1" />
+    <path d="M8 2.5v11M8 8h5.5" />
+  </svg>
+);
+
+export const IconCascade = ({ className }: P) => (
+  <svg {...base(className)}>
+    <path d="M2.5 8.5v-6h6" />
+    <path d="M4.5 10.5v-6h6" />
+    <rect x="6.5" y="6.5" width="7" height="7" rx="0.75" />
+  </svg>
+);
+
+export const IconWindows = ({ className }: P) => (
+  <svg {...base(className)}>
+    <rect x="2.5" y="3" width="11" height="10" rx="1" />
+    <path d="M2.5 5.5h11" />
+  </svg>
+);
+
+export const IconKeyboard = ({ className }: P) => (
+  <svg {...base(className)}>
+    <rect x="1.5" y="4" width="13" height="8" rx="1.25" />
+    <path d="M4 6.5h.01M6.5 6.5h.01M9 6.5h.01M11.5 6.5h.01M5 9.5h6" />
+  </svg>
+);
+
+export const IconChevronDown = ({ className }: P) => (
+  <svg {...base(className)}>
+    <path d="m4 6 4 4 4-4" />
+  </svg>
+);
