@@ -1,6 +1,7 @@
 // Release & promotion (03 §15, §13.1). The flow is plan-before-promote: a ref is
 // resolved by `/system/promote/plan` first, the protected paths in the diff are shown,
-// and the Promote button stays disabled until they are acknowledged. Progress is the
+// and the Promote button stays disabled until they are acknowledged. "Skip the test
+// suite" is off for every new plan and is repeated in the confirmation. Progress is the
 // persisted `promote.log` plus the live `promote.progress` events the store collects —
 // the backend is restarted mid-promotion, so the file is the source of truth.
 
@@ -29,6 +30,7 @@ export function PromotePanel() {
   const [planning, setPlanning] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
+  const [skipTests, setSkipTests] = useState(false);
   const [confirmPromote, setConfirmPromote] = useState(false);
   const [confirmRollback, setConfirmRollback] = useState(false);
   const [confirmRestart, setConfirmRestart] = useState(false);
@@ -41,6 +43,7 @@ export function PromotePanel() {
     setPlanning(true);
     setPlanError(null);
     setAcknowledged(false);
+    setSkipTests(false);
     try {
       setPlan(await api.promotePlan(ref.trim()));
     } catch (e) {
@@ -52,8 +55,9 @@ export function PromotePanel() {
   }
 
   async function doPromote() {
-    const ok = await store.guard(() => api.promote(ref.trim(), acknowledged));
-    if (ok !== undefined) store.toast("info", "Promotion started", ref.trim());
+    const ok = await store.guard(() => api.promote(ref.trim(), acknowledged, skipTests));
+    if (ok !== undefined)
+      store.toast("info", "Promotion started", skipTests ? `${ref.trim()} (tests skipped)` : ref.trim());
   }
 
   async function doRollback() {
@@ -134,6 +138,7 @@ export function PromotePanel() {
               setRef(e.target.value);
               setPlan(null);
               setAcknowledged(false);
+              setSkipTests(false);
             }}
             placeholder="main / commit sha"
           />
@@ -167,8 +172,8 @@ export function PromotePanel() {
               Live <span className="font-mono">{plan.current_commit.slice(0, 7) || "—"}</span>
             </span>
             <Badge tone={plan.clean ? "green" : "amber"}>{plan.clean ? "clean tree" : "dirty tree"}</Badge>
-            <Badge tone={plan.tests_required ? "sky" : "neutral"}>
-              {plan.tests_required ? "tests run before the swap" : "tests skipped"}
+            <Badge tone={skipTests ? "amber" : "sky"}>
+              {skipTests ? "tests skipped" : "tests run before the swap"}
             </Badge>
           </div>
 
@@ -195,6 +200,20 @@ export function PromotePanel() {
           ) : (
             <p className="mt-2 text-[12px] text-neutral-500">No protected paths in this diff.</p>
           )}
+
+          <label
+            className="mt-2 flex items-center gap-2 text-[12.5px] text-neutral-700 dark:text-neutral-300"
+            title="The probe and the health watch still run. Use when this commit already passed the suite elsewhere."
+          >
+            <input
+              type="checkbox"
+              checked={skipTests}
+              onChange={(e) => setSkipTests(e.target.checked)}
+              className="h-3.5 w-3.5"
+            />
+            Skip the test suite
+            <span className="text-neutral-500">(the probe and health watch still run)</span>
+          </label>
 
           {plan.dirty_files.length > 0 ? (
             <Collapsible summary={`${plan.dirty_files.length} uncommitted file(s)`}>
@@ -239,9 +258,10 @@ export function PromotePanel() {
           title="Promote"
           body={
             <>
-              This snapshots the database and vault, builds and probes a release at{" "}
-              <span className="font-mono">{plan?.short || ref.trim()}</span>, then swaps it in and restarts. A failed
-              probe rolls back automatically.
+              This snapshots the database and vault, builds a release at{" "}
+              <span className="font-mono">{plan?.short || ref.trim()}</span>,{" "}
+              {skipTests ? "skips the test suite, " : "runs the test suite in it, "}probes it, then swaps it in and
+              restarts. {skipTests ? "A failed probe" : "A failed suite or probe"} stops it before the swap.
               {needsAck ? " The protected files listed above will change." : ""}
             </>
           }

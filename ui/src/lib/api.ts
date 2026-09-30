@@ -391,9 +391,10 @@ export const api = {
   },
   /** What promoting `ref` would change; 400/409 for a bad ref or a dirty tree. */
   promotePlan: (ref: string) => get<PromotePlan>("/system/promote/plan", { ref }),
-  /** 202 on start; 409 with the protected-file list unless `acknowledge_protected`. */
-  promote: (ref: string, acknowledge_protected = false) =>
-    post<unknown>("/system/promote", { ref, acknowledge_protected }),
+  /** 202 on start; 409 with the protected-file list unless `acknowledge_protected`.
+   *  `skip_tests` leaves the supervisor's suite out; the promote log says so. */
+  promote: (ref: string, acknowledge_protected = false, skip_tests = false) =>
+    post<unknown>("/system/promote", { ref, acknowledge_protected, skip_tests }),
   promoteLog: (limit = 200) => get<PromoteLogEntry[]>("/system/promote/log", { limit }),
   rollback: () => post<unknown>("/system/rollback"),
   restart: () => post<unknown>("/system/restart"),

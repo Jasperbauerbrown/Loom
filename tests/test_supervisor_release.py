@@ -248,6 +248,31 @@ def test_promote_writes_previous_before_current_and_reports_every_stage(flow):
     assert (home / "snapshots").is_dir()
 
 
+def test_skip_tests_leaves_out_only_the_suite_and_logs_that_it_did(flow):
+    """2026-09-29: a skip is a `tests` stage that says SKIPPED, never a missing one;
+    the probe, swap and watchdog run as always."""
+    home, calls = flow
+    calls["suite"] = (False, "1 failed in 0.10s")  # would fail the promotion if it ran
+    supervisor = FakeSupervisor(home)
+    supervisor.set_current("R-OLD")
+    supervisor.do_promote("deadbeef", "conv1", skip_tests=True)
+
+    assert calls["tested"] == [] and calls["probed"] == ["R-NEW"]
+    assert supervisor.current() == "R-NEW"
+    assert [s for s, _ in stages(home)] == ["snapshot", "release", "tests", "probe", "swap", "watchdog", "done"]
+    tests_line = json.loads((home / "promote.log").read_text(encoding="utf-8").splitlines()[2])
+    assert tests_line["ok"] is True and "SKIPPED" in tests_line["message"]
+
+
+def test_a_promote_command_carries_skip_tests_to_the_flow(flow):
+    home, calls = flow
+    supervisor = FakeSupervisor(home)
+    supervisor.execute({"action": "promote", "ref": "deadbeef", "skip_tests": True})
+    assert calls["tested"] == []
+    supervisor.execute({"action": "promote", "ref": "deadbeef"})
+    assert calls["tested"] == [str(home / "releases" / "R-NEW")]
+
+
 def test_a_failing_suite_stops_before_the_probe_and_names_the_failure(flow):
     """The suite runs in the supervisor, in the release it built (2026-09-28): a failure
     is a `failed` stage with pytest's own summary, and nothing is probed or swapped."""

@@ -10,11 +10,13 @@ and a handler cannot run before the `ask` it is gated by (decided 2026-09-20, 03
 
     promote_plan(ref)   read-only: the commit, the changed files, which of them are
                         protected, whether the worktree is clean. Policy `allow`.
-    promote(ref, acknowledge_protected?)
+    promote(ref, acknowledge_protected?, skip_tests?)
                         the real thing. Policy `ask` (bootstrap row), so the dispatcher
                         has already put a human in the loop for the call itself; when
                         the diff touches protected paths the handler *additionally*
                         refuses until `acknowledge_protected` is set, naming the files.
+                        `skip_tests` tells the supervisor to leave out the suite
+                        (2026-09-29); the approval card shows it among the arguments.
 
 `request_promotion` is the one codepath for steps 1–3 — the tool and
 `POST /api/system/promote` both call it, so a click and a model call cannot disagree.
@@ -82,7 +84,6 @@ class Plan:
     dirty_files: list[str] = field(default_factory=list)
     clean: bool = True
     worktree: str = ""
-    tests_required: bool = True
     repo: str = ""
 
     def to_json(self) -> dict[str, Any]:
@@ -103,7 +104,8 @@ class Plan:
                          "and a human approval): " + ", ".join(self.protected_files))
         else:
             lines.append("no protected paths in this diff")
-        lines.append("the supervisor runs the test suite inside the built release before the swap")
+        lines.append("the supervisor runs the test suite inside the built release before the swap, "
+                     "unless the promotion is asked to skip it")
         if self.changed_files:
             shown = self.changed_files[:50]
             lines.append("changed:\n  " + "\n  ".join(shown))
@@ -208,9 +210,6 @@ def _is_protected(app: Any, repo: Path, relative: str) -> bool:
 
 
 # ---------------------------------------------------------------------------------
-# the test suite (03 §15.2 step 3)
-# ---------------------------------------------------------------------------------
-# ---------------------------------------------------------------------------------
 # steps 1–3, the one codepath (tool and REST both call this)
 # ---------------------------------------------------------------------------------
 async def request_promotion(
@@ -218,10 +217,12 @@ async def request_promotion(
     ref: str,
     conversation_id: str | None = None,
     acknowledge_protected: bool = False,
+    skip_tests: bool = False,
 ) -> dict[str, Any]:
     """Check and hand the ref to the supervisor. Returns
     `{ok, code, message, plan, output?}`; `code` is the failure class (03 §17), so
-    every caller can map one behaviour onto it."""
+    every caller can map one behaviour onto it. `skip_tests` is passed through: the
+    supervisor logs a skipped `tests` stage instead of running the suite."""
     plan_ = await asyncio.to_thread(plan, app, ref)
     payload: dict[str, Any] = {"ok": False, "code": plan_.code, "message": plan_.error,
                                "plan": plan_.to_json()}
@@ -246,7 +247,7 @@ async def request_promotion(
         return payload
 
     client = app.supervisor or SupervisorClient(app)
-    answer = await client.promote(plan_.ref, conversation_id or "")
+    answer = await client.promote(plan_.ref, conversation_id or "", skip_tests=skip_tests)
     if not answer.get("ok"):
         payload["code"] = "no_supervisor" if answer.get("error") == NOT_RUNNING else "supervisor_error"
         payload["message"] = str(answer.get("error") or "the supervisor refused the promotion")
@@ -258,14 +259,15 @@ async def request_promotion(
         if item["dismissed_at"] is None:
             items.dismiss(app, item["id"])
 
+    skipped = " with the test suite skipped" if skip_tests else ""
     if conversation_id:
         _system_event(
             app, conversation_id,
-            f"promotion of {plan_.short} handed to the supervisor; this turn ends here, and "
-            "the outcome arrives as a message after the restart",
+            f"promotion of {plan_.short} handed to the supervisor{skipped}; this turn ends "
+            "here, and the outcome arrives as a message after the restart",
         )
-    return {"ok": True, "code": "ok", "plan": plan_.to_json(),
-            "message": f"promotion of {plan_.short} ({plan_.ref}) handed to the supervisor"}
+    return {"ok": True, "code": "ok", "plan": plan_.to_json(), "skip_tests": skip_tests,
+            "message": f"promotion of {plan_.short} ({plan_.ref}) handed to the supervisor{skipped}"}
 
 
 def _system_event(app: Any, conversation_id: str, text: str) -> None:
@@ -330,8 +332,10 @@ class SupervisorClient:
     async def status(self) -> dict[str, Any]:
         return await self._call("GET", "/status")
 
-    async def promote(self, ref: str, conversation_id: str = "") -> dict[str, Any]:
-        return await self._call("POST", "/promote", {"ref": ref, "conversation_id": conversation_id})
+    async def promote(self, ref: str, conversation_id: str = "", skip_tests: bool = False) -> dict[str, Any]:
+        return await self._call("POST", "/promote", {
+            "ref": ref, "conversation_id": conversation_id, "skip_tests": skip_tests,
+        })
 
     async def rollback(self, conversation_id: str = "") -> dict[str, Any]:
         return await self._call("POST", "/rollback", {"conversation_id": conversation_id})
@@ -476,6 +480,7 @@ async def promote_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     outcome = await request_promotion(
         ctx.app, ref, ctx.conversation_id,
         acknowledge_protected=bool(args.get("acknowledge_protected")),
+        skip_tests=args.get("skip_tests") is True,
     )
     if not outcome["ok"]:
         content = str(outcome["message"])
@@ -484,7 +489,8 @@ async def promote_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         return ToolResult.error(content, code=outcome["code"], ref=ref)
     return ToolResult(
         content=str(outcome["message"]) + "; this turn ends here, and the outcome arrives as a message after the restart",
-        meta={"ends_turn": True, "ref": ref, "commit": outcome["plan"]["commit"]},
+        meta={"ends_turn": True, "ref": ref, "commit": outcome["plan"]["commit"],
+              "skip_tests": outcome["skip_tests"]},
     )
 
 
@@ -516,6 +522,12 @@ def tools() -> list[Tool]:
                         "description": "Set only after promote_plan listed protected paths and you "
                                        "are reporting them to the person; the call still needs "
                                        "their approval.",
+                    },
+                    "skip_tests": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Leave out the supervisor's test suite. Only when the "
+                                       "person has told you to skip it for this promotion.",
                     },
                 },
                 "required": ["ref"],

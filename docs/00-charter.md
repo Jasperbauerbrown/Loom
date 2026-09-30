@@ -1298,3 +1298,9 @@ sessions do not re-litigate.
   approval decided, a thread running again, a model configured, an MCP server
   connected, the next promotion) rather than leaving every item for a person to click;
   opening an item's target conversation marks it seen.
+- **2026-09-29** — **Promotion may skip the test suite, and says so.** The suite takes
+  eight minutes or more here, and a commit promoted on one machine was re-tested in full
+  when pulled to another. `promote` gains `skip_tests` (tool, REST and a System page
+  checkbox); the supervisor then writes a SKIPPED `tests` stage instead of running it,
+  and still probes and watches health. The model may set it only when the person told
+  it to for that promotion (tool prose), and the approval card shows it.

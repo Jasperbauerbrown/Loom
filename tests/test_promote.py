@@ -78,7 +78,6 @@ def test_plan_lists_the_changed_files_and_the_protected_ones(app, repo):
     assert plan.current_commit == repo["first"]
     assert sorted(plan.changed_files) == ["notes.md", "supervisor/__main__.py"]
     assert plan.protected_files == ["supervisor/__main__.py"]
-    assert plan.tests_required is True
     assert "PROTECTED" in plan.summary()
 
 
@@ -145,13 +144,18 @@ def test_plan_without_a_checkout_says_so(app, monkeypatch):
 @pytest.fixture
 def supervisor_ok(app, monkeypatch):
     seen: list[tuple[str, str]] = []
+    skips.clear()
 
-    async def _promote(self, ref, conversation_id=""):
+    async def _promote(self, ref, conversation_id="", skip_tests=False):
         seen.append((ref, conversation_id))
+        skips.append(skip_tests)
         return {"ok": True, "queued": "promote"}
 
     monkeypatch.setattr(promote.SupervisorClient, "promote", _promote)
     return seen
+
+
+skips: list[bool] = []  # what each handoff said about the suite, beside `supervisor_ok`
 
 
 def tool(app, name: str):
@@ -187,6 +191,36 @@ async def test_promote_proceeds_once_the_protected_paths_are_acknowledged(app, r
     assert supervisor_ok == [(repo["second"], app.desk_id())]
     last = events.last(app, app.desk_id(), 1, kinds=["system"])
     assert last and "promotion of" in last[0]["content"] and "this turn ends" in last[0]["content"]
+
+
+async def test_the_suite_runs_unless_the_call_asks_to_skip_it(app, repo, supervisor_ok):
+    live_at(repo, repo["second"])
+    result = await tool(app, "promote").handler(ctx_for(app), {"ref": repo["third"]})
+    assert result.ok and result.meta["skip_tests"] is False and skips == [False]
+    assert "skipped" not in result.content
+
+
+async def test_skip_tests_is_handed_to_the_supervisor_and_said_aloud(app, repo, supervisor_ok):
+    live_at(repo, repo["second"])
+    result = await tool(app, "promote").handler(ctx_for(app), {"ref": repo["third"], "skip_tests": True})
+    assert result.ok and result.meta["skip_tests"] is True and skips == [True]
+    assert "test suite skipped" in result.content
+    last = events.last(app, app.desk_id(), 1, kinds=["system"])
+    assert last and "test suite skipped" in last[0]["content"]
+
+
+async def test_only_a_real_true_skips_the_suite(app, repo, supervisor_ok):
+    """A stringly `"false"` from a model must not read as truthy and skip the tests."""
+    live_at(repo, repo["second"])
+    result = await tool(app, "promote").handler(ctx_for(app), {"ref": repo["third"], "skip_tests": "false"})
+    assert result.ok and skips == [False]
+
+
+def test_the_tool_offers_skip_tests_and_its_prose_forbids_skipping_unasked(app):
+    promote_tool = tool(app, "promote")
+    assert promote_tool.parameters["properties"]["skip_tests"]["type"] == "boolean"
+    assert "skip_tests" not in promote_tool.parameters["required"]
+    assert "Never set it on your own judgement" in promote_tool.description
 
 
 async def test_the_next_promotion_dismisses_the_previous_outcome_item(app, repo, supervisor_ok):
@@ -397,6 +431,15 @@ async def test_promote_endpoint_is_503_without_a_supervisor(client, repo):
     response = await client.post("/api/system/promote", json={"ref": repo["third"]})
     assert response.status_code == 503
     assert promote.NOT_RUNNING in response.json()["detail"]
+
+
+async def test_promote_endpoint_passes_skip_tests_through(client, repo, supervisor_ok):
+    live_at(repo, repo["second"])
+    response = await client.post("/api/system/promote", json={"ref": repo["third"], "skip_tests": True})
+    assert response.status_code == 200 and response.json()["skip_tests"] is True
+    assert skips == [True]
+    response = await client.post("/api/system/promote", json={"ref": repo["third"]})
+    assert response.status_code == 200 and skips == [True, False]
 
 
 async def test_promote_endpoint_requires_a_ref(client):
