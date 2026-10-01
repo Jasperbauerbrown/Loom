@@ -609,7 +609,15 @@ class Maintenance:
 
         args = call.arguments if isinstance(call.arguments, dict) else {}
         target = str(args.get("path") or "")
-        preview = str(args.get("content") or "")[:400]
+        # The preview must match the op's shape: a `replace` carries old/new, not
+        # `content`, and the card used to show nothing for it (2026-10-01). `new` is
+        # accepted as the name for `content` everywhere knowledge_write is (03 §8.4).
+        if str(args.get("op") or "") == "replace":
+            old = str(args.get("old") or "")[:200]
+            new = str(args.get("new") or args.get("content") or "")[:200]
+            preview = f"{old}\n→\n{new}".strip()
+        else:
+            preview = str(args.get("content") or args.get("new") or "")[:400]
         items.post(
             self.app,
             "knowledge",

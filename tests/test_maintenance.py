@@ -132,6 +132,26 @@ async def test_a_core_write_is_handed_back_to_the_person(app, fake):
     assert app.conversation(cid)["maint_watermark"] == events.max_id(app, cid)
     assert report["consolidated"][0]["writes"] == 0
     assert "- Metric units." not in app.vault.read("core/preferences.md").body
+    assert "- Metric units." in posted[0]["body"]  # the card previews the proposed write
+
+
+async def test_a_handed_back_replace_previews_old_and_new(app, fake):
+    """A `replace` carries old/new, not `content`: the now-board card must still show
+    the proposed edit (2026-10-01 — it used to show only the bare reason)."""
+    cid = app.desk_id()
+    events.append(app, cid, "user", "The bridge note moved.")
+    args = {"path": "core/conventions.md", "op": "replace", "old": "see [[old-note]]", "new": "see [[new-note]]"}
+    fake.on(
+        "maintenance",
+        responder(write(("knowledge_write", args)), Scripted(content="handed over")),
+    )
+
+    await app.maintenance.run("test")
+
+    posted = [i for i in items.list_items(app) if i["source"] == "maintenance"]
+    assert len(posted) == 1
+    assert "see [[old-note]]" in posted[0]["body"]
+    assert "see [[new-note]]" in posted[0]["body"]
 
 
 def test_batch_events_splits_oldest_first(app, monkeypatch):

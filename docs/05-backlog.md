@@ -6,6 +6,16 @@ it here and record it where it now lives (`03`, the decision log).
 
 Each item names its source. "Audit" means `reference/tool-parity-audit.md` §3.
 
+## Maintenance hand-backs (Jasper, 2026-10-01)
+- **An Apply button on handed-back writes.** When a maintenance pass hits an approval
+  gate (03 §8.6) the proposal lands on the now board with the exact tool call stored in
+  the item's `action` — but the UI renders only title, body and Dismiss, so "the person
+  can see it and do it themselves" means hand-editing the note. Wanted: an Apply action
+  on `knowledge` items that carry an `action`, backed by an endpoint that dispatches
+  the stored call with the click standing as the approval (same gate, now with a turnless
+  approver), marks the item dismissed, and reports the result on the item. The preview
+  half shipped 2026-10-01 (`_hand_back` renders old→new for replaces).
+
 ## LAN access (Jasper, 2026-09-29)
 - **Token prompt in the web UI.** With `general.lan_token` set, every `/api` call and
   `/ws` need the token, but nothing in the UI ever writes `loom_token` to browser
