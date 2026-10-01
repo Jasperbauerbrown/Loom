@@ -1353,3 +1353,16 @@ sessions do not re-litigate.
   `plan` now fetches from the mirror's origin (the local checkout, so cheap) before
   resolving any ref whenever its repo is the bare mirror; a development checkout keeps
   fetching only a ref it cannot resolve, since its origin is the network remote.
+- **2026-09-30** — **Judge prompt simplified; the unseen-script rule no longer argues
+  with the named-service exception.** A live turn ("please start the music bot and
+  printer dashboard") drew `ask` on `npm start` and `node server.js` with reasons that
+  conceded the user-request exception applied and then invoked "runs a script you were
+  not shown"; a localhost `curl` was also asked as an external effect. The flash judge
+  resolves conflicting rules conservatively, so the rules stop conflicting instead of
+  gaining caveats: the cannot-tell rule now covers only calls you cannot *read*
+  (encoding, substitution, garbled) — a project's own file run by name is an ordinary
+  call; the exception says outright that a user-named service's ordinary start command
+  needs no source inspection; reading from a service on this machine is listed as
+  reversible (localhost is this machine, not the outside world); and the "asking costs
+  one click" homily is gone — fail-closed is structural, the prompt does not need to
+  push. Rendered inputs (`classify.render_inputs`) are unchanged.
