@@ -1366,3 +1366,8 @@ sessions do not re-litigate.
   reversible (localhost is this machine, not the outside world); and the "asking costs
   one click" homily is gone — fail-closed is structural, the prompt does not need to
   push. Rendered inputs (`classify.render_inputs`) are unchanged.
+- **2026-09-30** — **Pre-load: matched notes outrank links.** The §8.3 order was
+  per-note (body, then its first-hop links), so a link-heavy first match spent the
+  budget before the second match's body was reached: a live turn that resolved both
+  project notes loaded one and stubbed the other. `preload` now loads every matched
+  note's body first, then the first-hop links in the same order as before.

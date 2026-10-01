@@ -733,10 +733,13 @@ not a gate (charter §2.4). `Index.resolve` and `Index.search` are async because
 embeds the query; `preload`, `core_blocks` and the graph helpers are synchronous.
 
 ### 8.3 Pre-load rule (decided)
-For each resolved note: inject the note body, then first-hop links in order
-(procedures first, then same-type notes, then others), until `preload_budget_tokens`
-(3,000 est.) is spent. Each injected note shows its path so the model can `knowledge_read`
-for more. Never inject `core/` here (already in slot [3]).
+Every resolved note's body first, then their first-hop links in order (procedures
+first, then same-type notes, then others), until `preload_budget_tokens` (3,000 est.)
+is spent — matched notes outrank links, so one link-heavy note cannot starve the next
+match (2026-09-30; before this the first note's links spent the budget ahead of the
+second match). Each injected note shows its path so the model can `knowledge_read` for
+more; a note that does not fit is named the same way. Never inject `core/` here
+(already in slot [3]).
 
 ### 8.4 Knowledge tools
 | Tool | Args | Notes |

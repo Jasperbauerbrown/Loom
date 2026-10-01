@@ -74,6 +74,21 @@ def test_preload_never_includes_core_and_never_repeats(app):
     assert text.count("### projects/music-bot.md") == 1
 
 
+def test_preload_loads_every_matched_note_before_any_link(app):
+    """A link-heavy first match must not starve the second match (2026-09-30): both
+    matched bodies land, the first note's links get stubs."""
+    vault_with_printer(app)
+    both = (
+        len(app.index._render("devices/ender-3.md")) + len(app.index._render("projects/music-bot.md"))
+    ) // 4 + 1
+    text = app.index.preload(["devices/ender-3.md", "projects/music-bot.md"], budget_tokens=both)
+    assert "### devices/ender-3.md" in text
+    assert "### projects/music-bot.md" in text
+    assert "### procedures/pla-print/SKILL.md" not in text
+    assert "- procedures/pla-print/SKILL.md (not loaded; knowledge_read for more)" in text
+    assert text.index("### projects/music-bot.md") < text.index("- procedures/pla-print/SKILL.md")
+
+
 def test_preload_budget_names_what_did_not_fit(app):
     vault_with_printer(app)
     first_only = len(app.index._render("devices/ender-3.md")) // 4 + 1

@@ -555,9 +555,10 @@ class Index:
 
     # -- pre-load (03 §8.3) -----------------------------------------------------
     def preload(self, paths: Sequence[str], budget_tokens: int | None = None) -> str:
-        """Resolved notes plus their first-hop links (procedures → same type → others),
-        in one budget. Each note appears once; anything that does not fit is named so the
-        model can `knowledge_read` it."""
+        """Resolved notes first, then their first-hop links (procedures → same type →
+        others), in one budget: every matched note outranks any link, so one link-heavy
+        note cannot starve the next match (2026-09-30). Each note appears once; anything
+        that does not fit is named so the model can `knowledge_read` it."""
         budget = int(self._setting("knowledge.preload_budget_tokens", budget_tokens))
         parts: list[str] = []
         seen: set[str] = set()
@@ -566,21 +567,21 @@ class Index:
         def fits(text: str) -> bool:
             return (size + len(text)) // 4 <= budget
 
-        for path in paths:
-            for candidate in [path, *self._first_hop(path)]:
-                if candidate in seen or candidate.startswith("core/"):
-                    continue
-                seen.add(candidate)
-                rendered = self._render(candidate)
-                if rendered is None:
-                    continue
-                if fits(rendered):
-                    parts.append(rendered)
-                    size += len(rendered)
-                else:
-                    stub = f"- {candidate} (not loaded; knowledge_read for more)\n"
-                    parts.append(stub)
-                    size += len(stub)
+        matched = list(dict.fromkeys(paths))
+        for candidate in matched + [hop for path in matched for hop in self._first_hop(path)]:
+            if candidate in seen or candidate.startswith("core/"):
+                continue
+            seen.add(candidate)
+            rendered = self._render(candidate)
+            if rendered is None:
+                continue
+            if fits(rendered):
+                parts.append(rendered)
+                size += len(rendered)
+            else:
+                stub = f"- {candidate} (not loaded; knowledge_read for more)\n"
+                parts.append(stub)
+                size += len(stub)
         return "".join(parts).strip()
 
     def _render(self, path: str) -> str | None:
