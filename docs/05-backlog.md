@@ -6,6 +6,28 @@ it here and record it where it now lives (`03`, the decision log).
 
 Each item names its source. "Audit" means `reference/tool-parity-audit.md` §3.
 
+## Artifacts disk use (Jasper, 2026-10-05)
+- **Prune conversation scratch, not just spills and images.** On 2026-10-05 the live
+  `artifacts/` folder was 1.9 GB, of which only ~15 MB was real artifacts (207 spills,
+  5 MB; images, 10 MB). The rest was scratch: `pytest-of-Jasper/` temp trees (~1.38 GB,
+  ~197k files, because the shell points `TMPDIR` at the conversation folder,
+  `shell.py:254`) and throwaway Opera user-data profiles from browser automation
+  (~500 MB, 46–122 MB each). The desk alone held 747 MB. `Store.prune_archived`
+  (`artifacts.py`) has three gaps: (1) it deletes only spill rows' files and `img_*`,
+  so `TMPDIR` scratch and downloads are never removed, and neither is the folder;
+  (2) it covers only archived conversations, and the desk is never archived;
+  (3) the 90-day `conversation.artifact_retention_days` suits spills and images, which
+  the transcript refers to, but is far too long for scratch, which nothing reads back.
+  Wanted:
+  - after a conversation is archived (a short grace period, e.g. 1 day), delete
+    everything in its folder except spills and `img_*`;
+  - after the existing retention period, delete the whole folder, not just its files;
+  - in live conversations (the desk, long threads), delete scratch untouched for N days
+    under a new UI-visible setting, never touching spills or images;
+  - show artifacts disk usage (total, plus the largest conversations) on the
+    status/maintenance surface, and count pruned bytes in the maintenance report.
+  The existing scratch can be cleared by hand meanwhile: nothing reads it back.
+
 ## Maintenance hand-backs (Jasper, 2026-10-01)
 - **An Apply button on handed-back writes.** When a maintenance pass hits an approval
   gate (03 §8.6) the proposal lands on the now board with the exact tool call stored in
