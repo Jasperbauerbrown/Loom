@@ -56,9 +56,9 @@ export class ApiError extends Error {
 
 export function token(): string | null {
   try {
-    return localStorage.getItem("loom_token");
+    return localStorage.getItem("loom_token") ?? memoryToken;
   } catch {
-    return null;
+    return memoryToken;
   }
 }
 
@@ -69,12 +69,68 @@ export function imageUrl(conversationId: string, imageId: string): string {
   return `/api/conversations/${conversationId}/images/${imageId}${t ? `?token=${encodeURIComponent(t)}` : ""}`;
 }
 
+const tokenListeners = new Set<() => void>();
+let memoryToken: string | null = null; // survives blocked storage for this page load
+
 export function setToken(value: string | null) {
+  memoryToken = value || null;
   try {
     if (value) localStorage.setItem("loom_token", value);
     else localStorage.removeItem("loom_token");
   } catch {
     /* private mode: tokens simply do not persist */
+  }
+  tokenListeners.forEach((fn) => fn());
+}
+
+/** Called after every token change (set or cleared); the socket reconnects on it. */
+export function onTokenChange(fn: () => void): () => void {
+  tokenListeners.add(fn);
+  return () => void tokenListeners.delete(fn);
+}
+
+// --- the 401 gate ---------------------------------------------------------------
+// Any /api call answered 401 asks for the LAN token through one shared prompt: however
+// many calls fail at once there is one dialog, and each waits on it and retries.
+let pendingPrompt: Promise<boolean> | null = null;
+const promptListeners = new Set<(open: boolean) => void>();
+let promptResolve: ((ok: boolean) => void) | null = null;
+
+export function tokenPromptOpen(): boolean {
+  return pendingPrompt !== null;
+}
+export function onTokenPrompt(fn: (open: boolean) => void): () => void {
+  promptListeners.add(fn);
+  return () => void promptListeners.delete(fn);
+}
+function requestToken(): Promise<boolean> {
+  if (!pendingPrompt) {
+    pendingPrompt = new Promise<boolean>((resolve) => {
+      promptResolve = resolve;
+    });
+    promptListeners.forEach((fn) => fn(true));
+  }
+  return pendingPrompt;
+}
+/** The dialog's answer: a token to store and retry with, or null to give up. */
+export function answerTokenPrompt(value: string | null) {
+  const resolve = promptResolve;
+  pendingPrompt = null;
+  promptResolve = null;
+  if (value) setToken(value);
+  promptListeners.forEach((fn) => fn(false));
+  resolve?.(Boolean(value));
+}
+
+/** fetch with the stored token; a 401 prompts once (shared) and retries with the new token. */
+export async function authedFetch(url: string, init: RequestInit): Promise<Response> {
+  for (;;) {
+    const headers: Record<string, string> = { ...(init.headers as Record<string, string> | undefined) };
+    const t = token();
+    if (t) headers["Authorization"] = `Bearer ${t}`;
+    const res = await fetch(url, { ...init, headers });
+    if (res.status !== 401) return res;
+    if (!(await requestToken())) return res;
   }
 }
 
@@ -100,12 +156,10 @@ async function request<T>(
   params?: Record<string, unknown>,
 ): Promise<T> {
   const headers: Record<string, string> = {};
-  const t = token();
-  if (t) headers["Authorization"] = `Bearer ${t}`;
   if (body !== undefined) headers["Content-Type"] = "application/json";
   let res: Response;
   try {
-    res = await fetch(`/api${path}${qs(params)}`, {
+    res = await authedFetch(`/api${path}${qs(params)}`, {
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -180,11 +234,9 @@ export const api = {
       "Content-Type": file.type || "application/octet-stream",
       "X-Filename": encodeURIComponent(file.name || "image"),
     };
-    const t = token();
-    if (t) headers["Authorization"] = `Bearer ${t}`;
     let res: Response;
     try {
-      res = await fetch(`/api/conversations/${id}/images`, { method: "POST", headers, body: file });
+      res = await authedFetch(`/api/conversations/${id}/images`, { method: "POST", headers, body: file });
     } catch (e) {
       throw new ApiError(0, `network error: ${(e as Error).message}`);
     }
@@ -239,6 +291,8 @@ export const api = {
   items: (params?: { unseen?: boolean }) => get<Item[]>("/items", params),
   seenItem: (id: string) => post<Item>(`/items/${id}/seen`),
   dismissItem: (id: string) => post<Item>(`/items/${id}/dismiss`),
+  /** Run a maintenance hand-back's stored call; the click is the approval (03 §8.6). */
+  applyItem: (id: string) => post<Item>(`/items/${id}/apply`),
 
   // -- vault -----------------------------------------------------------------
   /** The backend answers one root dir node; the UI groups the top-level folders by type. */
@@ -411,6 +465,8 @@ export const api = {
   maintenance: () => get<MaintenanceStatus>("/maintenance"),
   /** 202 with the fresh status; 409 when a pass is already in flight. */
   runMaintenance: () => post<{ started: boolean } & MaintenanceStatus>("/maintenance/run"),
+  /** Artifacts disk use: a walk of the whole folder, so ask on demand, never on a timer. */
+  artifactsUsage: (limit = 10) => get<import("./types").ArtifactsUsage>("/maintenance/artifacts", { limit }),
 };
 
 export type Api = typeof api;

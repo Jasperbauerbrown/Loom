@@ -78,7 +78,11 @@ function ToolRow({ call, onArtifact, awaiting }: { call: ToolCall; onArtifact: (
           </Badge>
         ) : null}
         {result ? (
-          <Badge tone={result.ok ? "neutral" : "red"}>{result.ok ? "ok" : "failed"}</Badge>
+          result.cancelled ? (
+            <Badge tone="amber">cancelled</Badge>
+          ) : (
+            <Badge tone={result.ok ? "neutral" : "red"}>{result.ok ? "ok" : "failed"}</Badge>
+          )
         ) : awaiting ? (
           <Badge tone="amber">awaiting approval</Badge>
         ) : (

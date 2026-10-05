@@ -40,6 +40,9 @@ log = logging.getLogger(__name__)
 # the one denying answer. Anything else fails closed.
 DECISIONS = ("allow", "allow_conversation", "deny", "allow_always")
 INTERNAL_TOOL = "protected_paths_remove"
+# `ToolContext.extras` flag: a person's click answers any ask on the spot (Apply on a
+# maintenance hand-back). The dispatcher asks instead of judging; `create` surfaces nothing.
+TURNLESS = "turnless_approver"
 
 
 class NotFound(LookupError):
@@ -91,6 +94,11 @@ def create(
             now,
         ),
     )
+    if ctx.extras.get(TURNLESS):
+        # The caller answers this question itself before returning (Apply on a
+        # hand-back, 03 §8.6): the row is the record, but nothing is surfaced — no
+        # card, no notification item, no toast, no `waiting_approval` status.
+        return approval_id
     row = _row(app, approval_id)
     app.bus.emit("approval.requested", row, conversation_id)
     # A pending card in a screen nobody is looking at is a question nobody hears: one

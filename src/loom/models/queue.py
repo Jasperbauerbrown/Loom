@@ -5,7 +5,9 @@
 
 Priority 0 interactive, 1 background, 2 maintenance; FIFO within a priority. A provider
 serves `concurrency` calls at a time (default 1 for Ollama, 4 for hosted), so preemption
-is at call boundaries only — the queue never cancels work, it only orders it.
+is at call boundaries only — the queue never cancels work, it only orders it. A
+caller that is cancelled while waiting (a user's cancel, 03 §6.4) leaves the line and
+gives its place back.
 
 Depth and occupancy are exposed on the bus as `system.queue` and at
 `GET /api/system/queue`, which is what the UI header renders.

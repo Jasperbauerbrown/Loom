@@ -2,7 +2,7 @@
 // backoff, re-subscribe on open, full refetch after a reconnect so nothing missed while
 // the socket was down stays wrong.
 
-import { token } from "./api";
+import { onTokenChange, token } from "./api";
 import type { BusEvent } from "./types";
 import type { Store } from "./store";
 
@@ -21,13 +21,28 @@ export class WsClient {
     return `${proto}//${location.host}/ws${t ? `?token=${encodeURIComponent(t)}` : ""}`;
   }
 
+  private offToken: (() => void) | null = null;
+
   start() {
     this.stopped = false;
+    // A token set or cleared reconnects at once with the new one, skipping the backoff.
+    this.offToken ??= onTokenChange(() => {
+      if (this.stopped) return;
+      if (this.timer) clearTimeout(this.timer);
+      this.timer = null;
+      this.delay = 1000;
+      const old = this.socket;
+      this.socket = null;
+      old?.close();
+      this.connect();
+    });
     this.connect();
   }
 
   stop() {
     this.stopped = true;
+    this.offToken?.();
+    this.offToken = null;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     this.socket?.close();
@@ -71,7 +86,8 @@ export class WsClient {
     };
 
     socket.onclose = () => {
-      if (this.socket === socket) this.socket = null;
+      if (this.socket !== socket) return; // superseded by a token-change reconnect
+      this.socket = null;
       this.store.setConnection("closed");
       this.scheduleReconnect();
     };

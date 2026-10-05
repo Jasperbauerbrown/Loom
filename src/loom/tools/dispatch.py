@@ -57,28 +57,62 @@ def denied_result(reason: str = "denied by user") -> ToolResult:
 AUTO_REASON = "desk auto-approve"
 
 
+AUTO_HELD = "desk auto-approve held"
+
+
+def _conversation_kind(app: Any, ctx: ToolContext) -> str | None:
+    """The context's conversation kind, read from the row when the dict lacks it (a
+    context built by hand from a partial row must not quietly lose the switch)."""
+    conversation = ctx.conversation or {}
+    kind = conversation.get("kind")
+    if kind is None and conversation.get("id"):
+        kind = (app.conversation(conversation["id"]) or {}).get("kind")
+    return kind
+
+
+def _auto_hold(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) -> str | None:
+    """Desk auto-approve (`permissions.desk_auto_approve`). None: the switch does not
+    apply (not the desk, or off). "": it grants — a desk call that would ask or
+    classify runs instead. Otherwise the reason it holds: the call names a protected
+    path, and goes down the ordinary path (2026-10-05).
+
+    The check is `shell_prefilter.protected_reference` over the raw text: a shell
+    command against the shell's cwd, and every string argument of an MCP or connector
+    tool (whose own paths the fs guard cannot see) as absolute paths only. Native
+    tools' paths are the fs guard's job; its protected ask holds on its own. Nothing
+    here parses, so a heredoc, a quoted blob or an unset `$VAR` cannot hold the switch
+    — only an actual reference can.
+
+    A maintenance pass (`extras["maintenance"]`) runs on the desk conversation but is
+    background work that stops at approval gates and hands back; the switch never
+    reaches it, for the same reason it never reaches threads."""
+    if ctx.extras.get("maintenance"):
+        return None
+    if _conversation_kind(app, ctx) != "desk" or not app.settings.get("permissions.desk_auto_approve"):
+        return None
+    try:
+        protected = fs_guard.protected_paths(app)
+        if tool.name == "shell":
+            hit = shell_prefilter.protected_reference(str(args.get("command") or ""), protected, classify.command_cwd(app, ctx, args))
+        elif tool.source != "native":
+            texts = [v for v in args.values() if isinstance(v, str)]
+            texts += [x for v in args.values() if isinstance(v, (list, tuple)) for x in v if isinstance(x, str)]
+            hit = next((h for h in (shell_prefilter.protected_reference(t, protected) for t in texts) if h), None)
+        else:
+            hit = None
+    except Exception as exc:  # fail closed: a check that cannot answer holds
+        log.warning("desk auto-approve check failed: %r", exc)
+        return f"the protected-path check failed ({type(exc).__name__})"
+    return f"names protected path {hit}" if hit else ""
+
+
 def _auto_approved(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) -> bool:
-    """Desk auto-approve (`permissions.desk_auto_approve`): a desk call that would ask
-    or classify runs instead. Grant-only, like the pre-filter. Protected paths keep
-    asking: the fs guard's own ask, and a shell command that names one (or cannot be
-    parsed to tell) takes the ordinary path."""
-    if (ctx.conversation or {}).get("kind") != "desk":
-        return False
-    if not app.settings.get("permissions.desk_auto_approve"):
-        return False
-    if tool.name == "shell":
-        stages = shell_prefilter.split_stages(str(args.get("command") or ""))
-        if stages is None:
-            return False
-        words: list[str] = []
-        for stage in stages:
-            split = shell_prefilter.split_words(stage)
-            if split is None:
-                return False
-            words += split
-        if shell_prefilter.names_protected(words, fs_guard.protected_paths(app), classify.command_cwd(app, ctx, args)):
-            return False
-    return True
+    return _auto_hold(app, ctx, tool, args) == ""
+
+
+def _held(reason: str, hold: str | None) -> str:
+    """The reason a desk call asked (or was judged) despite the switch, on its row."""
+    return f"{reason} ({AUTO_HELD}: {hold})" if hold else reason
 
 
 # ---------------------------------------------------------------------------------
@@ -171,16 +205,21 @@ async def dispatch(app: Any, ctx: ToolContext, call: ToolCall) -> ToolResult | A
         return ToolResult.error("invalid arguments: " + "; ".join(str(p) for p in problems) + "; resend the call")
 
     guard = fs_guard.check(app, ctx.conversation, tool, args)
-    if isinstance(guard, fs_guard.GuardAsk) and not guard.protected and _auto_approved(app, ctx, tool, args):
+    hold = _auto_hold(app, ctx, tool, args)
+    if isinstance(guard, fs_guard.GuardAsk) and not guard.protected and hold == "":
         ctx.meta.update({"policy": "auto", "decision": "allow", "reason": AUTO_REASON})
         return await _run(app, ctx, call, tool, args)
     if isinstance(guard, fs_guard.GuardAsk):
-        ctx.meta.update({"policy": "ask", "decision": "ask", "reason": guard.reason})
-        approval_id = approvals.create(app, ctx, call, guard.reason, dict(guard.options))
-        return ApprovalNeeded(approval_id, guard.reason, dict(guard.options))
+        if hold is not None:
+            hold = hold or "protected paths always ask"
+            ctx.meta["auto_held"] = hold
+        guard_reason = _held(guard.reason, hold)
+        ctx.meta.update({"policy": "ask", "decision": "ask", "reason": guard_reason})
+        approval_id = approvals.create(app, ctx, call, guard_reason, dict(guard.options))
+        return ApprovalNeeded(approval_id, guard_reason, dict(guard.options))
 
     mode, policy_key = permissions.decide(app, tool, args)
-    if mode != "allow" and _auto_approved(app, ctx, tool, args):
+    if mode != "allow" and hold == "":
         ctx.meta.update({"policy": "auto", "decision": "allow", "reason": AUTO_REASON})
         return await _run(app, ctx, call, tool, args, policy_key)
     if mode != "allow":
@@ -189,7 +228,11 @@ async def dispatch(app: Any, ctx: ToolContext, call: ToolCall) -> ToolResult | A
             ctx.meta.update({"policy": mode, "decision": "allow", "reason": granted})
             return await _run(app, ctx, call, tool, args, policy_key)
     reason = ""
-    if mode == "classify":
+    if mode == "classify" and ctx.extras.get(approvals.TURNLESS):
+        # A person's click stands behind this call and answers the ask at once: a
+        # judge call would only be overruled by the stronger approval (03 §8.6).
+        decision, reason = "ask", f"{tool.name} applied by the person"
+    elif mode == "classify":
         if tool.name == "shell" and shell_prefilter.is_readonly(
             str(args.get("command") or ""),
             list(app.settings.get("permissions.shell_readonly_commands") or []),
@@ -201,6 +244,9 @@ async def dispatch(app: Any, ctx: ToolContext, call: ToolCall) -> ToolResult | A
             decision, reason = await classify.judge(app, ctx, tool, args)
     else:
         decision = mode
+    if hold and mode != "allow":
+        reason = _held(reason or f"{tool.name} requires approval", hold)
+        ctx.meta["auto_held"] = hold
     ctx.meta.update({"policy": mode, "decision": decision, "reason": reason})
 
     if decision == "ask":
@@ -253,6 +299,20 @@ def _store_images(app: Any, ctx: ToolContext, result: ToolResult, content: str) 
     return content
 
 
+def cancelled_result(answer: Any = None) -> ToolResult:
+    """What the model sees for a call the user's cancel stopped or never started. A
+    handler that answered on cancellation (`shell`: what the command printed before its
+    tree was killed) keeps its content; the note follows it."""
+    note = prompts.load("context/tool-cancelled")
+    if isinstance(answer, ToolResult):
+        text = answer.content if isinstance(answer.content, str) else str(answer.content)
+        answer.content = text + ("\n" if text and not text.endswith("\n") else "") + note
+        answer.ok = False
+        answer.meta["cancelled"] = True
+        return answer
+    return ToolResult(content=note, ok=False, meta={"cancelled": True})
+
+
 async def execute(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) -> ToolResult:
     """Steps 5–7. Used by `dispatch` and, after an approval, by the runner."""
     private_args = args
@@ -272,6 +332,11 @@ async def execute(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) 
         # kills its tree and returns what the command said first) gets to answer and this
         # catches only a handler that ignored its own deadline. The message still names
         # the effective timeout, which is the number the caller asked for.
+        #
+        # A user's cancel arrives as a cancellation of this await: the runner races the
+        # whole dispatch against the conversation's cancel signal (03 §6.4). It reaches
+        # the handler, which is what stops it (shell kills its tree and answers with what
+        # the command said; anything else just ends and gets `cancelled_result`).
         result = await asyncio.wait_for(
             tool.handler(ctx, private_args), timeout=timeout + min(30.0, max(1.0, 0.1 * timeout))
         )

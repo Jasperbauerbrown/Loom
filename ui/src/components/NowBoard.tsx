@@ -6,6 +6,7 @@ import { store, useStore } from "../lib/store";
 import type { Approval, Conversation, Item } from "../lib/types";
 import { navigate } from "../lib/router";
 import { relativeTime, statusLabel, statusTitle, truncate } from "../lib/format";
+import { applyResult, canApply } from "../lib/handBack";
 import { Badge, Button, Collapsible, Empty } from "./ui";
 import { ProcessList, isLive, sortProcesses } from "./ProcessList";
 
@@ -55,6 +56,17 @@ function ApprovalLine({ approval }: { approval: Approval }) {
 }
 
 function ItemLine({ item }: { item: Item }) {
+  // Apply on a maintenance hand-back (03 §8.6): busy while the call runs; success
+  // dismisses the item (a toast says so), failure leaves it with the error under it.
+  const [applying, setApplying] = useState(false);
+  const applicable = canApply(item);
+  const result = applicable ? applyResult(item) : null;
+  const apply = async () => {
+    setApplying(true);
+    const row = await store.guard(() => api.applyItem(item.id));
+    setApplying(false);
+    if (row && applyResult(row)?.state === "ok") store.toast("info", "Applied", row.title);
+  };
   return (
     <Line>
       <div className="flex items-start gap-2">
@@ -65,7 +77,17 @@ function ItemLine({ item }: { item: Item }) {
           <div className="mt-0.5 text-[11px] text-neutral-400">{relativeTime(item.created_at)}</div>
         </div>
       </div>
+      {result?.state === "error" ? (
+        <p className="mt-1 text-[11.5px] text-red-600 [overflow-wrap:anywhere] dark:text-red-400">
+          Apply failed: {truncate(result.content, 240)}
+        </p>
+      ) : null}
       <div className="mt-1.5 flex gap-1.5">
+        {applicable ? (
+          <Button size="sm" variant="primary" disabled={applying} onClick={() => void apply()}>
+            {applying ? "Applying…" : result?.state === "error" ? "Retry" : "Apply"}
+          </Button>
+        ) : null}
         {item.conversation_id ? (
           <Button size="sm" onClick={() => navigate(`/c/${item.conversation_id}`)}>
             Open

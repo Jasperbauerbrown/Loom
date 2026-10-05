@@ -7,6 +7,7 @@ import { href, navigate, useRoute } from "./lib/router";
 import { cls } from "./lib/format";
 import { api } from "./lib/api";
 import { Toasts } from "./components/Toasts";
+import { TokenDialog } from "./components/TokenDialog";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import {
   IconApprovals,
@@ -263,6 +264,7 @@ export default function App() {
         </ErrorBoundary>
       </main>
       <Toasts />
+      <TokenDialog />
     </div>
   );
 }

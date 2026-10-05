@@ -242,6 +242,177 @@ async def test_desk_auto_approve_does_not_reach_threads(app, echo):
     assert isinstance(outcome, ApprovalNeeded) and echo.seen == []
 
 
+# The 2026-10-04 investigation: with the switch on, the desk still asked or classified.
+# Each suspect from the backlog item gets a test; the commands are the ones that leaked.
+@pytest.fixture
+def stub_shell(app):
+    """The real shell tool's declaration (name, schema, cwd guard, policy) with a
+    handler that records instead of running: these commands must not touch the box."""
+    import dataclasses
+
+    ran: list[str] = []
+
+    async def handler(ctx, args):
+        ran.append(args["command"])
+        return ToolResult(content="[exit 0]")
+
+    tool = dataclasses.replace(app.tools.get("shell"), handler=handler)
+    app.tools.register(tool, replace=True)
+    tool.ran = ran  # type: ignore[attr-defined]
+    return tool
+
+
+LEAKED = [
+    'curl -s -w "\\nHTTP %{http_code}\\n" http://127.0.0.1:8500/api/health',  # a card
+    'powershell -NoProfile -Command "Get-ChildItem | ForEach-Object { \\$_.Name }"',  # a classifier call
+    "cat > notes.md <<'EOF'\n# notes\nfirst line\nEOF",  # every heredoc asked: split_stages stops at a newline
+    "mkdir -p build && cd build && cmake .. && make -j8",
+    "cat $NOT_A_SET_VAR/config.json",  # an unresolvable $VAR is not a protected path here
+]
+
+
+@pytest.mark.parametrize("command", LEAKED)
+async def test_desk_auto_approve_runs_commands_the_pre_filter_cannot_split(app, ctx, fake, stub_shell, command):
+    app.settings.set(app.db, "permissions.desk_auto_approve", True)
+    result = await dispatch.dispatch(app, ctx, _call("shell", {"command": command}))
+    assert not isinstance(result, ApprovalNeeded) and result.ok
+    assert stub_shell.ran == [command]
+    assert fake.calls == []  # no classifier generation either
+    assert ctx.meta == {"policy": "auto", "decision": "allow", "reason": "desk auto-approve"}
+
+
+async def test_desk_auto_approve_holds_for_a_protected_path_however_it_is_written(app, fake, stub_shell, monkeypatch):
+    app.settings.set(app.db, "permissions.desk_auto_approve", True)
+    fake.on("classify", lambda req: Scripted(content='{"decision":"ask","reason":"touches secrets"}'))
+    monkeypatch.setenv("LOOM_TEST_HOME", str(app.home))
+    secrets_file = (app.home / "secrets.json").as_posix()
+    commands = [
+        f"cat > {secrets_file} <<'EOF'\n{{}}\nEOF",  # a heredoc writing it
+        f'python -c "print(open(\'{secrets_file}\').read())"',  # inside a quoted blob
+        f"cd {app.home.as_posix()} && cat secrets.json",  # relative to a cd
+        "cat $LOOM_TEST_HOME/secrets.json",  # through a variable that is set
+        f"cat {str(app.home / 'secrets.json')}",  # backslashes on Windows
+    ]
+    for i, command in enumerate(commands):
+        tctx = ToolContext(app=app, conversation=app.conversation(app.desk_id()), call_id=f"c{i}", event_id=11, request_text="x")
+        outcome = await dispatch.dispatch(app, tctx, _call("shell", {"command": command}, call_id=f"c{i}"))
+        assert isinstance(outcome, ApprovalNeeded), command
+        assert "desk auto-approve held: names protected path" in outcome.reason, command
+        assert "secrets.json" in tctx.meta["auto_held"] and tctx.meta["reason"] == outcome.reason
+    assert stub_shell.ran == []
+    # the protected path went down the ordinary path: the classifier judged each one
+    assert len([c for c in fake.calls if c.purpose == "classify"]) == len(commands)
+
+
+async def test_desk_auto_approve_held_by_the_guard_says_so(app, ctx):
+    app.settings.set(app.db, "permissions.desk_auto_approve", True)
+    outcome = await dispatch.dispatch(app, ctx, _call("fs_write", {"path": str(app.home / "secrets.json"), "content": "x"}))
+    assert isinstance(outcome, ApprovalNeeded)
+    assert outcome.reason.startswith("protected path") and "desk auto-approve held" in outcome.reason
+    assert ctx.meta["auto_held"] == "protected paths always ask"
+
+
+async def test_desk_auto_approve_reads_the_kind_from_the_row_when_the_context_lacks_it(app, echo):
+    permissions.set_policy(app, echo, "ask")
+    app.settings.set(app.db, "permissions.desk_auto_approve", True)
+    tctx = ToolContext(app=app, conversation={"id": app.desk_id()}, call_id="call_1", event_id=11, request_text="x")
+    result = await dispatch.dispatch(app, tctx, _call("echo", {"text": "hi"}))
+    assert result.ok and tctx.meta["policy"] == "auto"
+
+
+async def test_desk_auto_approve_reaches_a_call_resumed_by_repair(app, fake):
+    """A step's later calls are not started while an earlier one waits; `_repair`
+    dispatches them on the resume, with a context it builds itself."""
+    from loom import conversation
+    from loom.conversation import events, runner
+
+    async def handler(ctx, args):
+        return ToolResult(content="ran")
+
+    for name in ("probe_first", "probe_second"):
+        tool = Tool(name=name, description=name, parameters={"type": "object", "properties": {}}, handler=handler)
+        app.tools.register(tool, replace=True)
+        permissions.set_policy(app, tool, "ask")
+    desk = app.desk_id()
+    fake.script(
+        Scripted(content="two steps", tool_calls=[("probe_first", {}), ("probe_second", {})]),
+        Scripted(content="done"),
+    )
+    conversation.post(app, desk, "go")
+    await runner.run_turn(app, desk)
+    task = app.tasks.get(f"turn:{desk}")
+    if task is not None and not task.done():
+        await task
+    pending = approvals.pending(app, desk)
+    assert [p["tool"] for p in pending] == ["probe_first"]
+
+    app.settings.set(app.db, "permissions.desk_auto_approve", True)
+    approvals.decide(app, pending[0]["id"], "allow")
+    await runner.run_turn(app, desk)
+    task = app.tasks.get(f"turn:{desk}")
+    if task is not None and not task.done():
+        await task
+    results = {e["meta"]["name"]: e["meta"] for e in events.list_events(app, desk, kinds=["tool_result"], limit=100)}
+    assert results["probe_second"]["policy"] == "auto" and results["probe_second"]["ok"]
+    assert approvals.pending(app, desk) == []
+
+
+async def test_desk_auto_approve_covers_mcp_tools_and_checks_their_arguments(app, ctx):
+    ran: list[dict] = []
+
+    async def handler(ctx, args):
+        ran.append(args)
+        return ToolResult(content="ok")
+
+    tool = Tool(
+        name="files__write_file",
+        description="an MCP server's write",
+        parameters={"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}},
+        handler=handler,
+        source="mcp:files",
+    )
+    app.tools.register(tool, replace=True)
+    app.settings.set(app.db, "permissions.desk_auto_approve", True)
+    result = await dispatch.dispatch(app, ctx, _call(tool.name, {"path": "/srv/notes.txt", "content": "x"}))
+    assert result.ok and ctx.meta["policy"] == "auto"
+    held = ToolContext(app=app, conversation=app.conversation(app.desk_id()), call_id="call_2", event_id=12, request_text="x")
+    outcome = await dispatch.dispatch(app, held, _call(tool.name, {"path": str(app.home / "secrets.json"), "content": "x"}, "call_2"))
+    assert isinstance(outcome, ApprovalNeeded) and "desk auto-approve held: names protected path" in outcome.reason
+    assert len(ran) == 1
+
+
+async def test_desk_auto_approve_never_reaches_a_maintenance_pass(app, echo):
+    """Maintenance runs on the desk conversation but is background work that stops at
+    approval gates and hands back; the desk switch must not widen it."""
+    permissions.set_policy(app, echo, "ask")
+    app.settings.set(app.db, "permissions.desk_auto_approve", True)
+    tctx = ToolContext(app=app, conversation=app.conversation(app.desk_id()), call_id="call_1", request_text="maintenance", extras={"maintenance": True})
+    outcome = await dispatch.dispatch(app, tctx, _call("echo", {"text": "hi"}))
+    assert isinstance(outcome, ApprovalNeeded) and echo.seen == []
+    assert "auto_held" not in tctx.meta and "desk auto-approve" not in outcome.reason
+
+
+async def test_desk_auto_approve_holds_a_delete_of_a_folder_above_a_protected_path(app, ctx, fake, stub_shell):
+    app.settings.set(app.db, "permissions.desk_auto_approve", True)
+    fake.on("classify", lambda req: Scripted(content='{"decision":"ask","reason":"deletes the home"}'))
+    outcome = await dispatch.dispatch(app, ctx, _call("shell", {"command": f"rm -rf {app.home.as_posix()}"}))
+    assert isinstance(outcome, ApprovalNeeded) and "desk auto-approve held: names protected path" in outcome.reason
+    listing = ToolContext(app=app, conversation=app.conversation(app.desk_id()), call_id="call_2", event_id=12, request_text="x")
+    result = await dispatch.dispatch(app, listing, _call("shell", {"command": f"ls {app.home.as_posix()}"}, "call_2"))
+    assert result.ok and listing.meta["policy"] == "auto"
+    assert stub_shell.ran == [f"ls {app.home.as_posix()}"]
+
+
+async def test_desk_auto_approve_never_widens_threads_even_for_an_unsplittable_command(app, fake, stub_shell):
+    app.settings.set(app.db, "permissions.desk_auto_approve", True)
+    fake.on("classify", lambda req: Scripted(content='{"decision":"ask","reason":"thread"}'))
+    thread = {**app.conversation(app.desk_id()), "kind": "thread"}
+    tctx = ToolContext(app=app, conversation=thread, call_id="call_1", event_id=11, request_text="x")
+    outcome = await dispatch.dispatch(app, tctx, _call("shell", {"command": LEAKED[2]}))
+    assert isinstance(outcome, ApprovalNeeded) and "auto_held" not in tctx.meta
+    assert "desk auto-approve" not in outcome.reason
+
+
 # ---------------------------------------------------------------------------------
 # step 4: classify
 # ---------------------------------------------------------------------------------

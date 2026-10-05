@@ -232,3 +232,88 @@ def test_sleep_is_read_only(command):
 def test_sleep_does_not_launder_a_write():
     assert pf.is_readonly("sleep 1 && rm -rf build", ALLOW) is False
     assert pf.is_readonly("sleep 1 > out.txt", ALLOW) is False
+
+
+# -- protected_reference: desk auto-approve's check (2026-10-05) ------------------------
+REPO = "C:/repo" if __import__("os").name == "nt" else "/repo"
+GUARDED = [f"{REPO}/supervisor", f"{REPO}/src/loom/tools/permissions.py"]
+
+
+@pytest.mark.parametrize(
+    "command, hit",
+    [
+        (r'curl -s -w "\nHTTP %{http_code}\n" http://127.0.0.1:8500/api/health', None),
+        (r'powershell -Command "Get-ChildItem | ForEach-Object { \$_.Name }"', None),
+        ("cat $UNSET_SURELY/supervisor/x", None),  # an unresolvable variable names nothing
+        ("ls supervisor-old && grep x src/*.py", None),  # a sibling, and a glob that stops at a segment
+        ("ls supervisor/", f"{REPO}/supervisor"),
+        ("cat ../repo/supervisor/main.py", f"{REPO}/supervisor"),
+        ("cd src/loom && cat tools/permissions.py", f"{REPO}/src/loom/tools/permissions.py"),
+        ("rm src/loom/tools/*.py", f"{REPO}/src/loom/tools/permissions.py"),
+        (f"cat <<'EOF' > {REPO}/supervisor/a.py\nx = 1\nEOF", f"{REPO}/supervisor"),
+        (f"python -c \"open('{REPO}/supervisor/a.py', 'w')\"", f"{REPO}/supervisor"),
+    ],
+)
+def test_protected_reference_finds_real_references_only(command, hit):
+    assert pf.protected_reference(command, GUARDED, REPO) == hit
+
+
+def test_protected_reference_without_a_cwd_reads_absolute_paths_only():
+    assert pf.protected_reference("supervisor/x", GUARDED) is None
+    assert pf.protected_reference(f"{REPO}/supervisor/x", GUARDED) == f"{REPO}/supervisor"
+
+
+# A delete or move that names a folder above a protected path takes it along; a
+# read-only command that names one does not. Checked against the real default list.
+def _defaults():
+    from pathlib import Path
+
+    from loom.bootstrap import default_protected_paths
+
+    root = "C:/work/loom" if __import__("os").name == "nt" else "/work/loom"
+    home = Path(root).parent / "home" / ".loom"
+    return root, home.as_posix(), default_protected_paths(Path(root), home)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm -rf {home}",
+        "rm -rf {home}/../.loom",
+        "cd {root} && rm -rf src",
+        "mv src/loom src/old",
+        "rmdir src/loom/tools",
+        "powershell -Command Remove-Item -Recurse -Force {home}",
+        r"del /s /q {root}\src",
+        "python -c \"import shutil; shutil.rmtree('{root}/src/loom')\"",
+        "git clean -fdx src",
+        "find {home} -name x -delete",
+        "rm -rf ./*",
+        "rm -rf .",
+    ],
+)
+def test_a_destructive_stage_counts_an_ancestor_of_a_protected_path(command):
+    root, home, protected = _defaults()
+    assert pf.protected_reference(command.format(root=root, home=home), protected, root) is not None, command
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ls {home}",
+        "ls ~",
+        "cd {root} && git status",
+        "cd src/loom && python -m pytest ../../tests/test_x.py -q",
+        "grep -r TODO src",
+        "rm -rf build dist ui-dist .pytest_cache",
+        "rm -rf src/loom/__pycache__ src/loom/tools/__pycache__",
+        "rm src/loom/tools/old_helper.py",
+        "mv notes.md docs/notes.md",
+        "git clean -fd",
+        "rm -rf {home}-fake",
+        "ls src && rm -rf build",  # the ancestor is in a read-only stage
+    ],
+)
+def test_ordinary_repo_work_does_not_count(command):
+    root, home, protected = _defaults()
+    assert pf.protected_reference(command.format(root=root, home=home), protected, root) is None, command

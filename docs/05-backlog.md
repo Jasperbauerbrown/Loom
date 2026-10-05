@@ -6,80 +6,14 @@ it here and record it where it now lives (`03`, the decision log).
 
 Each item names its source. "Audit" means `reference/tool-parity-audit.md` §3.
 
-## Artifacts disk use (Jasper, 2026-10-05)
-- **Prune conversation scratch, not just spills and images.** On 2026-10-05 the live
-  `artifacts/` folder was 1.9 GB, of which only ~15 MB was real artifacts (207 spills,
-  5 MB; images, 10 MB). The rest was scratch: `pytest-of-Jasper/` temp trees (~1.38 GB,
-  ~197k files, because the shell points `TMPDIR` at the conversation folder,
-  `shell.py:254`) and throwaway Opera user-data profiles from browser automation
-  (~500 MB, 46–122 MB each). The desk alone held 747 MB. `Store.prune_archived`
-  (`artifacts.py`) has three gaps: (1) it deletes only spill rows' files and `img_*`,
-  so `TMPDIR` scratch and downloads are never removed, and neither is the folder;
-  (2) it covers only archived conversations, and the desk is never archived;
-  (3) the 90-day `conversation.artifact_retention_days` suits spills and images, which
-  the transcript refers to, but is far too long for scratch, which nothing reads back.
-  Wanted:
-  - after a conversation is archived (a short grace period, e.g. 1 day), delete
-    everything in its folder except spills and `img_*`;
-  - after the existing retention period, delete the whole folder, not just its files;
-  - in live conversations (the desk, long threads), delete scratch untouched for N days
-    under a new UI-visible setting, never touching spills or images;
-  - show artifacts disk usage (total, plus the largest conversations) on the
-    status/maintenance surface, and count pruned bytes in the maintenance report.
-  The existing scratch can be cleared by hand meanwhile: nothing reads it back.
-
-## Maintenance hand-backs (Jasper, 2026-10-01)
-- **An Apply button on handed-back writes.** When a maintenance pass hits an approval
-  gate (03 §8.6) the proposal lands on the now board with the exact tool call stored in
-  the item's `action` — but the UI renders only title, body and Dismiss, so "the person
-  can see it and do it themselves" means hand-editing the note. Wanted: an Apply action
-  on `knowledge` items that carry an `action`, backed by an endpoint that dispatches
-  the stored call with the click standing as the approval (same gate, now with a turnless
-  approver), marks the item dismissed, and reports the result on the item. The preview
-  half shipped 2026-10-01 (`_hand_back` renders old→new for replaces).
-
-## LAN access (Jasper, 2026-09-29)
-- **Token prompt in the web UI.** With `general.lan_token` set, every `/api` call and
-  `/ws` need the token, but nothing in the UI ever writes `loom_token` to browser
-  storage — a LAN browser (and loopback, once the token is set) gets 401 with no way
-  in short of devtools. On a 401, prompt for the token, store it, retry; a Settings
-  entry to clear it. Mostly `ui/src/lib/api.ts` plus one dialog.
-
-## Cancel (Jasper, 2026-09-29)
-- **Cancel must stop everything the turn is doing.** Today `POST …/cancel` sets a flag
-  that the runner reads between steps and on each streamed delta (`runner.py`
-  `_call_model`), then closes the HTTP stream. Gaps: a model call still waiting in the
-  priority queue or in prompt processing (no delta yet) is not interrupted; a running
-  tool call (`shell` up to its timeout, `http`, MCP) runs to completion because the
-  dispatcher's `wait_for` watches only the timeout; background processes the turn
-  started keep running; sub-threads the turn spawned keep running. Wanted: cancel
-  wakes the queue wait and the tool wait (one cancellation signal both await), kills
-  the in-flight process of a foreground `shell`, stops processes this turn started,
-  cancels the turn's own sub-threads, and the UI says what was stopped.
-
-## Permissions (Jasper, 2026-09-29)
-- **Desk auto-approve must actually work.** With `permissions.desk_auto_approve` on, the
-  desk still asks in practice. The switch lives in `dispatch.py` `_auto_approved`, which
-  is consulted twice (a non-protected fs-guard ask; a policy ask/classify) and grants
-  only when the context's conversation row says `kind == "desk"`, the tool is not
-  `shell`, or the shell command splits cleanly and names no protected path. Suspects:
-  a `ToolContext` built without `kind` (resumed calls via `_repair`, calls dispatched
-  from a sub-step), a shell command the pre-filter cannot split (quotes, heredocs,
-  `&&` chains) falling to the ordinary path, MCP tool names taking a path that skips
-  the check. Reproduce with a test per suspect, fix, and make the tool row say why a
-  desk call asked despite the switch.
-
-## Promotion (Jasper, 2026-09-29)
-- **Promote must find `uv` on a machine where it is not on PATH.** The 2026-09-29
-  21:02 promotion of `f0ff96e` failed at `uv sync`: `supervisor/__main__.py`
-  `uv_command()` tries `shutil.which("uv")`, then `sys.executable -m uv` — and under
-  `uv run` that interpreter is the project venv, which has no `uv` module (the same
-  failure as 2026-09-28; the retry at 21:41 got past it, cause unknown). On this box uv
-  is a pip user package under system Python 3.11, reachable only as `python -m uv`.
-  Wanted: a resolution chain that ends in something that works — PATH, the venv, the
-  user-site `Scripts/uv.exe`, every `py -0p` interpreter's `-m uv` — remembered once it
-  succeeds, and a `system.uv_path` setting as the override, UI-visible like every
-  other knob. The failure message names what was tried.
+## Known gaps from the 2026-10-05 batch (Jasper, 2026-10-05)
+- **Cancel across an approval pause.** "This turn" is one `run_turn` call: background
+  processes and sub-threads started before an approval pause are not stopped by a cancel
+  after the resume. Model calls outside the step loop (turn-start knowledge resolution,
+  the thread status safety net) are not raced; they are short.
+- **Desk auto-approve holds on a bare protected name.** A word matching a protected path
+  relative to the cwd holds even inside prose, e.g. `git commit -m "fix supervisor"` in
+  the repo root. Costs a click, never a deny.
 
 ## Dropped
 - **Ignore-aware search** (audit #4) — dropped 2026-09-29: not felt as friction yet;

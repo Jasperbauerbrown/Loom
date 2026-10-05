@@ -19,7 +19,9 @@ Every model tool call goes through the one dispatcher, so maintenance obeys exac
 same permissions as a turn. There is no turn to pause, though, so an approval is handled
 by one defined behaviour (03 §8.6): the approval is denied immediately — no stale
 pending row is left behind — and the proposed call is posted as a `knowledge` item on
-the now board, where the person can see it and do it themselves. The sweep continues.
+the now board, carrying the exact call. The sweep continues. The person's Apply click
+(`apply_hand_back`) runs that call through the same dispatcher, the click standing as
+the approval, and records the result on the item.
 
 Nothing here asks permission to *think*: there is no approval gate on the pass itself
 (takeaways §3). What it did is visible instead — git commits, now-board items, and the
@@ -113,6 +115,10 @@ def idle_due(*, idle_for: float | None, since_last_pass: float, idle_seconds: fl
 # ---------------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------------
+def _mb(nbytes: int) -> str:
+    return f"{int(nbytes) / (1024 * 1024):.1f} MB"
+
+
 def new_report(reason: str) -> dict[str, Any]:
     return {
         "started_at": db.now_iso(),
@@ -121,7 +127,10 @@ def new_report(reason: str) -> dict[str, Any]:
         "consolidated": [],                       # [{conversation_id, events, writes}]
         "curated": {"candidates": 0, "applied": 0},
         "archived": 0,
-        "pruned_artifacts": 0,
+        "pruned_artifacts": 0,                    # spill rows dropped + images deleted
+        "pruned_files": 0,                        # every file the artifacts prune removed
+        "pruned_bytes": 0,
+        "prune_failures": 0,                      # entries it could not remove (locked, perms)
         "committed": None,                        # sha of the safety-net commit
         "external_commit": None,                  # sha of the "user: edit ..." commit
         "errors": [],
@@ -485,7 +494,13 @@ class Maintenance:
 
         if self.app.artifacts is not None:
             try:
-                report["pruned_artifacts"] = self.app.artifacts.prune_archived()
+                pruned = await self.app.artifacts.aprune()
+                report["pruned_artifacts"] = pruned["artifacts"]
+                report["pruned_files"] = pruned["files"]
+                report["pruned_bytes"] = pruned["bytes"]
+                report["prune_failures"] = pruned["failed"]
+                if pruned["files"]:
+                    self._progress("housekeep", f"pruned {pruned['files']} artifact file(s), {_mb(pruned['bytes'])}")
             except Exception as exc:
                 report["errors"].append(f"prune: {type(exc).__name__}: {exc}")
         if getattr(self.app, "processes", None) is not None:
@@ -568,7 +583,7 @@ class Maintenance:
             call_id=call.id,
             request_text=SOURCE,
             priority=PRIORITY_MAINTENANCE,
-            extras={"maintenance": True},
+            extras={"maintenance": True},  # keeps desk auto-approve out (dispatch._auto_hold)
         )
         outcome = await dispatch(self.app, ctx, call)
         if isinstance(outcome, ApprovalNeeded):
@@ -582,30 +597,10 @@ class Maintenance:
 
     async def _hand_back(self, outcome: ApprovalNeeded, call: Any) -> None:
         """03 §8.6: maintenance never leaves an approval pending. The row is decided at
-        once so nothing stale lingers, and the proposal becomes a now-board item.
-
-        The desk's turn lock is held across the decision for one reason: `approvals.decide`
-        wakes the conversation an approval belongs to, and here no turn is waiting. An
-        already-locked conversation needs no help — `wake` declines a locked conversation
-        too. Acquiring an unlocked asyncio lock does not suspend, so nothing interleaves.
+        once so nothing stale lingers, and the proposal becomes a now-board item that
+        carries the exact call, which `apply_hand_back` runs when the person clicks Apply.
         """
-        from ..conversation import events
-        from ..tools import approvals
-
-        cid = self.app.desk_id()
-        lock = self.app.lock_for(cid)
-        held = False
-        if not lock.locked():
-            await lock.acquire()
-            held = True
-        try:
-            approvals.decide(self.app, outcome.approval_id, "deny")
-            row = self.app.conversation(cid)
-            if row and row["status"] == "waiting_approval" and not approvals.pending(self.app, cid):
-                events.set_status(self.app, cid, "idle")
-        finally:
-            if held:
-                lock.release()
+        await decide_turnless(self.app, outcome.approval_id, "deny")
 
         args = call.arguments if isinstance(call.arguments, dict) else {}
         target = str(args.get("path") or "")
@@ -644,7 +639,9 @@ class Maintenance:
             parts.append(f"{writes} note write{'s' if writes != 1 else ''}")
         if report["archived"]:
             parts.append(f"{report['archived']} thread{'s' if report['archived'] != 1 else ''} archived")
-        if report["pruned_artifacts"]:
+        if report.get("pruned_files"):
+            parts.append(f"{report['pruned_files']} artifact file(s) pruned ({_mb(report['pruned_bytes'])})")
+        elif report["pruned_artifacts"]:
             parts.append(f"{report['pruned_artifacts']} artifact(s) pruned")
         if report["external_commit"]:
             parts.append("external edits committed")
@@ -716,6 +713,98 @@ def external_message(paths: list[str], shown: int = 5) -> str:
 def _iso_days_ago(days: int) -> str:
     moment = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=int(days))
     return moment.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+# ---------------------------------------------------------------------------------
+# Hand-backs: the turnless approver and Apply (03 §8.6)
+# ---------------------------------------------------------------------------------
+RESULT_CHARS = 2_000  # tool output kept on the item as the reported result
+
+
+async def decide_turnless(app: Any, approval_id: str, decision: str) -> None:
+    """Answer an approval that no turn is waiting on: maintenance's hand-back denies,
+    Apply allows once. The desk's turn lock is held across the decision for one reason:
+    `approvals.decide` wakes the conversation an approval belongs to, and here no turn
+    is waiting. An already-locked conversation needs no help — `wake` declines a locked
+    conversation too — but its status goes back to `running`, since a turn holds it.
+    Acquiring an unlocked asyncio lock does not suspend, so nothing interleaves."""
+    from ..conversation import events
+    from ..tools import approvals
+
+    cid = app.desk_id()
+    lock = app.lock_for(cid)
+    held = False
+    if not lock.locked():
+        await lock.acquire()
+        held = True
+    try:
+        approvals.decide(app, approval_id, decision)
+        row = app.conversation(cid)
+        if row and row["status"] == "waiting_approval" and not approvals.pending(app, cid):
+            events.set_status(app, cid, "idle" if held else "running")
+    finally:
+        if held:
+            lock.release()
+
+
+class NotApplicable(ValueError):
+    """The item carries no tool call to apply."""
+
+
+async def apply_hand_back(app: Any, item_id: str) -> dict[str, Any]:
+    """Run the tool call a hand-back item carries, with the click as the approval.
+
+    The call goes through the one dispatcher under the same gate a turn meets; when the
+    gate asks, the click is the answer (`allow`, once — nothing widens) and the approved
+    call runs through `execute`, exactly as the runner resumes an allowed call. The
+    outcome is recorded on the item before anything else: `applying` first (persist
+    before act), then `ok` — and the item is dismissed — or `error`, and the item stays
+    with the error text on it. A second click while one is in flight, or on an item
+    already applied, returns the row unchanged: nothing runs twice.
+
+    Raises `LookupError` for an unknown item, `NotApplicable` for one with no call."""
+    from ..ids import ulid
+    from ..models.types import ToolCall
+    from ..tools import approvals
+    from ..tools import dispatch as dispatcher
+
+    row = items.get(app, item_id)
+    if row is None:
+        raise LookupError(item_id)
+    action = row["action"] or {}
+    name, args = action.get("kind"), action.get("args")
+    if row["kind"] != "knowledge" or not isinstance(args, dict) or app.tools.get(str(name)) is None:
+        raise NotApplicable(f"item {item_id} carries no tool call to apply")
+    inflight: set[str] = app.extras.setdefault("applying_items", set())
+    if row["dismissed_at"] or item_id in inflight:
+        return row
+    inflight.add(item_id)
+    try:
+        items.set_result(app, item_id, {"state": "applying", "content": ""})
+        call = ToolCall(id=ulid(), name=str(name), arguments=dict(args))
+        ctx = ToolContext(
+            app=app,
+            conversation=app.conversation(app.desk_id()),
+            call_id=call.id,
+            request_text=str(row["title"]),
+            request_from_user=False,
+            extras={approvals.TURNLESS: True},  # the click answers any ask; no judge, no card
+        )
+        try:
+            outcome = await dispatcher.dispatch(app, ctx, call)
+            if isinstance(outcome, ApprovalNeeded):
+                await decide_turnless(app, outcome.approval_id, "allow")
+                outcome = await dispatcher.execute(app, ctx, app.tools.get(call.name), call.arguments)
+            ok, content = bool(outcome.ok), str(outcome.content or "")
+        except Exception as exc:  # dispatch never raises; the approver might
+            log.warning("apply %s raised: %r", item_id, exc, exc_info=exc)
+            ok, content = False, f"{type(exc).__name__}: {exc}"
+        items.set_result(app, item_id, {"state": "ok" if ok else "error", "content": content[:RESULT_CHARS]})
+        if ok:
+            items.dismiss(app, item_id)
+    finally:
+        inflight.discard(item_id)
+    return items.get(app, item_id)  # type: ignore[return-value]
 
 
 # ---------------------------------------------------------------------------------

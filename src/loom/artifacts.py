@@ -3,8 +3,10 @@
 Tool output longer than `conversation.tool_output_cap` is written whole to
 `artifacts/<conversation>/<event>.txt` and replaced in the transcript by head + tail +
 a pointer line. The full text stays reachable through `artifact_recall(id, offset,
-limit)` for as long as the conversation exists; archived conversations' artifacts are
-pruned by maintenance after `conversation.artifact_retention_days`.
+limit)` for as long as the conversation exists. Maintenance prunes (2026-10-05): an
+archived conversation's scratch after `conversation.scratch_archived_grace_days`, its
+whole folder after `conversation.artifact_retention_days`, and a live conversation's
+scratch untouched for `conversation.scratch_idle_days` (see `Store.prune`).
 
 `bound` is the only entry point the dispatcher uses: it decides, spills, and returns the
 text to persist.
@@ -17,10 +19,13 @@ base64. Write-before-reference: the file lands before any event points at it.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import datetime as _dt
 import logging
+import os
 import re
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -284,43 +289,259 @@ class Store:
         return chunk
 
     # -- maintenance ------------------------------------------------------------
-    def prune_archived(self, retention_days: int | None = None) -> int:
-        """Delete files and rows for artifacts of archived conversations whose
-        `archived_at` is older than the retention window. Returns the count removed."""
-        if retention_days is None:
-            retention_days = int(self.app.settings.get("conversation.artifact_retention_days"))
-        cutoff = (
-            _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=int(retention_days))
-        ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-        rows = self.app.db.execute(
-            "SELECT a.id, a.path FROM artifacts a JOIN conversations c ON c.id = a.conversation_id "
-            "WHERE c.status='archived' AND c.archived_at IS NOT NULL AND c.archived_at < ?",
-            (cutoff,),
-        ).fetchall()
-        removed = 0
-        for row in rows:
+    # Three rules, one walker (2026-10-05). Spills and process logs (referenced by rows)
+    # and `img_*` (referenced by event meta) are a conversation's real artifacts;
+    # everything else in its folder is scratch nothing reads back (TMPDIR, downloads,
+    # browser profiles).
+    #   archived past `artifact_retention_days`     -> the whole folder and its spill rows;
+    #   archived past `scratch_archived_grace_days` -> everything but the real artifacts;
+    #   live (the desk included), `scratch_idle_days` > 0 -> scratch with an older mtime.
+    # SQLite stays on the calling thread (`_plan`); only the file walk (`_sweep`) may
+    # run in a worker thread (`aprune`).
+    def prune(self) -> dict[str, int]:
+        """Run the three rules synchronously. Returns `{"artifacts", "files", "bytes",
+        "failed"}`: spill rows dropped plus images deleted (the historical count), every
+        file removed, their bytes, and entries that could not be removed."""
+        return self._sweep(self._plan())
+
+    async def aprune(self) -> dict[str, int]:
+        """`prune()` with the file walk off the event loop."""
+        plan = self._plan()
+        return await asyncio.to_thread(self._sweep, plan)
+
+    def _plan(self) -> dict[str, Any]:
+        settings = self.app.settings
+        retention = int(settings.get("conversation.artifact_retention_days"))
+        grace = int(settings.get("conversation.scratch_archived_grace_days"))
+        idle = int(settings.get("conversation.scratch_idle_days"))
+        now = _dt.datetime.now(_dt.timezone.utc)
+        purge_cut = _iso(now - _dt.timedelta(days=retention))
+        grace_cut = _iso(now - _dt.timedelta(days=grace))
+
+        modes: dict[str, str] = {}
+        for row in self.app.db.execute("SELECT id, status, archived_at FROM conversations").fetchall():
+            archived_at = row["archived_at"]
+            if row["status"] != "archived":
+                modes[row["id"]] = "idle"
+            elif archived_at and archived_at < purge_cut:
+                modes[row["id"]] = "purge"
+            elif archived_at and archived_at <= grace_cut:
+                modes[row["id"]] = "scratch"
+            else:
+                modes[row["id"]] = "skip"  # inside the grace period: untouched
+
+        keep: dict[str, set[str]] = {}
+        for row in self.app.db.execute("SELECT conversation_id, path FROM artifacts").fetchall():
+            keep.setdefault(row["conversation_id"], set()).add(Path(row["path"]).name)
+        for row in self.app.db.execute(
+            "SELECT conversation_id, log_path FROM processes WHERE log_path IS NOT NULL"
+        ).fetchall():
+            keep.setdefault(row["conversation_id"], set()).add(Path(row["log_path"]).name)
+
+        # Persist before act: the rows go first; a crash mid-walk leaves only files the
+        # next pass removes (the folder sweep is keyed on archived_at, not on rows).
+        rows_dropped = 0
+        for cid, mode in modes.items():
+            if mode == "purge":
+                cur = self.app.db.execute("DELETE FROM artifacts WHERE conversation_id=?", (cid,))
+                rows_dropped += max(0, cur.rowcount or 0)
+        return {
+            "root": self.root,
+            "modes": modes,
+            "keep": keep,
+            "idle_cutoff": (now - _dt.timedelta(days=idle)).timestamp() if idle > 0 else None,
+            "rows_dropped": rows_dropped,
+        }
+
+    @staticmethod
+    def _sweep(plan: dict[str, Any]) -> dict[str, int]:
+        stats = {"artifacts": int(plan["rows_dropped"]), "files": 0, "bytes": 0, "failed": 0}
+        try:
+            folders = [e for e in os.scandir(plan["root"]) if not _is_link(e) and e.is_dir(follow_symlinks=False)]
+        except OSError as exc:
+            log.warning("artifacts root unreadable: %s", exc)
+            return stats
+        for entry in folders:
+            # A folder with no conversation row (a spawn that failed after writing) is
+            # swept like a live one: its scratch ages out, nothing references it.
+            mode = plan["modes"].get(entry.name, "idle")
+            folder = Path(entry.path)
+            keep = frozenset(plan["keep"].get(entry.name, ()))
+            if mode == "purge":
+                _walk(folder, stats, keep=frozenset(), keep_images=False, cutoff=None, top=True)
+                if not _remove(os.rmdir, folder):
+                    stats["failed"] += 1
+            elif mode == "scratch":
+                _walk(folder, stats, keep=keep, keep_images=True, cutoff=None, top=True)
+            elif mode == "idle" and plan["idle_cutoff"] is not None:
+                _walk(folder, stats, keep=keep, keep_images=True, cutoff=plan["idle_cutoff"], top=True)
+        return stats
+
+    # -- disk usage ---------------------------------------------------------------
+    def usage(self, limit: int = 10) -> dict[str, Any]:
+        """Synchronous `ausage()`."""
+        return self._usage_finish(_usage_walk(self.root), limit)
+
+    async def ausage(self, limit: int = 10) -> dict[str, Any]:
+        """`{"total_bytes", "total_files", "folders", "conversations": [{"id", "title",
+        "kind", "status", "bytes", "files"}]}`: the whole artifacts folder and its
+        `limit` largest conversation folders, with titles. The walk runs off the loop."""
+        sizes = await asyncio.to_thread(_usage_walk, self.root)
+        return self._usage_finish(sizes, limit)
+
+    def _usage_finish(self, sizes: dict[str, tuple[int, int]], limit: int) -> dict[str, Any]:
+        largest = sorted(sizes.items(), key=lambda kv: kv[1][0], reverse=True)[: max(0, int(limit))]
+        rows = []
+        for cid, (nbytes, nfiles) in largest:
+            conv = self.app.db.execute("SELECT title, kind, status FROM conversations WHERE id=?", (cid,)).fetchone()
+            rows.append({
+                "id": cid,
+                "title": conv["title"] if conv else None,
+                "kind": conv["kind"] if conv else None,
+                "status": conv["status"] if conv else None,
+                "bytes": nbytes,
+                "files": nfiles,
+            })
+        return {
+            "total_bytes": sum(b for b, _ in sizes.values()),
+            "total_files": sum(f for _, f in sizes.values()),
+            "folders": len(sizes),
+            "conversations": rows,
+        }
+
+
+def _iso(moment: _dt.datetime) -> str:
+    return moment.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _is_link(entry: os.DirEntry) -> bool:
+    """A symlink or (Windows) junction: never followed, only ever unlinked itself."""
+    try:
+        return entry.is_symlink() or entry.is_junction()
+    except OSError:
+        return True
+
+
+def _remove(fn: Any, path: str | Path) -> bool:
+    """`fn(path)` (unlink or rmdir); a read-only entry is made writable and retried once.
+    False when it still cannot go (locked by a running program, permissions)."""
+    try:
+        fn(path)
+        return True
+    except FileNotFoundError:
+        return True
+    except PermissionError:
+        try:
+            os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+            fn(path)
+            return True
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+    except OSError:
+        return False
+
+
+def _walk(
+    path: Path,
+    stats: dict[str, int],
+    *,
+    keep: frozenset[str],
+    keep_images: bool,
+    cutoff: float | None,
+    top: bool,
+) -> bool:
+    """Delete what may go under `path`; True when `path` is empty afterwards. `keep` and
+    `keep_images` apply at the top level only (spills, logs and images live there; an
+    `img_*` deep in a scratch tree is scratch). `cutoff` None deletes regardless of age,
+    otherwise only entries whose mtime is older. Links are removed, never entered."""
+    try:
+        entries = list(os.scandir(path))
+    except FileNotFoundError:
+        return True
+    except OSError:
+        stats["failed"] += 1
+        return False
+    remaining = 0
+    for entry in entries:
+        if top and (entry.name in keep or (keep_images and entry.name.startswith("img_"))):
+            remaining += 1
+            continue
+        try:
+            st = entry.stat(follow_symlinks=False)
+        except OSError:
+            remaining += 1
+            stats["failed"] += 1
+            continue
+        old = cutoff is None or st.st_mtime < cutoff
+        if _is_link(entry):
+            if not old:
+                remaining += 1
+            elif _remove(os.unlink, entry.path):
+                stats["files"] += 1
+            else:
+                remaining += 1
+                stats["failed"] += 1
+            continue
+        if entry.is_dir(follow_symlinks=False):
+            before = stats["files"]
+            empty = _walk(Path(entry.path), stats, keep=keep, keep_images=keep_images, cutoff=cutoff, top=False)
+            # A directory emptied by this sweep goes; an already-empty one only when it is
+            # itself old (a fresh TMPDIR about to be written into stays).
+            if empty and (stats["files"] > before or old):
+                if _remove(os.rmdir, entry.path):
+                    continue
+                stats["failed"] += 1
+            remaining += 1
+            continue
+        if not old:
+            remaining += 1
+        elif _remove(os.unlink, entry.path):
+            stats["files"] += 1
+            stats["bytes"] += st.st_size
+            if top and entry.name.startswith("img_"):  # only reachable when purging
+                stats["artifacts"] += 1
+        else:
+            remaining += 1
+            stats["failed"] += 1
+    return remaining == 0
+
+
+def _usage_walk(root: Path) -> dict[str, tuple[int, int]]:
+    """{folder name: (bytes, files)} for every conversation folder under `root`."""
+    sizes: dict[str, tuple[int, int]] = {}
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        return sizes
+    for entry in entries:
+        if not _is_link(entry) and entry.is_dir(follow_symlinks=False):
+            sizes[entry.name] = _size(Path(entry.path))
+    return sizes
+
+
+def _size(path: Path) -> tuple[int, int]:
+    """(bytes, files) under `path`; links count as entries but are never followed."""
+    total = files = 0
+    stack = [path]
+    while stack:
+        try:
+            entries = list(os.scandir(stack.pop()))
+        except OSError:
+            continue
+        for entry in entries:
             try:
-                Path(row["path"]).unlink(missing_ok=True)
-            except OSError as exc:
-                log.warning("artifact %s: unlink failed (%s); dropping the row anyway", row["id"], exc)
-            self.app.db.execute("DELETE FROM artifacts WHERE id=?", (row["id"],))
-            removed += 1
-        # Images have no rows: sweep the same conversations' folders by name.
-        stale = self.app.db.execute(
-            "SELECT id FROM conversations WHERE status='archived' AND archived_at IS NOT NULL AND archived_at < ?",
-            (cutoff,),
-        ).fetchall()
-        for conv in stale:
-            folder = self.root / str(conv["id"])
-            if not folder.is_dir():
+                if _is_link(entry):
+                    files += 1
+                elif entry.is_dir(follow_symlinks=False):
+                    stack.append(Path(entry.path))
+                else:
+                    total += entry.stat(follow_symlinks=False).st_size
+                    files += 1
+            except OSError:
                 continue
-            for path in folder.glob("img_*"):
-                try:
-                    path.unlink()
-                    removed += 1
-                except OSError as exc:
-                    log.warning("image %s: unlink failed (%s)", path.name, exc)
-        return removed
+    return total, files
 
 
 def conversation_dir(app: Any, conversation_id: str) -> Path:

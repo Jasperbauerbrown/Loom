@@ -1371,3 +1371,84 @@ sessions do not re-litigate.
   budget before the second match's body was reached: a live turn that resolved both
   project notes loaded one and stubbed the other. `preload` now loads every matched
   note's body first, then the first-hop links in the same order as before.
+- **2026-10-05** — **Artifacts prune scratch, not just spills and images.** The live
+  `artifacts/` folder was 1.9 GB, ~15 MB of it real artifacts; the rest was scratch
+  (pytest temp trees under the shell's `TMPDIR`, throwaway browser profiles), the desk
+  alone 747 MB. A folder's real artifacts are now defined once: the files rows
+  reference (spills, process logs) plus top-level `img_*`; everything else is scratch.
+  `Store.prune` (housekeeping) applies three rules through one walker: archived past
+  `artifact_retention_days` → spill rows, then the whole folder; archived past
+  `scratch_archived_grace_days` (default 1) → everything but the real artifacts; live
+  conversations, the desk included, with `scratch_idle_days` > 0 (default 7) → scratch
+  whose mtime is older, recursively, directories it empties going with it. Mtime, not
+  atime (atime is off or coarse on most volumes); a fresh empty `TMPDIR` stays. Links and
+  junctions are unlinked, never followed; a read-only entry is chmodded and retried once;
+  a locked file is skipped and counted (`prune_failures`), not an error — the next pass
+  tries again. Process logs count as real artifacts while their row exists, so a live
+  `process_output` never loses its log to the idle sweep. The report gains
+  `pruned_files`/`pruned_bytes`/`prune_failures`; disk use (total plus the ten largest
+  folders, titled) is `GET /maintenance/artifacts`, rendered in the maintenance panel on
+  open, after a pass and on Refresh, never on a timer, since it walks the tree.
+- **2026-10-05** — **Apply on a maintenance hand-back.** A handed-back write was a card
+  the person could only read and redo by hand. The card now has Apply
+  (`POST /items/{id}/apply`): the stored call goes through the one dispatcher under the
+  same gate, and when the gate asks, the click is the answer — `allow` once, decided by
+  the same turnless approver the hand-back uses to deny (desk lock held so nothing is
+  woken). The outcome lives on the item (`action.result`, `applying` written before the
+  call runs): success dismisses the item, failure keeps it with the error and a Retry.
+  Double clicks run nothing twice (an in-flight guard; an applied item is returned
+  as-is). No migration: the result rides in the item's existing `action` JSON.
+  The context carries a `turnless_approver` flag: under `classify` the gate asks
+  rather than spending a judge call (a click outranks the judge), and the approval row
+  is written but never surfaced (no card, notification item, toast or status change).
+- **2026-10-05** — **LAN token in the UI.** Any `/api` 401 opens one shared token dialog (a single promise in `api.ts`, however many calls fail), the answer is stored as `loom_token` and failed calls retry; cancelling surfaces the 401. A token change reconnects `/ws` immediately. Settings, General has a "Clear stored token" button. (Closes the backlog item "LAN access".)
+- **2026-10-05** — **Cancel stops everything the turn is doing: one signal, one race.**
+  The cancel flag was read between steps and on streamed deltas, so a model call still
+  queued or in prompt processing, a running tool call (shell up to its timeout, http,
+  MCP), the turn's background processes and its sub-threads all ran on. Now each
+  conversation has one cancel signal (`app.cancel_flags`, an `asyncio.Event`, cleared at
+  turn end), and every await a turn spends real time in goes through `cancel.race`: the
+  whole model call, each tool call's whole dispatch (judge and hooks included), the
+  forced compactions. The signal winning *cancels* the work, and cancellation is what
+  stops it — the queue drops the waiter, the HTTP stream closes, `shell` kills its tree
+  the way it does on a timeout and keeps what the command printed. No per-tool path. The
+  race wraps the dispatch at the runner rather than living inside the dispatcher's
+  `wait_for` because nesting two races over one signal lost the shell's answer and
+  double-counted what was stopped; the cancellation still reaches the handler through
+  that `wait_for`. Every cancelled or unstarted call gets one result (`ok=false`,
+  `meta.cancelled`, `prompts/context/tool-cancelled.md`); the turn ends with one system
+  event naming what was stopped, written before the turn stops the background processes
+  it started (ULID floor) and signals the sub-threads it spawned that are still running,
+  which recurse. A cancelled thread ends `idle` and does not report to its parent.
+- **2026-10-05** — Desk auto-approve works. With the switch on, the desk still asked: 3 of
+  the first 13 desk shell calls leaked, one as a card and two as the classifier
+  generation the switch promises won't happen. The switch had reused the pre-filter's
+  machinery. Its splitter gives up on every newline, so every heredoc asked. It also
+  hands a quoted blob over as one word. And its `names_protected` counts any `$VAR`
+  path it cannot resolve as protected. That bias is right for the pre-filter, where a
+  miss costs one classifier call, and wrong for a switch whose miss costs a click.
+  `curl -w "\nHTTP %{http_code}\n"` and `powershell … \$_.Name` turned the switch off.
+  Decision: the switch asks its own question, "does the raw text actually refer to a
+  protected path?" (`shell_prefilter.protected_reference`), and parses nothing. It
+  finds absolute spellings of a protected path as bounded substrings, including the
+  MSYS/Cygwin/WSL drive mounts, backslashes, `~` and environment variables that are
+  set. It also resolves every word against the shell's cwd and any `cd` target named
+  before it, and matches globs per segment. An unset variable, a URL or an opaque blob
+  names nothing. A check that raises holds (fail closed). MCP and connector tools'
+  string arguments are checked as absolute paths too, since the fs guard cannot see
+  their paths. A held call still goes down the ordinary path (guard ask, pre-filter,
+  judge or ask), so the switch stays grant-only. Its row and approval say why:
+  `(desk auto-approve held: names protected path <p>)` in the reason, and
+  `meta.auto_held`. The kind is read from the row when a context lacks it. The
+  pre-filter now consults the same check after its own, because
+  `cd ~/.loom && cat secrets.json` was a pre-filter grant (cd and cat are both
+  read-only, and its check did not follow `cd`). A stage that deletes or moves (`rm`,
+  `rmdir`, `mv`, `del`, `rd`, `Remove-Item`, `Move-Item`, `rmtree`-style calls,
+  `git clean`, `find … -delete`) also counts a folder above a protected path, so
+  `rm -rf ~/.loom` holds. A read-only command that names that folder (`ls ~`, `cd`
+  into the repo) does not. This was checked against the default protected list, so
+  ordinary repo clean-up (`rm -rf build`, `__pycache__`, `git clean -fd`) still runs.
+  The switch never reaches threads or a maintenance pass. Maintenance runs on the desk
+  conversation but stops at approval gates and hands back, and a desk switch that
+  widened it would break the same rule. Nothing static denies.
+- **2026-10-05** — **Promotion finds uv by a resolution chain, not an assumption.** The supervisor's `uv_command(home)` tries, first working wins (each verified with `--version`): `system.uv_path` setting (uv executable, or a python run as `-m uv`), the command remembered in `H/uv-command.json`, `uv` on PATH, `sys.executable -m uv`, each Python's user-site `Scripts/uv.exe`, each `py -0p` interpreter's `-m uv`. The winner is remembered and re-verified before reuse. Failure lists every candidate and its reason. Rationale: under `uv run` the supervisor's interpreter is the project venv with no uv module; two promotions (2026-09-28, 2026-09-29) failed "No module named uv".

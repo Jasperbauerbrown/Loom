@@ -5,6 +5,8 @@ rethinks, tool `item_post`.
     items.post(app, kind, title, body="", conversation_id=None, source="", action=None,
                notify=False) -> row
     items.seen(app, id) / items.dismiss(app, id) / items.unseen(app) / items.get(app, id)
+    items.set_result(app, id, {state, content}) -> row with `action.result` recorded
+        (the outcome of Apply on a maintenance hand-back, 03 §8.6)
     items.by_source(app, source) -> rows a writer posted under one `source` string, so
         it can resolve its own item later (an approval dismisses its notification when
         it is answered)
@@ -103,3 +105,17 @@ def seen(app, item_id: str) -> dict[str, Any] | None:  # type: ignore[no-untyped
 
 def dismiss(app, item_id: str) -> dict[str, Any] | None:  # type: ignore[no-untyped-def]
     return _mark(app, item_id, "dismissed_at")
+
+
+def set_result(app, item_id: str, result: dict[str, Any]) -> dict[str, Any] | None:  # type: ignore[no-untyped-def]
+    """Record the outcome of acting on an item's `action` as `action.result`
+    (`{state: applying|ok|error, content, at}`), so every surface shows it."""
+    row = get(app, item_id)
+    if row is None:
+        return None
+    action = dict(row["action"] or {})
+    action["result"] = {**result, "at": db.now_iso()}
+    app.db.execute("UPDATE items SET action=? WHERE id=?", (db.dumps(action), item_id))
+    row = get(app, item_id)
+    app.bus.emit("item.updated", row, row.get("conversation_id") if row else None)
+    return row

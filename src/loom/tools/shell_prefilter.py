@@ -202,6 +202,195 @@ def names_protected(words: Iterable[str], protected: Iterable[str] | None, cwd: 
     return False
 
 
+# -- protected_reference: the desk auto-approve's check ------------------------------
+# `names_protected` serves the pre-filter, whose miss costs one classifier call, so it
+# leans to "protected" on anything it cannot resolve. Desk auto-approve's miss costs a
+# click and is meant to cost nothing, so it asks the opposite question: does the raw
+# text contain an actual reference to a protected path? (2026-10-05)
+_WORD_BREAK = re.compile(r"[\s;|&<>()=,`]+")
+_VAR = re.compile(r"\$\{(\w+)\}|\$(\w+)|%(\w+)%")
+_TILDE = re.compile(r"(?:^|(?<=[\s;|&<>()=,`]))~(?=/|$|[\s;|&<>()=,`])")
+_URL = re.compile(r"^[a-z][a-z0-9+.-]+:/", re.I)  # a scheme of 2+ letters; `c:/` is a drive
+_PATH_CONT = "._-+@~#"
+_GLOB = re.compile(r"[*?\[]")
+
+
+def _env(name: str) -> str | None:
+    value = os.environ.get(name)
+    if value is None and name == "HOME":
+        value = os.path.expanduser("~")  # Git Bash sets HOME; the Windows process may not
+    return value
+
+
+def _flatten(text: str) -> str:
+    """The command as one comparable string: known variables and `~` expanded (an
+    unknown one stays as written, so it can never match), quotes dropped, every
+    backslash run read as one `/`, slash runs collapsed, case folded on Windows."""
+    text = _VAR.sub(lambda m: _env(m.group(1) or m.group(2) or m.group(3)) or m.group(0), text)
+    home = os.path.expanduser("~")
+    text = _TILDE.sub(lambda m: home.replace("\\", "/"), text)
+    text = text.replace('"', "").replace("'", "")
+    text = re.sub(r"[\\/]+", "/", text)
+    return text.lower() if os.name == "nt" else text
+
+
+def _spellings(path: str) -> set[str]:
+    """How a shell may write one absolute path: as stored, and through the MSYS /
+    Cygwin / WSL drive mounts (`/c/...`)."""
+    p = _key(path)
+    out = {p}
+    m = re.match(r"^([a-zA-Z]):/(.*)$", p)
+    if m:
+        drive, rest = m.group(1).lower(), m.group(2)
+        out |= {f"/{drive}/{rest}", f"/cygdrive/{drive}/{rest}", f"/mnt/{drive}/{rest}"}
+    return out
+
+
+def _bounded(text: str, start: int, end: int) -> bool:
+    """`text[start:end]` is a whole path, or the head of a longer path under it."""
+    before = text[start - 1] if start > 0 else " "
+    if before.isalnum() or before in _PATH_CONT:
+        return False
+    if end >= len(text):
+        return True
+    after = text[end]
+    return after == "/" or not (after.isalnum() or after in _PATH_CONT)
+
+
+def _glob_regex(pattern: str) -> re.Pattern[str] | None:
+    """A shell glob as a regex in which `*` and `?` stay inside one path segment."""
+    out: list[str] = []
+    i = 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "*":
+            out.append("[^/]*")
+        elif ch == "?":
+            out.append("[^/]")
+        elif ch == "[":
+            close = pattern.find("]", i + 1)
+            if close < 0:
+                out.append(re.escape(ch))
+            else:
+                body = pattern[i + 1 : close].replace("\\", "\\\\")
+                out.append("[" + ("^" + body[1:] if body.startswith("!") else body) + "]")
+                i = close
+        else:
+            out.append(re.escape(ch))
+        i += 1
+    try:
+        return re.compile("".join(out))
+    except re.error:
+        return None
+
+
+_STAGE_BREAK = re.compile(r"[;|&\r\n]+")
+# A stage that deletes or moves takes a protected path with it when it names any folder
+# above one (`rm -rf ~/.loom`), so there an ancestor counts as a reference too. Matched
+# on a word's command name and on the last dotted part (`shutil.rmtree`, `os.unlink`).
+_DESTRUCTIVE = frozenset(
+    {"rm", "rmdir", "mv", "del", "erase", "rd", "move", "remove-item", "ri", "move-item", "mi",
+     "rmtree", "removedirs", "unlink", "rimraf", "shred"}
+)
+
+
+def _destructive(words: list[str]) -> bool:
+    """The stage deletes or moves: a delete/move command anywhere in it, `git clean`,
+    or `find … -delete`."""
+    for i, word in enumerate(words):
+        name = command_name(word).lower()
+        if name in _DESTRUCTIVE or name.rsplit(".", 1)[-1] in _DESTRUCTIVE or word == "-delete":
+            return True
+        if name == "git" and i + 1 < len(words) and words[i + 1] == "clean":
+            return True
+    return False
+
+
+def _ancestors(key: str) -> list[str]:
+    parts = key.split("/")
+    return ["/".join(parts[:i]) or "/" for i in range(1, len(parts))]
+
+
+def _hits(target: str, keys: list[str], ancestors: bool = False) -> str | None:
+    """The protected key `target` is, or sits under; a glob also hits a key it matches.
+    With `ancestors`, a target above a key (or a glob matching a folder above one) hits."""
+    if _GLOB.search(target):
+        literal = _GLOB.split(target, 1)[0].rsplit("/", 1)[0]
+        regex = _glob_regex(target)
+        for key in keys:
+            if literal == key or literal.startswith(key + "/") or (regex is not None and regex.fullmatch(key)):
+                return key
+            if ancestors and regex is not None and any(regex.fullmatch(a) for a in _ancestors(key)):
+                return key
+        return None
+    for key in keys:
+        if target == key or target.startswith(key + "/"):
+            return key
+        if ancestors and key.startswith(target.rstrip("/") + "/"):
+            return key
+    return None
+
+
+def protected_reference(text: str, protected: Iterable[str] | None, cwd: str | None = None) -> str | None:
+    """The first protected path the raw `text` refers to, or None. Needs no parse —
+    quotes, heredocs, chains and substitutions are all just text — so there is no
+    "cannot tell" answer; the dispatcher reads a raise as one, and holds.
+
+    Either of two readings counts, each needing a protected path (or one under it):
+    (1) every absolute spelling of a protected path, searched as a bounded
+    substring, which survives quoting and spaces; (2) every word, split on whitespace
+    and shell punctuation, resolved like a path against `cwd` and against each
+    `cd`/`pushd` target the text names before it, globs included. In a stage that
+    deletes or moves (`rm`, `mv`, `Remove-Item`, `rmtree`, `git clean`, …) a folder
+    above a protected path counts too: `rm -rf ~/.loom` takes `secrets.json` with it,
+    while `ls ~` names nothing. A `$VAR` or
+    `%VAR%` set in the environment is expanded; one that is not, an opaque quoted blob
+    or a URL names nothing. `cwd=None` skips relative words (a caller whose working
+    directory is not the shell's)."""
+    originals = {_key(p): p for p in (protected or ()) if p}
+    keys = list(originals)
+    if not keys or not text:
+        return None
+    flat = _flatten(text)
+    for key in keys:
+        for spelling in _spellings(key):
+            at = flat.find(spelling)
+            while at >= 0:
+                if _bounded(flat, at, at + len(spelling)):
+                    return originals[key]
+                at = flat.find(spelling, at + 1)
+    from .fs_guard import normalise
+
+    bases: list[str] = [str(cwd)] if cwd else []
+    for stage in _STAGE_BREAK.split(flat):
+        words = _WORD_BREAK.split(stage)
+        ancestors = _destructive(words)
+        prev = ""
+        for word in words:
+            if not word or word.startswith("-") or "$" in word or "%" in word or "{" in word or _URL.match(word):
+                prev = word
+                continue
+            absolute = word.startswith(("/", "~")) or (len(word) > 1 and word[1] == ":")
+            if not absolute and not bases:
+                prev = word
+                continue
+            for base in (bases[-1:] or [None]) if prev in ("cd", "pushd") else (bases or [None]):
+                try:
+                    target = _key(normalise(word, cwd=base))
+                except Exception:
+                    continue
+                hit = _hits(target, keys, ancestors)
+                if hit:
+                    return originals[hit]
+            if prev in ("cd", "pushd"):
+                try:
+                    bases.append(normalise(word, cwd=bases[-1] if bases else None))
+                except Exception:
+                    pass
+            prev = word
+    return None
+
+
 def is_readonly(command: str, allowlist: list[str], protected: Iterable[str] | None = None, cwd: str | None = None) -> bool:
     """True only when every stage is plainly read-only and names no protected path.
     `cwd` is what relative paths in the command resolve against (the shell's working
@@ -234,6 +423,8 @@ def is_readonly(command: str, allowlist: list[str], protected: Iterable[str] | N
                 continue
             return False
         if names_protected(seen, protected, cwd):
+            return False
+        if protected_reference(command, protected, cwd):  # also follows `cd` and spellings `names_protected` misses
             return False
         return True
     except Exception:  # a pre-filter that raises would break a turn; doubt means classify

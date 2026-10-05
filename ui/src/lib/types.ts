@@ -98,6 +98,8 @@ export interface ToolResult {
   call_id: string;
   ok: boolean;
   preview: string;
+  /** stopped by the user's cancel (03 §6.4); `ok` is false too */
+  cancelled?: boolean;
   artifact_id?: string | null;
   /** images the tool returned, stored by the dispatcher (03 §4.4) */
   images?: ImageRef[];
@@ -491,7 +493,13 @@ export interface MaintenanceReport {
   consolidated: MaintenanceConsolidated[];
   curated: { candidates: number; applied: number };
   archived: number;
+  /** spill rows dropped plus images deleted */
   pruned_artifacts: number;
+  /** every file the artifacts prune removed (scratch included), and their bytes; absent on pre-2026-10-05 reports */
+  pruned_files?: number;
+  pruned_bytes?: number;
+  /** entries the prune could not remove (locked or permission-denied) */
+  prune_failures?: number;
   committed: string | null;
   external_commit: string | null;
   errors: string[];
@@ -508,6 +516,25 @@ export interface MaintenanceStatus {
   idle_seconds_remaining: number | null;
   next_nightly_at: string;
   last_report: MaintenanceReport | null;
+}
+
+/** `GET /maintenance/artifacts` (2026-10-05): artifacts disk use. */
+export interface ArtifactsUsageRow {
+  id: string;
+  /** null for a folder with no conversation row */
+  title: string | null;
+  kind: string | null;
+  status: string | null;
+  bytes: number;
+  files: number;
+}
+
+export interface ArtifactsUsage {
+  total_bytes: number;
+  total_files: number;
+  folders: number;
+  /** the largest conversation folders, biggest first */
+  conversations: ArtifactsUsageRow[];
 }
 
 export interface MaintenanceStage {

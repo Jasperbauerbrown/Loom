@@ -89,6 +89,12 @@ loom/
   database, when the release migrated it) if it does not hold. The three seams
   `snapshot`, `create_release` and `probe` are implemented as of the self-modification
   package; they stay module-level functions so tests drive them without a process.
+- uv is found, not assumed (decided 2026-10-05): `uv_command(home)` takes the first candidate whose
+  `--version` answers — the `system.uv_path` setting (a uv executable, or a python → `python -m uv`),
+  the command remembered in `APP_HOME/uv-command.json` (re-verified every use), `uv` on PATH,
+  `sys.executable -m uv`, each Python's user-site `Scripts/uv.exe` (this interpreter plus every
+  `py -0p` one), then each `py -0p` interpreter's `-m uv`. The winner is remembered. When none
+  works the promotion fails with a message listing every candidate tried and why it failed.
 - Every stage appends one JSON line `{ts, stage, ok, message, ref, conversation_id}` to
   `APP_HOME/promote.log`. The supervisor cannot tell the backend directly — it is
   restarting it — so the file is the channel and the backend republishes it (§15.2).
@@ -301,6 +307,28 @@ Tool output longer than `tool_output_cap` (default 8,000 chars) is written to
 `[artifact <id>: N chars — artifact_recall(id, offset, limit) for more]`. Artifacts are
 never deleted while their conversation exists; archived conversations' artifacts are
 pruned by maintenance after `artifact_retention_days` (default 90).
+
+**Scratch pruning** (2026-10-05). A conversation's folder also holds its scratch — the
+shell's `TMPDIR`, downloads, browser profiles — which nothing reads back and which
+dwarfed the real artifacts (1.9 GB of which ~15 MB were spills and images). The folder's
+**real artifacts** are the files rows reference (spills, `proc_*.log`) and the top-level
+`img_*` images; everything else is scratch. `Store.prune` applies three rules with one
+walker, run by housekeeping (§8.6):
+- archived longer than `artifact_retention_days` → the spill rows (first, persist before
+  act) and then the **whole folder**;
+- archived longer than `scratch_archived_grace_days` (default 1) → everything in the
+  folder except the real artifacts;
+- live (every non-archived conversation, the desk included; a folder with no
+  conversation row is treated as live) and `scratch_idle_days` > 0 (default 7) →
+  scratch whose mtime is older than that, recursively; directories the sweep empties
+  go, an already-empty one only when it is itself that old (a fresh `TMPDIR` stays).
+The walker never follows a symlink or junction (it removes the link itself); a
+read-only entry is made writable and retried once; anything still refusing (a file a
+running program holds open) is skipped and counted as a failure. SQLite reads and row
+deletes stay on the event loop; only the walk runs in a worker thread. Disk use — the
+total and the largest conversation folders with their titles — is `GET
+/maintenance/artifacts` (`Store.ausage`), shown in the System screen's maintenance panel
+on open, after each finished pass and on Refresh (never on a timer: it walks the tree).
 
 **Paged tools** (2026-09-22). Tools that page their own output — `fs_read`, `knowledge_read` and
 `artifact_recall` — are marked `paged` in the registry and are never spilled: their page
@@ -529,9 +557,29 @@ connector or schedule message is someone else's text and stays untrusted (§9.5)
 - `forced_compactions_per_turn` 2; `model_error_retries` 1.
 - Tool execution timeout per tool (default 120s shell, 60s http, 300s MCP); a timed-out
   call returns an error result.
-- Cancellation: `POST /conversations/{id}/cancel` sets a flag checked between steps and
-  cancels the in-flight HTTP stream; the partial assistant text is persisted with
-  `meta.cancelled=true`.
+- Cancellation (2026-10-05): `POST /conversations/{id}/cancel` sets the conversation's
+  one cancel signal (`app.cancel_flags`, `loom/cancel.py`; an `asyncio.Event` per
+  conversation, cleared when the turn ends so it never leaks into the next). Every await
+  a turn spends real time in goes through `cancel.race(flags, id, work, what)`: the
+  model call as a whole (priority-queue wait, prompt processing, streaming), each tool
+  call's whole dispatch (judge, hooks, handler, after-approval execution), and the
+  forced compactions. When the signal wins, the work is *cancelled* — which is what
+  stops it: the queue drops the waiter, the HTTP stream closes, the handler's
+  `wait_for` passes the cancellation in and `shell` kills its process tree exactly as on
+  a timeout — awaited to its end, and noted as stopped. A call reached after the cancel
+  never starts. There is no per-tool path; a handler may answer on cancellation (shell
+  returns what the command printed, trailer `[cancelled; process tree killed]`).
+  Outcomes: the partial assistant text is persisted with `meta.cancelled=true`
+  (`finish_reason` `cancelled`); every cancelled or unstarted call gets one result,
+  `ok=false`, `meta.cancelled=true`, with `prompts/context/tool-cancelled.md` as its text
+  (after any output); the UI badges it "cancelled". At turn end a cancelled turn writes
+  one `system` event — `cancelled by user; stopped: model call, shell, background
+  process "x", sub-thread "y"`, `meta.stopped` = `{calls, processes, threads}` — and only
+  then (persist before act) stops the background processes this turn started (ids ≥ the
+  turn's ULID floor, stopped as the conversation, so no exit message re-wakes it) and
+  sets the cancel signal of each sub-thread it spawned whose turn is still scheduled or
+  running; each sub-thread does the same for its own. A cancelled thread ends `idle`
+  without reporting to its parent.
 
 ### 6.5 Compaction ladder (decided, from Hydra/Manus)
 ```
@@ -805,8 +853,9 @@ at 3,000 chars, older path labelled, because a merge keeps the older path) or th
 dangling target and the lines that link to it. `rethink` is allowed here, with a reason.
 
 **3. Housekeeping.** Archive `done`/`failed` threads whose `updated_at` is older than
-`thread_archive_days`; prune archived conversations' artifacts past
-`artifact_retention_days` (files then rows); commit external vault edits (§8.8); then a
+`thread_archive_days`; prune artifacts and scratch (§4.4: archived folders past
+`scratch_archived_grace_days` and `artifact_retention_days`, live scratch past
+`scratch_idle_days`), counting files and bytes; commit external vault edits (§8.8); then a
 safety-net `maintenance: <YYYY-MM-DD>` commit, normally a no-op because the knowledge
 tools commit per write.
 
@@ -819,7 +868,23 @@ that will never resume — and the proposal is posted as a `knowledge` item carr
 is told the write was skipped and not to retry it, and the sweep continues; the watermark
 still advances, because the pass did consider those events. Denying the row would wake
 the desk, so the desk's turn lock is held across the decision (an already-locked
-conversation needs no help — `wake` declines it too).
+conversation needs no help — `wake` declines it too; a conversation a running turn
+holds goes back to `running`, not `idle`).
+
+**Apply (2026-10-05).** A hand-back card carries an **Apply** button
+(`POST /items/{id}/apply`, `maintenance.apply_hand_back`). The stored call goes through
+the ordinary dispatcher under the same gate a turn meets; when the gate asks, the click
+is the answer — the same turnless decision as above with `allow` (once; nothing widens)
+— and the approved call runs through `execute`, exactly as the runner resumes an allowed
+call. The context carries the `turnless_approver` flag: a `classify` policy asks instead
+of spending a judge call (a click outranks the judge), and `approvals.create` writes the
+row but surfaces nothing — no card event, no notification item or toast, no
+`waiting_approval` status. The outcome is recorded on the item as `action.result = {state, content, at}`:
+`applying` is written before the call runs, then `ok` (the item is dismissed and the UI
+toasts *Applied*) or `error` (the item stays, the error text under it, the button reads
+*Retry*). A click on an applied item, or while one is in flight, returns the row and runs
+nothing. Only `knowledge` items whose `action` names a registered tool with `args` are
+applicable (409 otherwise).
 
 **Visibility instead of approval** (takeaways §3). The pass emits
 `maintenance.progress {stage, message}`, keeps the last report on the instance
@@ -830,8 +895,12 @@ something (`notify=False`), and every vault change is a git commit in the vault 
 **Report** (`GET /maintenance` → `{running, enabled, reason, idle_seconds,
 idle_seconds_remaining, next_nightly_at, last_report}`):
 `{started_at, finished_at, reason, consolidated: [{conversation_id, events, writes}],
-curated: {candidates, applied}, archived, pruned_artifacts, committed, external_commit,
-errors}`.
+curated: {candidates, applied}, archived, pruned_artifacts, pruned_files, pruned_bytes,
+prune_failures, committed, external_commit, errors}` — `pruned_artifacts` counts spill
+rows dropped plus images deleted, `pruned_files`/`pruned_bytes` every file the prune
+removed (scratch included), `prune_failures` entries it could not remove (2026-10-05).
+`GET /maintenance/artifacts?limit=10` → `{total_bytes, total_files, folders,
+conversations: [{id, title, kind, status, bytes, files}]}`, biggest first (§4.4).
 
 ### 8.7 Transcript recall
 `events_fts` is maintained by triggers on `events`. `transcript_search` returns the
@@ -1012,9 +1081,34 @@ the path itself when it is a directory, its parent otherwise.
 
 *Desk auto-approve* (`permissions.desk_auto_approve`, 2026-09-24): in the desk only, a
 call the guard would ask about for being outside the roots, or whose mode is `ask` or
-`classify`, runs without an approval or a classifier call (`policy: "auto"`). A protected
-path still asks — the guard's own ask, and a shell command that names one or cannot be
-split to tell. Threads never see it.
+`classify`, runs without an approval or a classifier call (`policy: "auto"`). The one
+thing that holds it is a protected path: the guard's own protected ask, a shell command
+that refers to one, or an MCP/connector tool's string argument that names one by its
+absolute path. A held call goes down the ordinary path (guard ask, pre-filter, judge or
+ask, per its mode), so the switch stays grant-only, and its row and approval carry why:
+the reason gains `(desk auto-approve held: names protected path <p>)` and `meta.auto_held`
+the same text. Threads never see it, and neither does a maintenance pass
+(`extras["maintenance"]`), which runs on the desk conversation but stops at approval
+gates and hands back. The conversation kind is read from the row when a
+context arrives without one, so a resumed call (`_repair`) behaves like a fresh one.
+
+The check (2026-10-05) is `shell_prefilter.protected_reference` over the raw text, with
+no parse: the pre-filter's splitter gave up on every newline (so every heredoc asked),
+handed whole quoted blobs over as one word, and its `names_protected` counts a `$VAR`
+path it cannot resolve as protected — right for the pre-filter, where a miss costs one
+classifier call, wrong for a switch whose miss costs a click (3 of the first 13 desk
+shell calls leaked: `curl -w "\nHTTP %{http_code}\n"`, `powershell … \$_.Name`). It
+counts a reference two ways: any absolute spelling of a protected path (as stored, the
+`/c/…`, `/cygdrive/c/…`, `/mnt/c/…` mounts, backslashes, `~`, and environment variables
+that are set) found as a bounded substring, which survives quotes and spaces; and every
+word, split on whitespace and shell punctuation, resolved against the shell's cwd and
+each `cd`/`pushd` target named before it, globs matched per segment. In a stage that
+deletes or moves (`rm`, `rmdir`, `mv`, `del`, `rd`, `Remove-Item`, `Move-Item`,
+`rmtree`/`unlink`-style calls, `git clean`, `find … -delete`) a folder *above* a
+protected path counts as well: `rm -rf ~/.loom` holds, `ls ~` does not. An unset variable,
+a URL or an opaque blob names nothing. A check that raises holds (fail closed). The
+pre-filter consults the same check after its own, so its grant never skips a protected
+path it reached through `cd`.
 
 **Step 6 in full** (`timeout_for(app, tool, args)`, 2026-09-24, TD audit F5 — a 180 s
 call was cancelled at the 120 s default and its output thrown away). In order: a tool
@@ -1028,7 +1122,9 @@ that fires: the dispatcher's `wait_for` is a grace margin above it
 does not time itself out, while the message still names the effective timeout. That is
 what lets a timed-out shell call return what the command said before the kill — the
 handler reads stdout into its own buffer through a shielded reader task, because a
-cancelled `communicate()` discards everything it had already read.
+cancelled `communicate()` discards everything it had already read. A user's cancel
+(§6.4) reaches the handler through the same `wait_for` and takes the same kill-and-keep
+path.
 
 ### 9.4 Shell pre-filter (can only grant)
 Split on `&&`, `||`, `;`, `|` respecting quotes. For each stage: first token (after
@@ -1040,7 +1136,8 @@ with `git status` etc. matched as `git` + first arg), and no `>`/`>>`/`2>` redir
 to a file, and no backticks or `$(`, and no word that, taken as a path relative to the
 shell's working directory, is a protected path or sits under one (a `$VAR`/`%VAR%` path
 it cannot resolve counts as one: 2026-09-22, `cat ~/.loom/secrets.json` was granted
-while the fs tools would have asked). All stages pass → allow. Otherwise → classifier.
+while the fs tools would have asked), and no protected-path reference in the raw text
+by desk auto-approve's check (§9.3; it also follows `cd`, 2026-10-05). All stages pass → allow. Otherwise → classifier.
 Parse failure → classifier. Nothing here denies.
 
 Two things the splitter tolerates (2026-09-29, from a week of judge verdicts: 87 of the
@@ -1180,7 +1277,8 @@ Deliberately left out, each a knob to add when something needs it: a restart pol
 memory caps, and log rotation (a rotating writer would have to sit on a pipe, see
 above; the log grows until the conversation's artifacts are pruned, and `list` shows
 its size so a chatty child is visible). Rows of archived conversations are pruned with
-their artifacts.
+their artifacts; while a row exists its log counts as a real artifact, never as scratch
+(§4.4).
 
 ## 10. Connectors and MCP
 
@@ -1356,7 +1454,7 @@ GET  /processes?conversation_id&status  GET  /processes/{id}   GET /processes/{i
 GET  /conversations/{id}/inbox          rows posted but not yet in the transcript (surfaces render them as *queued*)
 GET  /conversations/{id}/status         → {fields|null, owner|null, source: note|transcript|none}   PUT /conversations/{id}/status {fields} (owner `user`; a note block keeps its owner)
 GET  /approvals?status                  GET  /approvals/{id}   POST /approvals/{id} {decision: allow|deny|allow_always, add_root?}
-GET  /items?unseen&include_dismissed    GET  /items/{id}   POST /items/{id}/seen   POST /items/{id}/dismiss
+GET  /items?unseen&include_dismissed    GET  /items/{id}   POST /items/{id}/seen   POST /items/{id}/dismiss   POST /items/{id}/apply
 GET  /vault/tree                        GET  /vault/note?path   PUT /vault/note {path, content}   DELETE /vault/note?path   DELETE /vault/folder?path (core/ refused)
 GET  /vault/search?q&type&k             GET  /vault/history?path   GET /vault/recent-changes?n   GET /vault/diff?sha&path
 POST /vault/revert {commit, path?}      GET  /vault/graph?center&depth   GET /vault/core   GET /vault/wanted
@@ -1585,7 +1683,8 @@ is the last line, not a licence: the shapes crossing the bus are one shape (§12
 - **Conversation**: step budgets (desk/thread), `compact_threshold`,
   `forced_compactions_per_turn`, `model_error_retries`, `reasoning_replay` +
   `reasoning_replay_max_chars`, `tool_output_cap`, `pinned_note_chars`, artifact
-  retention, `thread_archive_days`, `max_thread_depth`.
+  retention, scratch grace after archive and live scratch idle days (2026-10-05),
+  `thread_archive_days`, `max_thread_depth`.
 - **Knowledge**: `preload_budget_tokens`, `preload_max_entities`,
   `retrieval_threshold`, `core_block_chars`, vault poll interval, maintenance idle
   seconds and nightly time, curation similarity threshold, auto-commit external edits.
@@ -1668,7 +1767,7 @@ supervisor:
           4 snapshot: sqlite backup API → snapshots/<ts>/state.db; vault `git tag pre-<ts>`;
               prune to system.snapshot_retention
           5 create_release: fetch into releases/src.git, `git worktree add --detach`
-              releases/<YYYYMMDD-HHMMSS>-<sha7>, `uv sync --frozen` (plain sync as fallback),
+              releases/<YYYYMMDD-HHMMSS>-<sha7>, `uv sync --frozen` (plain sync as fallback; uv is resolved by `uv_command` — see §3.1),
               `npm --prefix ui ci && run build` only when ui/ moved and ui-dist/ is missing
               or older; python_for(release) is the release's own .venv
           6 tests: `uv run pytest -q -x` inside that release — the exact tree, venv and
@@ -1895,7 +1994,10 @@ UI: `react`, `react-dom`, `vite`, `typescript`, `tailwindcss`, one Markdown rend
   UTC strings. Lists are plain arrays.
 - Auth: when `general.lan_token` is set, every `/api` request carries
   `Authorization: Bearer <token>` and `/ws` carries `?token=`; loopback without a token
-  needs nothing.
+  needs nothing. The UI keeps the token as `loom_token` in browser storage; any 401
+  opens one shared token dialog (however many calls failed), stores the answer and
+  retries the failed calls, and the socket reconnects with it. Settings, General has a
+  button that clears the stored token.
 - Settings: `GET /api/settings` → `{"values": {...}, "schema": [Field...], "groups": {...}}`;
   `PATCH /api/settings` takes a partial `{key: value}` map, validates all-or-nothing,
   returns the new values, emits `settings.changed {keys}`.

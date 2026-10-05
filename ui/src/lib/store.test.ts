@@ -143,6 +143,33 @@ describe("tool calls", () => {
     expect(state.toolCalls["c2"]).toMatchObject({ name: "shell", policy: "classify", reason: "read-only listing" });
     expect(state.toolCalls["c2"].result?.ok).toBe(true);
   });
+
+  it("carries a cancelled result from the live event and from the persisted row", () => {
+    const live = feed([
+      ev("tool.call", { call_id: "c5", name: "shell", args: {}, event_id: 9 }),
+      ev("tool.result", { call_id: "c5", name: "shell", ok: false, cancelled: true, preview: "[cancelled; process tree killed]", event_id: 10 }),
+    ]);
+    expect(live.toolCalls["c5"].result).toMatchObject({ ok: false, cancelled: true });
+    const replayed = feed([
+      ev("event.appended", {
+        id: 11,
+        conversation_id: CID,
+        kind: "tool_call",
+        content: JSON.stringify([{ id: "c6", name: "slow", arguments: {} }]),
+        meta: {},
+        ts: "t",
+      }),
+      ev("event.appended", {
+        id: 12,
+        conversation_id: CID,
+        kind: "tool_result",
+        content: "cancelled by the user",
+        meta: { call_id: "c6", ok: false, cancelled: true },
+        ts: "t",
+      }),
+    ]);
+    expect(replayed.toolCalls["c6"].result).toMatchObject({ ok: false, cancelled: true });
+  });
 });
 
 describe("approvals, items, conversations", () => {

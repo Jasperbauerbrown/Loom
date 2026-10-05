@@ -323,14 +323,20 @@ async def shell_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
             pass
 
     timed_out = False
+    cancelled = False
     ended: list[dict[str, Any]] = []
     try:
         # Shielded: the timeout must not cancel the reader, which still has to drain the
         # pipe that the kill is about to close.
         await asyncio.wait_for(asyncio.shield(reader), timeout=timeout)
         await proc.wait()
-    except asyncio.TimeoutError:
-        timed_out = True
+    except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+        # A cancel (the user's, via the dispatcher's race — 03 §6.4) ends the call the
+        # same way a timeout does: kill the tree, keep what the command said. Answering
+        # instead of re-raising is deliberate: the race that cancelled this handler runs
+        # it in a task of its own and re-raises any cancellation of its caller.
+        timed_out = isinstance(exc, asyncio.TimeoutError)
+        cancelled = not timed_out
         ended = survivors(proc, job)  # before the kill: the job is about to be emptied
         _kill_tree(proc, job)
         try:
@@ -341,10 +347,6 @@ async def shell_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
             await asyncio.wait_for(proc.wait(), timeout=5)  # reap the child we just killed
         except Exception:
             pass
-    except asyncio.CancelledError:
-        _kill_tree(proc, job)
-        reader.cancel()
-        raise
     else:
         ended = survivors(proc, job)
         kill_group(proc.pid)  # POSIX: the group outlives the shell; on Windows close(job) does it
@@ -353,12 +355,22 @@ async def shell_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
 
     text = b"".join(chunks).decode("utf-8", errors="replace")
     code = proc.returncode if proc.returncode is not None else -1
-    trailer = f"[timed out after {timeout:g}s; process tree killed]" if timed_out else f"[exit {code}]"
+    if timed_out:
+        trailer = f"[timed out after {timeout:g}s; process tree killed]"
+    elif cancelled:
+        trailer = "[cancelled; process tree killed]"
+    else:
+        trailer = f"[exit {code}]"
     content = text + ("\n" if text and not text.endswith("\n") else "") + trailer
     line = ended_trailer(ended)
     if line:
         content += "\n" + line
-    meta: dict[str, Any] = {"timeout": True, "cwd": cwd} if timed_out else {"exit_code": code, "cwd": cwd}
+    if timed_out:
+        meta: dict[str, Any] = {"timeout": True, "cwd": cwd}
+    elif cancelled:
+        meta = {"cancelled": True, "cwd": cwd}
+    else:
+        meta = {"exit_code": code, "cwd": cwd}
     if ended:
         meta["ended"] = ended
     return ToolResult(content=content, ok=(not timed_out and code == 0), meta=meta)

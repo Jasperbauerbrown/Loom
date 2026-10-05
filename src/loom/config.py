@@ -206,7 +206,9 @@ FIELDS: list[Field] = [
     Field("conversation.tool_output_cap", "int", 8000, "Tool output cap (chars)", "Longer outputs are spilled to artifacts.", "number", min=500, max=200000),
     Field("conversation.artifact_head_chars", "int", 2000, "Artifact preview head (chars)", "", "number", min=0, max=50000),
     Field("conversation.artifact_tail_chars", "int", 1000, "Artifact preview tail (chars)", "", "number", min=0, max=50000),
-    Field("conversation.artifact_retention_days", "int", 90, "Artifact retention (days)", "For archived conversations only.", "number", min=1, max=3650),
+    Field("conversation.artifact_retention_days", "int", 90, "Artifact retention (days)", "Archived conversations only: after this many days the conversation's whole artifacts folder is deleted.", "number", min=1, max=3650),
+    Field("conversation.scratch_archived_grace_days", "int", 1, "Scratch grace after archive (days)", "After a conversation has been archived this long, everything in its artifacts folder except spilled outputs and images is deleted.", "number", min=0, max=365),
+    Field("conversation.scratch_idle_days", "int", 7, "Live scratch kept (days)", "In live conversations (the desk, long threads), scratch files untouched this long are deleted. Spilled outputs and images are never touched. 0 = never.", "number", min=0, max=365),
     Field("conversation.image_max_mb", "int", 10, "Image size cap (MB)", "Uploads, fs_read images and screenshots above this are refused.", "number", min=1, max=100),
     Field("conversation.thread_archive_days", "int", 14, "Archive finished threads after (days)", "", "number", min=1, max=3650),
     Field("conversation.max_thread_depth", "int", 3, "Max thread depth", "", "number", min=1, max=10),
@@ -258,6 +260,7 @@ FIELDS: list[Field] = [
     Field("system.promotion_watchdog_seconds", "int", 120, "Post-promotion watchdog (s)", "", "number", min=10, max=3600),
     Field("system.promotion_test_timeout_s", "int", 1800, "Promotion test-suite timeout (s)", "The supervisor runs the full suite inside the new release before the swap; a run slower than this fails the promotion.", "number", min=60, max=7200),
     Field("system.snapshot_retention", "int", 10, "Snapshots kept", "", "number", min=1, max=100),
+    Field("system.uv_path", "str", "", "uv executable", "Override for the uv the supervisor runs during a promotion (a path to uv.exe, or a python that has uv installed, as `python -m uv`). Empty = search PATH, the venv, the user-site Scripts folder and every installed Python.", "text"),
 ]
 
 FIELD_MAP: dict[str, Field] = {f.key: f for f in FIELDS}

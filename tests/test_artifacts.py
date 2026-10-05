@@ -106,17 +106,18 @@ def test_prune_archived_removes_old_archived_artifacts_only(app):
         app.artifacts.spill(desk, None, "live"),
     ]
 
-    removed = app.artifacts.prune_archived(90)
+    removed = app.artifacts.prune()
 
-    assert removed == 1
+    assert removed["artifacts"] == 1
     assert app.artifacts.get(rows[0]["id"]) is None
     assert not Path(rows[0]["path"]).exists()
+    assert not Path(rows[0]["path"]).parent.exists()  # the whole folder goes
     assert app.artifacts.get(rows[1]["id"]) is not None
     assert app.artifacts.get(rows[2]["id"]) is not None
 
 
-def test_prune_uses_the_setting_by_default(app):
-    assert app.artifacts.prune_archived() == 0
+def test_prune_with_nothing_to_do_reports_zeroes(app):
+    assert app.artifacts.prune() == {"artifacts": 0, "files": 0, "bytes": 0, "failed": 0}
 
 
 # -- paged tools are never spilled (2026-09-22) ------------------------------------------

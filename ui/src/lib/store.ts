@@ -255,6 +255,7 @@ export function indexToolCalls(
         result: {
           call_id: callId,
           ok: meta.ok !== false,
+          cancelled: meta.cancelled === true,
           preview: e.content,
           artifact_id: meta.artifact_id ?? null,
           images: Array.isArray(meta.images) ? meta.images : undefined,
@@ -477,6 +478,7 @@ export function reduce(state: State, event: BusEvent): State {
         meta: {
           call_id: data.call_id,
           ok: data.ok,
+          ...(data.cancelled ? { cancelled: true } : {}),
           artifact_id: data.artifact_id ?? null,
           ...(Array.isArray(data.images) ? { images: data.images } : {}),
         },
@@ -502,6 +504,7 @@ export function reduce(state: State, event: BusEvent): State {
             result: {
               call_id: data.call_id,
               ok: data.ok !== false,
+              cancelled: data.cancelled === true,
               preview: data.preview ?? "",
               artifact_id: data.artifact_id ?? null,
               images: Array.isArray(data.images) ? data.images : prev?.result?.images,

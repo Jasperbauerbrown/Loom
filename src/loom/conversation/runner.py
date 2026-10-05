@@ -24,7 +24,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from .. import db, items, prompts
+from .. import cancel, db, items, prompts
+from ..ids import ulid
 from ..models import roles
 from ..models.types import PRIORITY_BACKGROUND, PRIORITY_INTERACTIVE, ChatRequest, Delta, Result, ToolCall
 from ..tools import approvals, dispatch
@@ -63,6 +64,9 @@ class TurnState:
     failed: str | None = None
     status_written: bool = False
     paused: bool = False  # ended waiting for an approval
+    # The smallest ULID this turn can mint: processes and sub-threads with an id at or
+    # above it were started by this turn, which is what a cancel stops (03 §6.4).
+    floor_id: str = field(default_factory=lambda: ulid()[:10] + "0" * 16)
 
     @property
     def cid(self) -> str:
@@ -163,7 +167,6 @@ async def _turn(app, state: TurnState) -> None:  # type: ignore[no-untyped-def]
     while True:
         if cid in app.cancel_flags:
             state.cancelled = True
-            _system(app, cid, "cancelled by user")
             break
         remaining = budget - state.steps
         if remaining <= 0:
@@ -178,7 +181,13 @@ async def _turn(app, state: TurnState) -> None:  # type: ignore[no-untyped-def]
         if compaction.estimate(app, conv, ctx, steps_line) >= limit and state.forced_compactions < max_forced:
             state.forced_compactions += 1
             try:
-                ctx = await compaction.maybe_compact(app, conv, rebuild, priority=state.priority, steps_remaining=steps_line) or ctx
+                ctx = await cancel.race(
+                    app.cancel_flags, cid,
+                    compaction.maybe_compact(app, conv, rebuild, priority=state.priority, steps_remaining=steps_line), "compaction",
+                ) or ctx
+            except cancel.Cancelled:
+                state.cancelled = True
+                break
             except CompactionError as exc:
                 _system(app, cid, f"context near the limit and compaction could not reduce it: {exc}")
 
@@ -252,6 +261,8 @@ async def _turn(app, state: TurnState) -> None:  # type: ignore[no-untyped-def]
             _persist_claimed(app, state, new_rows, ctx)
 
     # 5 post-turn
+    if state.cancelled:
+        await _stop_turn_work(app, state)
     _post_turn(app, state)
     if conv["kind"] == "thread" and not state.status_written and not state.cancelled and state.steps > 0:
         await _status_safety_net(app, state)
@@ -310,7 +321,13 @@ async def _call_model(app, state: TurnState, ctx: Context, rebuild, tools_enable
         if result.outcome == "overflow" and state.forced_compactions < max_forced:
             state.forced_compactions += 1
             try:
-                ctx = await compaction.maybe_compact(app, conv, rebuild, priority=state.priority, force=True) or rebuild()
+                ctx = await cancel.race(
+                    app.cancel_flags, state.cid,
+                    compaction.maybe_compact(app, conv, rebuild, priority=state.priority, force=True), "compaction",
+                ) or rebuild()
+            except cancel.Cancelled:
+                state.cancelled = True
+                return Result(outcome="ok", finish_reason="cancelled")
             except CompactionError as exc:
                 state.failed = f"context overflow and compaction failed: {exc}"
                 _system(app, state.cid, state.failed)
@@ -335,16 +352,22 @@ async def _stream(app, state: TurnState, request: ChatRequest) -> Result:  # typ
     reasoning: list[str] = []
     final: Result | None = None
     stream = app.models.stream(request, state.priority)
-    try:
+
+    async def consume() -> None:
+        nonlocal final
         async for ev in stream:
             if isinstance(ev, Delta):
                 (content if ev.channel == "content" else reasoning).append(ev.text)
                 app.bus.emit("message.delta", {"channel": ev.channel, "text": ev.text}, cid)
-                if cid in app.cancel_flags:
-                    state.cancelled = True
-                    break
             else:
                 final = ev
+
+    try:
+        # The whole call — queue wait, prompt processing, streaming — races the cancel
+        # signal; cancelling it drops the queue waiter or closes the HTTP stream (03 §6.4).
+        await cancel.race(app.cancel_flags, cid, consume(), "model call")
+    except cancel.Cancelled:
+        state.cancelled = True
     finally:
         aclose = getattr(stream, "aclose", None)
         if aclose is not None:
@@ -411,7 +434,7 @@ async def _dispatch_calls(app, state: TurnState, ctx: Context, event_id: int, ca
     outcomes: dict[str, Any] = {}
     ro = [c for c in calls if _is_read_only(app, c)]
     if ro:
-        results = await asyncio.gather(*(dispatch.dispatch(app, ctxs[c.id], c) for c in ro), return_exceptions=True)
+        results = await asyncio.gather(*(_dispatch_one(app, ctxs[c.id], c) for c in ro), return_exceptions=True)
         for c, r in zip(ro, results):
             outcomes[c.id] = ToolResult.error(f"dispatch crashed: {r!r}") if isinstance(r, BaseException) else r
     paused = False
@@ -421,7 +444,7 @@ async def _dispatch_calls(app, state: TurnState, ctx: Context, event_id: int, ca
         if paused:
             break  # not started; resumed by repair after the approval
         try:
-            outcomes[c.id] = await dispatch.dispatch(app, ctxs[c.id], c)
+            outcomes[c.id] = await _dispatch_one(app, ctxs[c.id], c)
         except Exception as exc:
             outcomes[c.id] = ToolResult.error(f"dispatch crashed: {exc!r}")
         if isinstance(outcomes[c.id], dispatch.ApprovalNeeded):
@@ -448,10 +471,32 @@ async def _dispatch_calls(app, state: TurnState, ctx: Context, event_id: int, ca
     return False
 
 
+async def _dispatch_one(app, tctx: ToolContext, call: ToolCall, approved: bool = False) -> ToolResult | dispatch.ApprovalNeeded:  # type: ignore[no-untyped-def]
+    """One call through the dispatcher, under the turn's cancel signal (03 §6.4). The
+    race is around the whole dispatch, so a cancel interrupts the judge waiting in the
+    model queue or a hook as well as the handler (the cancellation reaches it through
+    the dispatcher's own timeout wait; `shell` kills its tree). A call reached after
+    the cancel never starts. Either way the call gets the one cancelled result.
+    `approved`: the user allowed it already; steps 5–7 only (`dispatch.execute`)."""
+    if approved:
+        tool = app.tools.get(call.name)
+        if tool is None:
+            return ToolResult.error(f"unknown tool {call.name}")
+        work = dispatch.execute(app, tctx, tool, call.arguments)
+    else:
+        work = dispatch.dispatch(app, tctx, call)
+    try:
+        return await cancel.race(app.cancel_flags, tctx.conversation_id, work, call.name)
+    except cancel.Cancelled as exc:
+        return dispatch.cancelled_result(exc.value)
+
+
 def _persist_result(app, state: TurnState, ctx: Context | None, call: ToolCall, result: ToolResult, tctx: ToolContext) -> dict[str, Any] | None:  # type: ignore[no-untyped-def]
     """Persist one result and append its tool message to the turn. Returns the image
     follower message (not yet appended) when the result carried images, else None."""
     meta = {"call_id": call.id, "name": call.name, "ok": result.ok, **{k: v for k, v in tctx.meta.items()}}
+    if result.meta.get("cancelled"):
+        meta["cancelled"] = True
     if result.meta.get("artifact_id"):
         meta["artifact_id"] = result.meta["artifact_id"]
     images = result.meta.get("images") or []
@@ -463,7 +508,8 @@ def _persist_result(app, state: TurnState, ctx: Context | None, call: ToolCall, 
         "tool.result",
         {"call_id": call.id, "name": call.name, "ok": result.ok, "preview": result.content[:400],
          "artifact_id": meta.get("artifact_id"), "event_id": ev, "policy": meta.get("policy"),
-         "decision": meta.get("decision"), "reason": meta.get("reason"), "images": images},
+         "decision": meta.get("decision"), "reason": meta.get("reason"), "images": images,
+         "cancelled": bool(meta.get("cancelled"))},
         state.cid,
     )
     app.bus.emit("event.appended", row, state.cid)
@@ -521,15 +567,14 @@ async def _repair(app, state: TurnState, paused: bool) -> str | bool:  # type: i
         if appr is not None:
             state.steps = max(state.steps, resumed_step)
         if appr is not None and appr["status"] == "allowed":
-            tool = app.tools.get(c.name)
-            result = await dispatch.execute(app, tctx, tool, c.arguments) if tool else ToolResult.error(f"unknown tool {c.name}")
+            result = await _dispatch_one(app, tctx, c, approved=True)  # type: ignore[assignment]
             tctx.meta.update({"policy": "ask", "decision": "allow", "reason": appr.get("reason") or "approved by user"})
         elif appr is not None and appr["status"] == "denied":
             result = dispatch.denied_result()
             tctx.meta.update({"policy": "ask", "decision": "deny", "reason": "denied by user"})
         elif paused:
             state.steps = max(state.steps, resumed_step)
-            out = await dispatch.dispatch(app, tctx, c)
+            out = await _dispatch_one(app, tctx, c)
             if isinstance(out, dispatch.ApprovalNeeded):
                 _absorb_extras(state, Context(state.conv, [], [], [], [], ""))
                 return "waiting"
@@ -552,6 +597,50 @@ def _post_turn(app, state: TurnState) -> None:  # type: ignore[no-untyped-def]
         return
     usage = state.last_result.usage
     compaction.calibrate(app, state.conv, usage.prompt_tokens, state.last_request.chars())
+
+
+async def _stop_turn_work(app, state: TurnState) -> None:  # type: ignore[no-untyped-def]
+    """A cancelled turn also stops what it started that outlives its own awaits (03
+    §6.4): background processes and sub-threads it spawned that are still working. The
+    awaits themselves were already interrupted by `cancel.race`, which noted each one.
+
+    Persist before act: the one system event naming everything stopped — the turn's
+    cancelled state in the transcript — is written first, then the processes are
+    stopped and each sub-thread gets its own cancel (which, in turn, stops its own)."""
+    cid = state.cid
+    procs: list[dict[str, Any]] = []
+    if app.processes is not None:
+        procs = [dict(r) for r in app.db.execute(
+            "SELECT id, title FROM processes WHERE conversation_id=? AND status IN ('starting', 'running') AND id >= ? ORDER BY id",
+            (cid, state.floor_id),
+        ).fetchall()]
+    threads = [dict(r) for r in app.db.execute(
+        "SELECT id, title FROM conversations WHERE parent_id=? AND kind='thread' AND id >= ? ORDER BY id",
+        (cid, state.floor_id),
+    ).fetchall() if _turn_alive(app, r["id"])]
+    calls = app.cancel_flags.stopped(cid)
+    parts = [f"{name} ×{calls.count(name)}" if calls.count(name) > 1 else name for name in dict.fromkeys(calls)]
+    parts += [f'background process "{p["title"]}"' for p in procs]
+    parts += [f'sub-thread "{t["title"]}"' for t in threads]
+    text = "cancelled by user" + (f"; stopped: {', '.join(parts)}" if parts else "")
+    meta = {"cancelled": True, "stopped": {"calls": calls, "processes": procs, "threads": threads}}
+    ev = events.append(app, cid, "system", text, meta)
+    app.bus.emit("event.appended", events.get(app, ev), cid)
+    for t in threads:
+        app.cancel_flags.add(t["id"])
+    for p in procs:
+        try:
+            await app.processes.stop(p["id"], actor=f"conversation:{cid}")
+        except Exception as exc:  # one process that will not die must not keep the others alive
+            log.warning("cancel: could not stop process %s: %r", p["id"], exc)
+            _system(app, cid, f'could not stop background process "{p["title"]}": {exc}')
+
+
+def _turn_alive(app, conversation_id: str) -> bool:  # type: ignore[no-untyped-def]
+    """A conversation whose turn is scheduled or running."""
+    task = app.tasks.get(f"turn:{conversation_id}")
+    lock = app.turn_locks.get(conversation_id)
+    return (task is not None and not task.done()) or (lock is not None and lock.locked())
 
 
 async def _status_safety_net(app, state: TurnState) -> None:  # type: ignore[no-untyped-def]

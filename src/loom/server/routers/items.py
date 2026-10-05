@@ -33,6 +33,21 @@ async def mark_seen(item_id: str, app=Depends(get_app)) -> dict[str, Any]:
     return row
 
 
+@router.post("/items/{item_id}/apply")
+async def apply(item_id: str, app=Depends(get_app)) -> dict[str, Any]:
+    """Run the tool call a maintenance hand-back carries; the click is the approval
+    (03 §8.6). Success dismisses the item; failure keeps it with the error on
+    `action.result`. Either way the row comes back — a tool error is a result, not a 4xx."""
+    from ...knowledge import maintenance
+
+    try:
+        return await maintenance.apply_hand_back(app, item_id)
+    except maintenance.NotApplicable as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(404, f"item {item_id} not found") from exc
+
+
 @router.post("/items/{item_id}/dismiss")
 async def dismiss(item_id: str, app=Depends(get_app)) -> dict[str, Any]:
     row = items.dismiss(app, item_id)

@@ -19,6 +19,7 @@ from typing import Any
 
 from . import __version__, db
 from .bus import Bus
+from .cancel import CancelFlags
 from .config import Settings, app_home
 from .models.types import ModelClient
 from .tools.registry import Registry
@@ -59,7 +60,7 @@ class App:
     # Runtime state shared across packages.
     tasks: dict[str, asyncio.Task] = field(default_factory=dict)  # named background tasks
     turn_locks: dict[str, asyncio.Lock] = field(default_factory=dict)  # per conversation id
-    cancel_flags: set[str] = field(default_factory=set)  # conversation ids asked to cancel
+    cancel_flags: CancelFlags = field(default_factory=CancelFlags)  # per-conversation cancel signals (loom.cancel)
     extras: dict[str, Any] = field(default_factory=dict)  # ad-hoc attachments (tests, probes)
 
     # -- paths ------------------------------------------------------------------

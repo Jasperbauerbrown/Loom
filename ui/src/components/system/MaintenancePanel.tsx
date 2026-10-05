@@ -6,7 +6,8 @@ import { useEffect, useState } from "react";
 import { api } from "../../lib/api";
 import { store, useStore } from "../../lib/store";
 import { Badge, Button, Empty, Table, Td, Tr } from "../ui";
-import { localTime, relativeTime } from "../../lib/format";
+import { bytes, localTime, relativeTime } from "../../lib/format";
+import type { ArtifactsUsage } from "../../lib/types";
 
 function duration(seconds: number | null | undefined): string {
   if (seconds === null || seconds === undefined) return "—";
@@ -129,7 +130,17 @@ export function MaintenancePanel() {
             </Tr>
             <Tr>
               <Td className="text-neutral-500">Pruned artifacts</Td>
-              <Td>{report.pruned_artifacts}</Td>
+              <Td>
+                {report.pruned_files !== undefined
+                  ? `${report.pruned_files} file(s), ${bytes(report.pruned_bytes ?? 0)}`
+                  : `${report.pruned_artifacts}`}
+                {report.pruned_files !== undefined && report.pruned_artifacts ? (
+                  <span className="text-neutral-500"> ({report.pruned_artifacts} spill/image)</span>
+                ) : null}
+                {report.prune_failures ? (
+                  <span className="text-amber-600 dark:text-amber-400"> · {report.prune_failures} could not be removed</span>
+                ) : null}
+              </Td>
             </Tr>
             <Tr>
               <Td className="text-neutral-500">Commit</Td>
@@ -158,6 +169,62 @@ export function MaintenancePanel() {
             </ul>
           ) : null}
         </>
+      )}
+
+      <ArtifactsDiskUse refreshKey={report?.finished_at ?? null} />
+    </div>
+  );
+}
+
+/** Artifacts disk use (2026-10-05): the folder's total and its largest conversations.
+ *  A walk of the whole folder, so it loads on open, after each finished pass, and on
+ *  Refresh — never on the panel's 30-second timer. */
+export function ArtifactsDiskUse({ refreshKey }: { refreshKey: string | null }) {
+  const [usage, setUsage] = useState<ArtifactsUsage | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  async function load() {
+    setLoading(true);
+    const res = await store.guard(() => api.artifactsUsage(10));
+    setLoading(false);
+    if (res !== undefined) setUsage(res);
+  }
+
+  useEffect(() => {
+    void load();
+  }, [refreshKey]);
+
+  return (
+    <div className="mt-4">
+      <div className="mb-1 flex items-center gap-2">
+        <h3 className="text-[12px] font-semibold text-neutral-600 dark:text-neutral-400">Artifacts disk use</h3>
+        {usage ? (
+          <span className="text-[12px] text-neutral-500">
+            {bytes(usage.total_bytes)} in {usage.total_files} file(s) across {usage.folders} conversation folder(s)
+          </span>
+        ) : null}
+        <Button size="sm" variant="ghost" className="ml-auto" disabled={loading} onClick={() => void load()}>
+          {loading ? "Measuring…" : "Refresh"}
+        </Button>
+      </div>
+      {!usage ? (
+        <Empty>{loading ? "Measuring…" : "Not measured yet."}</Empty>
+      ) : usage.conversations.length === 0 ? (
+        <Empty>The artifacts folder is empty.</Empty>
+      ) : (
+        <Table head={["Conversation", "Status", "Files", "Size"]}>
+          {usage.conversations.map((c) => (
+            <Tr key={c.id}>
+              <Td>
+                <span title={c.id}>{c.title || (c.kind === "desk" ? "Desk" : c.kind ? "(untitled)" : "(no conversation)")}</span>{" "}
+                <span className="font-mono text-[11px] text-neutral-500">{c.id}</span>
+              </Td>
+              <Td>{c.status ? <Badge>{c.status}</Badge> : "—"}</Td>
+              <Td>{c.files}</Td>
+              <Td className="font-mono text-[11.5px]">{bytes(c.bytes)}</Td>
+            </Tr>
+          ))}
+        </Table>
       )}
     </div>
   );

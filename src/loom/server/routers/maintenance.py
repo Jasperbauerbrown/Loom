@@ -5,6 +5,7 @@ when the nightly one is next due, how much of the idle window is left, and the f
 report of the last pass. `POST /maintenance/run` starts one out of band; it returns
 `202` immediately because a pass takes model calls, and `409` when one is already in
 flight (passes never queue — the next pass would see the same world).
+`GET /maintenance/artifacts` reports artifacts disk use (2026-10-05).
 """
 
 from __future__ import annotations
@@ -28,6 +29,16 @@ def _maintenance(app: App) -> Any:
 @router.get("/maintenance")
 async def status(app: App = Depends(get_app)) -> dict[str, Any]:
     return _maintenance(app).status()
+
+
+@router.get("/maintenance/artifacts")
+async def artifacts_usage(limit: int = 10, app: App = Depends(get_app)) -> dict[str, Any]:
+    """Artifacts disk use: the total and the `limit` largest conversation folders, with
+    titles. A walk of the whole folder, so the UI asks on open and on demand, not on a
+    timer."""
+    if app.artifacts is None:  # pragma: no cover - only if the package was not installed
+        raise HTTPException(503, "artifacts are not installed")
+    return await app.artifacts.ausage(max(1, min(int(limit), 100)))
 
 
 @router.post("/maintenance/run", status_code=202)
