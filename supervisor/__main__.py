@@ -47,7 +47,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 BACKOFF_START = 1.0
 BACKOFF_CAP = 60.0
@@ -320,27 +320,137 @@ def create_release(home: Path, ref: str, origin: Path | str | None = None,
     if not ok:
         raise ReleaseError(f"could not create the worktree {dest}: {out.strip()}")
     if deps:
-        install_deps(dest)
+        install_deps(dest, home)
     if build_ui and ui_needs_building(home, src, dest, sha):
         build_ui_bundle(dest)
     return release
 
 
-def uv_command() -> list[str]:
-    """How this supervisor runs uv: the `uv` on PATH when there is one, else this
-    interpreter's `uv` module. The supervisor's interpreter is whatever launched
-    `loom serve` — under `uv run` that is the project virtualenv, which has no `uv`
-    module unless someone installed one there, and a `uv sync` can prune it again
-    (2026-09-28: the third promotion failed "No module named uv" in this very step)."""
+UV_REMEMBER_FILE = "uv-command.json"
+
+
+class UvNotFound(ReleaseError):
+    """No uv could be run; the message lists every candidate and why it failed."""
+
+
+def _probe_uv(command: list[str]) -> str | None:
+    """None when `<command> --version` works, else the reason it did not."""
+    try:
+        proc = subprocess.run([*command, "--version"], capture_output=True, text=True, timeout=20)
+    except subprocess.TimeoutExpired:
+        return "timed out"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return str(exc) or type(exc).__name__
+    if proc.returncode != 0:
+        return ((proc.stderr or proc.stdout or "").strip().splitlines() or [f"exit {proc.returncode}"])[-1]
+    return None
+
+
+def _as_uv_command(path: str) -> list[str]:
+    """A configured path is either uv itself or a python that has the uv module."""
+    name = Path(path).name.lower()
+    if name.startswith("python") or name in ("py", "py.exe"):
+        return [path, "-m", "uv"]
+    return [path]
+
+
+def _py_launcher_pythons() -> list[str]:
+    """Interpreters the Windows `py` launcher knows about (`py -0p`); [] elsewhere."""
+    try:
+        proc = subprocess.run(["py", "-0p"], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    found = []
+    for line in (proc.stdout or "").splitlines():
+        match = re.search(r"([A-Za-z]:[\/].*?python[\w.]*\.exe)\s*$", line.strip(), re.IGNORECASE)
+        if match:
+            found.append(match.group(1))
+    return found
+
+
+def _user_scripts_uv(python: str) -> str | None:
+    """`<user base>/Scripts/uv.exe` (or bin/uv) as `python` would see it; for this
+    interpreter that is site.getuserbase, for others we ask them."""
+    try:
+        proc = subprocess.run([python, "-c", "import site;print(site.getuserbase())"],
+                              capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    base = (proc.stdout or "").strip().splitlines()
+    if proc.returncode != 0 or not base:
+        return None
+    root = Path(base[-1])
+    for candidate in (root / "Scripts" / "uv.exe", root / "bin" / "uv"):
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
+def uv_candidates(home: Path | None = None) -> Iterator[tuple[str, list[str]]]:
+    """Every way to run uv, in the order they are tried (lazy: later sources are only
+    enumerated when earlier ones failed). (label, command) pairs."""
+    if home is not None:
+        configured = str(read_setting(home, "system.uv_path", "") or "").strip()
+        if configured:
+            yield "system.uv_path", _as_uv_command(configured)
+        remembered = home / UV_REMEMBER_FILE
+        if remembered.exists():
+            try:
+                saved = json.loads(remembered.read_text(encoding="utf-8"))
+                if isinstance(saved, list) and saved and all(isinstance(p, str) for p in saved):
+                    yield "remembered", saved
+            except (OSError, ValueError):
+                pass
     found = shutil.which("uv")
-    return [found] if found else [sys.executable, "-m", "uv"]
+    if found:
+        yield "PATH", [found]
+    yield "this interpreter", [sys.executable, "-m", "uv"]
+    pythons = [sys.executable, *_py_launcher_pythons()]
+    for python in pythons:
+        scripts = _user_scripts_uv(python)
+        if scripts:
+            yield f"user-site uv of {python}", [scripts]
+    for python in pythons[1:]:
+        yield f"{python} -m uv", [python, "-m", "uv"]
 
 
-def install_deps(release_dir: Path) -> None:
+def uv_command(home: Path | None = None) -> list[str]:
+    """How this supervisor runs uv. The first candidate that answers `--version` wins:
+    the `system.uv_path` setting, the last command that worked (`H/uv-command.json`),
+    `uv` on PATH, this interpreter's `uv` module, each Python's user-site uv, each
+    `py -0p` interpreter's `-m uv`. The supervisor's own interpreter is often the project
+    virtualenv, which has no `uv` module (2026-09-28, 2026-09-29: two promotions failed
+    "No module named uv"; on the dev box uv is a pip user package under system Python).
+    Raises UvNotFound naming every candidate and why it failed."""
+    tried: list[str] = []
+    seen: list[list[str]] = []
+    for label, command in uv_candidates(home):
+        if command in seen:
+            continue
+        seen.append(command)
+        reason = _probe_uv(command)
+        if reason is None:
+            if home is not None:
+                try:
+                    Path(home).mkdir(parents=True, exist_ok=True)
+                    (Path(home) / UV_REMEMBER_FILE).write_text(json.dumps(command), encoding="utf-8")
+                except OSError:
+                    pass
+            return command
+        tried.append(f"{label}: {' '.join(command)} -> {reason}")
+    detail = "; ".join(tried) if tried else "no candidates"
+    raise UvNotFound(
+        "uv could not be found or run. Tried: " + detail
+        + ". Set system.uv_path to a uv executable (or a python that has uv) in Settings."
+    )
+
+
+def install_deps(release_dir: Path, home: Path | None = None) -> None:
     """`uv sync --frozen`, falling back to a plain sync when the lockfile moved."""
     output = ""
+    uv = uv_command(home)
     for args in (["sync", "--frozen"], ["sync"]):
-        ok, output = run_command([*uv_command(), *args], cwd=release_dir)
+        ok, output = run_command([*uv, *args], cwd=release_dir)
         if ok:
             return
     raise ReleaseError(f"uv sync failed in {release_dir}: {output.strip()[-2000:]}")
@@ -357,7 +467,7 @@ def pytest_summary(output: str) -> str:
     return found[-1].strip() if found else ""
 
 
-def run_suite(release_dir: Path, timeout_s: float = DEFAULT_TEST_TIMEOUT_S) -> tuple[bool, str]:
+def run_suite(release_dir: Path, timeout_s: float = DEFAULT_TEST_TIMEOUT_S, home: Path | None = None) -> tuple[bool, str]:
     """`uv run pytest -q -x` in the release (03 §15.2 step 7): the exact tree, venv and
     interpreter that will run if it passes. The child gets the release's own `src` on
     PYTHONPATH and no `VIRTUAL_ENV`, so it imports the candidate and not whatever
@@ -365,7 +475,7 @@ def run_suite(release_dir: Path, timeout_s: float = DEFAULT_TEST_TIMEOUT_S) -> t
     reason as the output."""
     env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
     env["PYTHONPATH"] = str(Path(release_dir) / "src")
-    return run_command([*uv_command(), "run", "pytest", "-q", "-x"], cwd=release_dir, timeout=timeout_s, env=env)
+    return run_command([*uv_command(home), "run", "pytest", "-q", "-x"], cwd=release_dir, timeout=timeout_s, env=env)
 
 
 def current_sha(home: Path) -> str | None:
@@ -743,7 +853,7 @@ class Supervisor:
             else:
                 timeout_s = float(read_setting(home, "system.promotion_test_timeout_s", DEFAULT_TEST_TIMEOUT_S))
                 stage("tests", True, f"running the test suite in {release} (limit {timeout_s:g}s)")
-                ok, output = run_suite(home / "releases" / release, timeout_s)
+                ok, output = run_suite(home / "releases" / release, timeout_s, home)
                 summary = pytest_summary(output)
                 if not ok:
                     tail = output.strip()[-1500:]

@@ -134,17 +134,94 @@ def test_rollback_without_a_previous_release_reports_rather_than_guesses(tmp_pat
     assert supervisor.last_error == "rollback: no previous release recorded"
 
 
-def test_uv_is_taken_from_path_before_this_interpreter(monkeypatch):
-    """The supervisor's interpreter is whatever launched it — under `uv run`, a
-    virtualenv with no `uv` module — so PATH wins (2026-09-28)."""
+def _fake_uv(monkeypatch, working, pythons=(), user_scripts=None, on_path=None):
+    """Mock subprocess and which: `working` is the set of command tuples whose
+    `--version` succeeds; nothing here depends on this machine's layout."""
     import shutil
 
+    import supervisor.__main__ as sup
+
+    calls = []
+
+    class Done:
+        def __init__(self, code, out="", err=""):
+            self.returncode, self.stdout, self.stderr = code, out, err
+
+    def run(command, **kwargs):
+        calls.append(list(command))
+        if command[0] == "py":
+            return Done(0, "".join(f" -V:3.11 *  {p}\n" for p in pythons))
+        if command[1:2] == ["-c"]:
+            return Done(0, "U:/user\n") if user_scripts is not None else Done(1)
+        if command[-1] == "--version":
+            if tuple(command[:-1]) in working:
+                return Done(0, "uv 0.9\n")
+            return Done(1, "", "No module named uv")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(sup.subprocess, "run", run)
+    monkeypatch.setattr(shutil, "which", lambda name: on_path if name == "uv" else None)
+    real_exists = sup.Path.exists
+    monkeypatch.setattr(sup.Path, "exists", lambda self: real_exists(self) or (
+        user_scripts is not None and str(self).replace(chr(92), "/") == user_scripts))
+    return calls
+
+
+def test_uv_is_taken_from_path_before_this_interpreter(monkeypatch, tmp_path):
     from supervisor.__main__ import uv_command
 
-    monkeypatch.setattr(shutil, "which", lambda name: "C:/tools/uv.exe" if name == "uv" else None)
-    assert uv_command() == ["C:/tools/uv.exe"]
-    monkeypatch.setattr(shutil, "which", lambda name: None)
-    assert uv_command() == [sys.executable, "-m", "uv"]
+    _fake_uv(monkeypatch, {("C:/tools/uv.exe",), (sys.executable, "-m", "uv")}, on_path="C:/tools/uv.exe")
+    assert uv_command(tmp_path) == ["C:/tools/uv.exe"]
+
+
+def test_uv_setting_wins_and_python_means_dash_m_uv(monkeypatch, tmp_path):
+    from supervisor.__main__ import uv_command
+
+    (tmp_path / "state.db").write_bytes(b"")
+    import sqlite3
+    conn = sqlite3.connect(tmp_path / "state.db")
+    conn.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute("INSERT INTO settings VALUES ('system.uv_path', '\"D:/Py/python.exe\"')")
+    conn.commit()
+    conn.close()
+    _fake_uv(monkeypatch, {("D:/Py/python.exe", "-m", "uv"), ("C:/tools/uv.exe",)}, on_path="C:/tools/uv.exe")
+    assert uv_command(tmp_path) == ["D:/Py/python.exe", "-m", "uv"]
+
+
+def test_uv_falls_through_to_py_launcher_and_remembers(monkeypatch, tmp_path):
+    from supervisor.__main__ import UV_REMEMBER_FILE, uv_command
+
+    winner = ("C:/Python311/python.exe", "-m", "uv")
+    calls = _fake_uv(monkeypatch, {winner}, pythons=["C:/Python311/python.exe"])
+    assert uv_command(tmp_path) == list(winner)
+    assert json.loads((tmp_path / UV_REMEMBER_FILE).read_text(encoding="utf-8")) == list(winner)
+    calls.clear()
+    # next time the remembered command is tried first and nothing else is probed
+    assert uv_command(tmp_path) == list(winner)
+    assert calls == [[*winner, "--version"]]
+
+
+def test_uv_user_site_scripts_and_stale_memory(monkeypatch, tmp_path):
+    from supervisor.__main__ import UV_REMEMBER_FILE, uv_command
+
+    (tmp_path / UV_REMEMBER_FILE).write_text(json.dumps(["gone/uv.exe"]), encoding="utf-8")
+    from pathlib import Path
+
+    expected = str(Path("U:/user") / "Scripts" / "uv.exe")
+    _fake_uv(monkeypatch, {(expected,)}, user_scripts=expected.replace("\\", "/"))
+    assert uv_command(tmp_path) == [expected]
+
+
+def test_uv_failure_names_every_candidate(monkeypatch, tmp_path):
+    from supervisor.__main__ import UvNotFound, uv_command
+
+    _fake_uv(monkeypatch, set(), pythons=["C:/Python311/python.exe"], on_path="C:/tools/uv.exe")
+    with pytest.raises(UvNotFound) as raised:
+        uv_command(tmp_path)
+    message = str(raised.value)
+    assert "PATH: C:/tools/uv.exe" in message and "this interpreter" in message
+    assert "C:/Python311/python.exe -m uv" in message and "No module named uv" in message
+    assert "system.uv_path" in message
 
 
 def test_self_modification_seams_are_implemented(tmp_path):

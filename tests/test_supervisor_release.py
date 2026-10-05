@@ -214,7 +214,7 @@ def flow(tmp_path, monkeypatch):
     import supervisor.__main__ as sup
 
     monkeypatch.setattr(sup, "create_release", lambda home_, ref, **kw: calls["release"])
-    monkeypatch.setattr(sup, "run_suite", lambda release_dir, timeout_s=0: (
+    monkeypatch.setattr(sup, "run_suite", lambda release_dir, timeout_s=0, home=None: (
         calls["tested"].append(str(release_dir)) or calls["suite"]
     ))
     monkeypatch.setattr(sup, "probe", lambda home_, release, port, **kw: (
