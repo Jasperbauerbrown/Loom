@@ -284,6 +284,9 @@ def filesystem_block(app, conv: dict[str, Any]) -> str:  # type: ignore[no-untyp
     protected = paths.get("protected") or []
     if protected:
         lines.append("protected (always ask): " + ", ".join(protected))
+    write_protected = paths.get("write_protected") or []
+    if write_protected:
+        lines.append("write-protected (changing them asks; reading and running do not): " + ", ".join(write_protected))
     # Scratch work belongs in the conversation's own artifacts folder: a thread that
     # downloaded into `/tmp` left the roots, asked for approval, and shared the folder
     # with every program on the machine (2026-09-25). The shell's TMPDIR agrees.

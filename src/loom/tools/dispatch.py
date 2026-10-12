@@ -4,7 +4,7 @@
 1 lookup tool          unknown          → error result
 2 validate arguments   malformed        → error result ("resend the call")
   tool precheck        cannot run (e.g. shell cwd missing) → error result, before anyone is asked
-3 filesystem guard     outside/protected→ approval
+3 filesystem guard     outside/protected/a write to a write-protected path → approval
 4 policy               allow | ask → approval | classify → pre-filter, then the judge
                        (desk auto-approve: ask/classify/outside-roots → allow; protected still asks;
                         a conversation grant — "allow this call for the conversation" — allows)
@@ -75,7 +75,11 @@ def _auto_hold(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) -> 
     """Desk auto-approve (`permissions.desk_auto_approve`). None: the switch does not
     apply (not the desk, or off). "": it grants — a desk call that would ask or
     classify runs instead. Otherwise the reason it holds: the call names a protected
-    path, and goes down the ordinary path (2026-10-05).
+    path, and goes down the ordinary path (2026-10-05) — or names a write-protected
+    path (`procedures/*/scripts`, 2026-10-12) in a call that is not plainly read-only:
+    a shell command the pre-filter would not grant, an MCP/connector call not annotated
+    read-only. Running a helper then goes to the judge, which can tell running from
+    editing; the switch cannot.
 
     The check is `shell_prefilter.protected_reference` over the raw text: a shell
     command against the shell's cwd, and every string argument of an MCP or connector
@@ -92,19 +96,34 @@ def _auto_hold(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) -> 
     if _conversation_kind(app, ctx) != "desk" or not app.settings.get("permissions.desk_auto_approve"):
         return None
     try:
-        protected = fs_guard.protected_paths(app)
+        protected = fs_guard.protected_paths(app, "all")
+        write_protected = fs_guard.protected_paths(app, "writes")
         if tool.name == "shell":
-            hit = shell_prefilter.protected_reference(str(args.get("command") or ""), protected, classify.command_cwd(app, ctx, args))
+            command = str(args.get("command") or "")
+            cwd = classify.command_cwd(app, ctx, args)
+            hit = shell_prefilter.protected_reference(command, protected, cwd)
+            written = shell_prefilter.protected_reference(command, write_protected, cwd)
+            if not hit and written and not shell_prefilter.is_readonly(
+                command, _readonly_commands(app), protected, cwd, write_protected
+            ):
+                return f"names write-protected path {written} in a command that is not plainly read-only"
         elif tool.source != "native":
             texts = [v for v in args.values() if isinstance(v, str)]
             texts += [x for v in args.values() if isinstance(v, (list, tuple)) for x in v if isinstance(x, str)]
             hit = next((h for h in (shell_prefilter.protected_reference(t, protected) for t in texts) if h), None)
+            written = next((h for h in (shell_prefilter.protected_reference(t, write_protected) for t in texts) if h), None)
+            if not hit and written and not tool.is_read_only(args):
+                return f"names write-protected path {written}"
         else:
             hit = None
     except Exception as exc:  # fail closed: a check that cannot answer holds
         log.warning("desk auto-approve check failed: %r", exc)
         return f"the protected-path check failed ({type(exc).__name__})"
     return f"names protected path {hit}" if hit else ""
+
+
+def _readonly_commands(app: Any) -> list[str]:
+    return list(app.settings.get("permissions.shell_readonly_commands") or [])
 
 
 def _auto_approved(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) -> bool:
@@ -244,9 +263,10 @@ async def dispatch(app: Any, ctx: ToolContext, call: ToolCall) -> ToolResult | A
     elif mode == "classify":
         if tool.name == "shell" and shell_prefilter.is_readonly(
             str(args.get("command") or ""),
-            list(app.settings.get("permissions.shell_readonly_commands") or []),
-            protected=fs_guard.protected_paths(app),
+            _readonly_commands(app),
+            protected=fs_guard.protected_paths(app, "all"),
             cwd=classify.command_cwd(app, ctx, args),
+            write_protected=fs_guard.protected_paths(app, "writes"),
         ):
             decision, reason = "allow", "read-only command (static pre-filter)"
         else:

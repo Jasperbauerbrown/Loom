@@ -111,7 +111,39 @@ async def knowledge_read_handler(ctx: ToolContext, args: dict[str, Any]) -> Tool
 _PAST = {"create": "created", "append": "appended to", "replace": "replaced in", "rethink": "rewrote"}
 
 
+def knowledge_write_precheck(ctx: ToolContext, args: dict[str, Any]) -> str | None:
+    """knowledge_write writes markdown notes and cannot ask. A path that is not `.md` —
+    a procedure's script or reference — is a file for the fs tools, and so is a note
+    under a protected path (a `writes` row included): there the fs guard asks the user
+    first, which this tool, guarding inside its handler, cannot (2026-10-12). The
+    dispatcher runs this before anyone is asked; the handler runs it again."""
+    raw = str(args.get("path") or "").strip()
+    if not raw:
+        return None  # the vault's own "path is required" says it
+    if not raw.lower().endswith(".md"):
+        return (
+            f"knowledge_write writes markdown notes; {raw} is not a .md path. A procedure's "
+            "scripts and references are files: write them with fs_write (writing under "
+            "procedures/<name>/scripts/ asks the user first)"
+        )
+    from .. import fs_guard
+
+    try:
+        target = ctx.app.vault.resolve(raw)
+    except VaultError:
+        return None  # the handler returns the vault's explanation
+    if fs_guard.protection(ctx.app, str(target)) is not None:
+        return (
+            f"{raw} is under a protected path, and knowledge_write cannot ask for approval; "
+            f"write it with fs_write at {fs_guard.normalise(str(target))}, which asks the user first"
+        )
+    return None
+
+
 async def knowledge_write_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+    problem = knowledge_write_precheck(ctx, args)
+    if problem:
+        return ToolResult.error(problem)
     path = str(args.get("path") or "")
     op = str(args.get("op") or "create").strip().lower()
     content = args.get("content")
@@ -295,6 +327,7 @@ def tools() -> list[Tool]:
                 "required": ["path", "op"],
             },
             handler=knowledge_write_handler,
+            precheck=knowledge_write_precheck,
         ),
         Tool(
             name="knowledge_links",

@@ -215,7 +215,7 @@ def test_transcript_search_and_neighbours(app):
     assert app.index.transcript_search("nozzle", conversation_id="nope") == []
 
 
-def test_tool_calls_are_searchable_and_0007_backfills_them(app):
+def test_tool_calls_are_searchable_and_0007_backfills_them(app, monkeypatch):
     """A command that was run is findable (2026-10-12): new tool_call events are indexed
     by the trigger, and 0007 backfills the ones written before it."""
     from loom import db
@@ -237,6 +237,9 @@ def test_tool_calls_are_searchable_and_0007_backfills_them(app):
     old = events.append(app, conv, "tool_call", db.dumps([{"id": "c2", "name": "shell", "arguments": {"command": "prusa-slicer --slice"}}]))
     assert app.index.transcript_search("prusa-slicer") == []
     app.db.execute("PRAGMA user_version=6")
+    # only 0007 is replayed: later migrations are not re-runnable over their own result
+    only_0007 = [(n, p) for n, p in db.list_migrations() if n <= 7]
+    monkeypatch.setattr(db, "list_migrations", lambda: only_0007)
 
     assert db.migrate(app.db) == [7]
     assert [h["event_id"] for h in app.index.transcript_search("prusa-slicer")] == [old]

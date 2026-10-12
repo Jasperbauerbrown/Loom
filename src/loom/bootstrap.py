@@ -74,6 +74,16 @@ def default_protected_paths(repo_root: Path | None, home: Path) -> list[str]:
     return [_norm(p) for p in paths]
 
 
+# Migration 0008 gave protected paths a mode; these rows are seeded with `writes`.
+WRITES_PROTECTED_MIGRATION = 8
+
+
+def default_write_protected_paths(vault: Path) -> list[str]:
+    """Paths that ask only for writes: a procedure's scripts, which threads run by name
+    (2026-10-12). Reading and running them stays free; editing one asks."""
+    return [_norm(str(Path(vault) / "procedures" / "*" / "scripts"))]
+
+
 def repo_root() -> Path | None:
     """The checkout this package runs from (for protected paths), or None when
     installed as a wheel without the repo around it."""
@@ -88,7 +98,9 @@ def _norm(p: str) -> str:
     return str(Path(p).expanduser()).replace("\\", "/")
 
 
-def ensure(app) -> None:  # type: ignore[no-untyped-def]
+def ensure(app, applied: list[int] | None = None) -> None:  # type: ignore[no-untyped-def]
+    """`applied`: the migrations this start applied (`db.migrate`'s answer), so a row a
+    migration's arrival seeds is seeded once and a row the person deleted stays gone."""
     conn = app.db
     now = db.now_iso()
     with db.transaction(conn):
@@ -117,9 +129,15 @@ def ensure(app) -> None:  # type: ignore[no-untyped-def]
                     "INSERT OR IGNORE INTO roots(path, added_at, added_by) VALUES (?, ?, 'bootstrap')",
                     (_norm(str(p)), now),
                 )
-        if conn.execute("SELECT COUNT(*) FROM protected_paths").fetchone()[0] == 0:
+        # Protected paths: seeded on a fresh install. The write-protected defaults also
+        # arrive with migration 0008 on an existing install — once, on that start.
+        fresh = conn.execute("SELECT COUNT(*) FROM protected_paths").fetchone()[0] == 0
+        if fresh:
             for p in default_protected_paths(repo_root(), app.home):
                 conn.execute("INSERT OR IGNORE INTO protected_paths(path) VALUES (?)", (p,))
+        if fresh or WRITES_PROTECTED_MIGRATION in (applied or []):
+            for p in default_write_protected_paths(app.vault_dir):
+                conn.execute("INSERT OR IGNORE INTO protected_paths(path, mode) VALUES (?, 'writes')", (p,))
         # Timezone: detected once; an ordinary setting the person can change later.
         if conn.execute("SELECT 1 FROM settings WHERE key='general.timezone'").fetchone() is None:
             app.settings.set(conn, "general.timezone", detect_timezone())

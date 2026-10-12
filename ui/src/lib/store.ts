@@ -25,6 +25,7 @@ import type {
   Occupancy,
   Preset,
   PromoteLogEntry,
+  ProtectedPath,
   Provider,
   QueuedMessage,
   QueueState,
@@ -92,7 +93,7 @@ export interface State {
   modelsStale: boolean;
   toolPolicies: ToolPolicy[];
   roots: Root[];
-  protectedPaths: string[];
+  protectedPaths: ProtectedPath[];
   mcpServers: McpServer[];
   connectors: Connector[];
   schedules: Schedule[];
@@ -838,7 +839,9 @@ export class Store {
       toolPolicies: toolPolicies ?? s.toolPolicies,
       roots: roots ?? s.roots,
       protectedPaths: protectedPaths
-        ? protectedPaths.map((p: any) => (typeof p === "string" ? p : p.path))
+        ? protectedPaths.map((p: any) =>
+            typeof p === "string" ? { path: p, mode: "all" as const } : { path: p.path, mode: p.mode === "writes" ? "writes" : "all" },
+          )
         : s.protectedPaths,
     }));
   }

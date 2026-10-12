@@ -17,9 +17,10 @@ substituted at step 5, after this point, so a value can never reach a row, an ev
 the UI.
 
 One internal action rides the same road: removing a protected path is itself an `ask`
-(03 §15.3). It is recorded as a call to the pseudo-tool `protected_paths_remove`; on any
-allowing answer this module performs the removal and does not wake anything, because no
-turn is waiting on it. `allow_conversation` on it writes a grant nothing will ever read
+(03 §15.3), and so is weakening one from `all` to `writes` (2026-10-12). It is recorded
+as a call to the pseudo-tool `protected_paths_remove` — `{path}` removes the row,
+`{path, mode}` sets that mode; on any allowing answer this module performs it and does
+not wake anything, because no turn is waiting on it. `allow_conversation` on it writes a grant nothing will ever read
 — the dispatcher never sees this pseudo-tool — and is not special-cased for that.
 """
 
@@ -180,7 +181,10 @@ def _apply_internal(app: Any, row: dict[str, Any], status: str) -> None:
 
     if status == "allowed":
         path = str(row["args"].get("path") or "")
-        if path:
+        mode = row["args"].get("mode")
+        if path and mode in fs_guard.MODES:
+            fs_guard.set_protected_mode(app, path, mode)  # weakened to `writes`, not removed
+        elif path:
             fs_guard.remove_protected(app, path)
     cur = app.db.execute(
         "UPDATE conversations SET status='idle', updated_at=? WHERE id=? AND status='waiting_approval'",

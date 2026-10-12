@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { api } from "../../lib/api";
 import { store, useStore } from "../../lib/store";
-import type { PolicyMode, SettingsPayload, ToolPolicy } from "../../lib/types";
+import type { PolicyMode, ProtectedMode, ProtectedPath, SettingsPayload, ToolPolicy } from "../../lib/types";
 import { Badge, Button, Card, Empty, Input, Section, Select, Table, Td, Tr } from "../../components/ui";
 import { ScalarFields } from "./SettingsField";
 
@@ -88,7 +88,7 @@ export function PermissionsTab({ settings }: { settings: SettingsPayload }) {
 
       <Section
         title="Protected paths"
-        description="Paths that always require approval to modify. Removing one needs approval too."
+        description="Paths that need approval. “Everything” asks for any touch; “Writes only” asks only to write, edit, move or delete — reading and running stay free (a procedure's scripts). Removing a protection, or narrowing it to writes only, needs approval too."
       >
         <ProtectedPathsPanel paths={protectedPaths} />
       </Section>
@@ -142,12 +142,22 @@ function RootsPanel({ roots }: { roots: string[] }) {
   );
 }
 
-function ProtectedPathsPanel({ paths }: { paths: string[] }) {
+function ProtectedModeSelect({ value, onChange }: { value: ProtectedMode; onChange: (m: ProtectedMode) => void }) {
+  return (
+    <Select value={value} onChange={(e) => onChange(e.target.value as ProtectedMode)}>
+      <option value="all">Everything</option>
+      <option value="writes">Writes only</option>
+    </Select>
+  );
+}
+
+function ProtectedPathsPanel({ paths }: { paths: ProtectedPath[] }) {
   const [value, setValue] = useState("");
+  const [mode, setMode] = useState<ProtectedMode>("all");
   const [note, setNote] = useState<string | null>(null);
   async function add() {
     if (!value.trim()) return;
-    const res = await store.guard(() => api.addProtectedPath(value.trim()));
+    const res = await store.guard(() => api.addProtectedPath(value.trim(), mode));
     if (res) {
       setValue("");
       await store.loadPermissions();
@@ -155,11 +165,18 @@ function ProtectedPathsPanel({ paths }: { paths: string[] }) {
   }
   async function remove(path: string) {
     const res = await store.guard(() => api.removeProtectedPath(path));
-    if (res && (res as any).approval_id) {
+    if (res && res.approval) {
       setNote(`Removal of "${path}" needs approval — see Approvals.`);
     } else {
       await store.loadPermissions();
     }
+  }
+  async function changeMode(path: string, next: ProtectedMode) {
+    const res = await store.guard(() => api.setProtectedPathMode(path, next));
+    if (res && "approval" in res && res.approval) {
+      setNote(`Narrowing "${path}" to writes only needs approval — see Approvals.`);
+    }
+    await store.loadPermissions();
   }
   return (
     <Card className="p-3">
@@ -171,18 +188,22 @@ function ProtectedPathsPanel({ paths }: { paths: string[] }) {
           placeholder="C:/Users/you/Projects/secrets"
           className="font-mono"
         />
+        <ProtectedModeSelect value={mode} onChange={setMode} />
         <Button onClick={() => void add()}>Add</Button>
       </div>
       {note && <p className="mb-2 text-[12px] text-amber-700 dark:text-amber-400">{note}</p>}
       {paths.length === 0 ? (
         <Empty>No protected paths.</Empty>
       ) : (
-        <Table head={["Path", ""]}>
+        <Table head={["Path", "Asks for", ""]}>
           {paths.map((p) => (
-            <Tr key={p}>
-              <Td className="font-mono text-[12px]">{p}</Td>
+            <Tr key={p.path}>
+              <Td className="font-mono text-[12px]">{p.path}</Td>
               <Td>
-                <Button size="sm" variant="danger" onClick={() => void remove(p)}>
+                <ProtectedModeSelect value={p.mode} onChange={(m) => void changeMode(p.path, m)} />
+              </Td>
+              <Td>
+                <Button size="sm" variant="danger" onClick={() => void remove(p.path)}>
                   Remove
                 </Button>
               </Td>

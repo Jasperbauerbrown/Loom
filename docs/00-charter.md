@@ -1513,3 +1513,50 @@ sessions do not re-litigate.
   was removed rather than caveated, since the flash-sized judge resolves conflicting
   rules conservatively (2026-09-30). Nothing static denies, pre-filter grants still never
   skip the protected check, and no desk switch widens a thread; none of that changed.
+- **2026-10-12** — **The vault is markdown memory plus procedure bundles.** Non-markdown
+  files belong in the vault only under `procedures/<name>/scripts/` and
+  `procedures/<name>/references/`, the Agent Skills layout the vault already uses
+  (`procedures/<name>/SKILL.md`). A script has no life outside a procedure: if it is
+  worth keeping, it gets a `SKILL.md` that says when to use it, and if it is not, it
+  stays in the conversation's scratch folder. A tool big enough to have dependencies
+  is a project in its own repository, with a procedure that points at it. Rationale:
+  the script sits beside the note that explains it, rides the vault's git history,
+  and is found through the procedure index (`procedure_load`, the `procedures/`
+  entries). A second store for "Loom's scripts" would need its own index, its own
+  history and its own permission story. `knowledge_write` writes notes only: a path
+  that does not end in `.md` is refused by its precheck, before anyone is asked, and
+  the refusal points at `fs_write`. Follow-up: the curation pass works from candidate
+  pairs and dangling links (`prompts/maintenance-curate.md`), so it has no step where
+  a line flagging stray non-markdown files would fit. That check needs its own
+  candidate kind: non-markdown files outside a procedure bundle.
+- **2026-10-12** — **Protected paths can protect writes only.** A `protected_paths` row
+  has a `mode` (migration 0008, default `all`, so existing rows keep their meaning).
+  `all` asks for any call that names the path, as before. `writes` asks only for a
+  call that is not read-only for its arguments (`tool.is_read_only(args)`). Bootstrap
+  seeds one `writes` row, `<vault>/procedures/*/scripts`: on a fresh install, and once
+  on the start that applies migration 0008, so a row the person deleted stays deleted.
+  An entry may be a glob, matched one segment at a time by the shell checks' existing
+  matcher (`shell_prefilter.hits`), not by a second one. What applies where:
+  - **fs guard.** A write is a protected ask, which desk auto-approve never overrides;
+    reads pass.
+  - **Shell pre-filter.** Only `all` rows block a read-only grant, so `cat` of a script
+    is still granted. A deleting or moving stage (`rm`, `mv`, `find … -delete`) that
+    names a write-protected path, or a folder above one, is never granted.
+  - **Desk auto-approve.** It holds a call that names a write-protected path and is not
+    plainly read-only. For a shell command that means one the pre-filter would not
+    grant; for an MCP or connector call, one not annotated read-only.
+  - **Judge.** It sees these paths in their own list, and they are shown to it
+    (reading is free). The "Out of scope" rule gained one clause.
+  - **knowledge_write.** It refuses any path under a protected entry and points at
+    `fs_write`, whose guard asks.
+  - **Settings and API.** Each row has an "Everything / Writes only" select.
+    Strengthening a row applies at once. Narrowing `all` to `writes` is an approval,
+    just as removing a row is (`PUT /protected-paths` → 202).
+
+  Rationale: threads trust a procedure's helper by name. A silent edit changes what
+  every later thread runs, so editing one must ask. But `all` protection made every
+  read and every run ask too, and the pre-filter refused to grant any command that
+  named the path. The helper library would then cost a click per use, which is the
+  opposite of why it exists. Running is not writing. Only the judge can tell
+  `python helper.py` from `sed -i … helper.py`, so a run reaches the judge, not the
+  user.

@@ -213,21 +213,77 @@ def remove_root(app: Any, path: str) -> bool:
 # ---------------------------------------------------------------------------------
 # Protected paths
 # ---------------------------------------------------------------------------------
-def protected_paths(app: Any) -> list[str]:
-    return [normalise(r["path"]) for r in app.db.execute("SELECT path FROM protected_paths ORDER BY path")]
+# A row's `mode` (migration 0008, 2026-10-12): `all` asks for any call that touches the
+# path; `writes` asks only for a call that is not read-only for its arguments, so a
+# procedure's helper script can be read and run by name while editing it asks. A path
+# may be a glob (`*`, `?`, `[...]`, each inside one segment): the default `writes` row
+# is `<vault>/procedures/*/scripts`. One matcher serves every reader of these rows —
+# `shell_prefilter.hits`, which already judged globs in shell words.
+MODES = ("all", "writes")
+
+
+def protected_rows(app: Any) -> list[tuple[str, str]]:
+    """`(path, mode)` for every protected path, normalised, ordered by path."""
+    return [
+        (normalise(r["path"]), r["mode"] if r["mode"] in MODES else "all")
+        for r in app.db.execute("SELECT path, mode FROM protected_paths ORDER BY path")
+    ]
+
+
+def protected_paths(app: Any, mode: str | None = None) -> list[str]:
+    """The protected paths, all of them or only those of one `mode`."""
+    return [p for p, m in protected_rows(app) if mode is None or m == mode]
+
+
+def under_any(target: str, entries: list[str]) -> bool:
+    """True when the normalised `target` is one of `entries` or sits under one (an
+    entry may be a glob)."""
+    from .shell_prefilter import _key as key, hits
+
+    return bool(entries) and hits(key(target), [key(p) for p in entries]) is not None
+
+
+def protection(app: Any, path: str) -> str | None:
+    """The strongest mode protecting `path` (`all` beats `writes`), or None."""
+    target = normalise(path)
+    rows = protected_rows(app)
+    for mode in MODES:
+        if under_any(target, [p for p, m in rows if m == mode]):
+            return mode
+    return None
 
 
 def is_protected(app: Any, path: str) -> bool:
-    """True when `path` is a protected file or sits under a protected directory."""
-    target = normalise(path)
-    return any(_under(target, p) for p in protected_paths(app))
+    """True when `path` is a protected file or sits under a protected directory, in
+    either mode (a promotion that changes a write-protected script changes it)."""
+    return protection(app, path) is not None
 
 
-def add_protected(app: Any, path: str) -> str:
+def add_protected(app: Any, path: str, mode: str = "all") -> str:
+    """Insert a protected path (idempotent: an existing row keeps its mode — changing it
+    is `set_protected_mode`, because weakening one is an approval)."""
     normalised = normalise(path)
-    app.db.execute("INSERT OR IGNORE INTO protected_paths(path) VALUES (?)", (normalised,))
+    app.db.execute(
+        "INSERT OR IGNORE INTO protected_paths(path, mode) VALUES (?, ?)",
+        (normalised, mode if mode in MODES else "all"),
+    )
     app.bus.emit("settings.changed", {"keys": ["protected_paths"]})
     return normalised
+
+
+def protected_mode(app: Any, path: str) -> str | None:
+    """The stored mode of exactly this row, or None when there is no such row."""
+    row = app.db.execute("SELECT mode FROM protected_paths WHERE path=?", (normalise(path),)).fetchone()
+    return None if row is None else row["mode"]
+
+
+def set_protected_mode(app: Any, path: str, mode: str) -> bool:
+    if mode not in MODES:
+        raise ValueError(f"mode must be one of {list(MODES)}")
+    cur = app.db.execute("UPDATE protected_paths SET mode=? WHERE path=?", (mode, normalise(path)))
+    if cur.rowcount:
+        app.bus.emit("settings.changed", {"keys": ["protected_paths"]})
+    return bool(cur.rowcount)
 
 
 def remove_protected(app: Any, path: str) -> bool:
@@ -249,7 +305,8 @@ class GuardOk:
 class GuardAsk:
     reason: str
     options: dict[str, Any] = field(default_factory=dict)
-    protected: bool = False  # a protected path always asks, even under desk auto-approve
+    protected: bool = False  # a protected path always asks, even under desk auto-approve (a
+    # write-protected one too, for a call that writes)
 
 
 def _values(args: dict[str, Any], name: str) -> list[str]:
@@ -317,8 +374,11 @@ def check(app: Any, conversation: dict[str, Any] | None, tool: Tool, args: dict[
     for raw in raw_paths:
         path = normalise(raw, cwd=base)
         resolved.append(path)
-        if is_protected(app, path):
+        mode = protection(app, path)
+        if mode == "all":
             return GuardAsk(reason=f"protected path {path}", options={}, protected=True)
+        if mode == "writes" and not tool.is_read_only(args):
+            return GuardAsk(reason=f"writes to write-protected path {path}", options={}, protected=True)
         if not any(_under(path, root) for root in roots):
             return GuardAsk(
                 reason=f"{path} is outside allowed roots",
@@ -334,5 +394,10 @@ def within_roots(app: Any, conversation: dict[str, Any] | None, path: str) -> bo
 
 
 def describe(app: Any, conversation: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Roots and protected paths as the classifier prompt renders them."""
-    return {"roots": effective_roots(app, conversation), "protected": protected_paths(app)}
+    """Roots and protected paths as the classifier prompt and the context block render
+    them: `protected` always asks, `write_protected` asks only for writes."""
+    return {
+        "roots": effective_roots(app, conversation),
+        "protected": protected_paths(app, "all"),
+        "write_protected": protected_paths(app, "writes"),
+    }

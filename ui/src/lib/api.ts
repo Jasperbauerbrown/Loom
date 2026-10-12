@@ -26,6 +26,7 @@ import type {
   PromoteLogEntry,
   PromotePlan,
   PullResult,
+  ProtectedMode,
   ProtectedPath,
   Provider,
   QueuedMessage,
@@ -402,9 +403,14 @@ export const api = {
   addRoot: (path: string) => post<Root>("/roots", { path }),
   removeRoot: (path: string) => del<unknown>("/roots", { path }),
   protectedPaths: () => get<ProtectedPath[]>("/protected-paths"),
-  addProtectedPath: (path: string) => post<ProtectedPath>("/protected-paths", { path }),
+  addProtectedPath: (path: string, mode: ProtectedMode = "all") =>
+    post<ProtectedPath>("/protected-paths", { path, mode }),
+  /** `writes` → `all` applies at once (the row); `all` → `writes` weakens it, so the
+   *  answer is a pending approval (202), like a removal. */
+  setProtectedPathMode: (path: string, mode: ProtectedMode) =>
+    put<ProtectedPath | { approval?: { id: string }; path: string }>("/protected-paths", { path, mode }),
   removeProtectedPath: (path: string) =>
-    request<{ detail?: string; approval_id?: string }>("DELETE", "/protected-paths", undefined, { path }),
+    request<{ approval?: { id: string }; path?: string }>("DELETE", "/protected-paths", undefined, { path }),
 
   // -- integrations ----------------------------------------------------------
   mcpServers: () => get<McpServer[]>("/mcp-servers"),

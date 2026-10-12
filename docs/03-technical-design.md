@@ -225,7 +225,7 @@ processes(id TEXT PK /*ULID*/, conversation_id TEXT, title TEXT, command TEXT, c
 
 tool_policies(tool TEXT PK, mode TEXT /*allow|ask|classify*/, updated_at TEXT)
 roots(path TEXT PK, added_at TEXT, added_by TEXT)
-protected_paths(path TEXT PK)
+protected_paths(path TEXT PK, mode TEXT /*all|writes*/ DEFAULT 'all')   -- mode: 0008 (2026-10-12), §9.3
 
 mcp_servers(id TEXT PK, name TEXT, transport TEXT /*stdio|http*/, command TEXT,
             args TEXT, url TEXT, env TEXT /*json, values may be {{secret:X}}*/,
@@ -248,7 +248,7 @@ notes_fts  -- FTS5 over title + body
 vault/
   core/           about-me.md  preferences.md  conventions.md   (always in context, §7)
   devices/  projects/  people/  connectors/  courses/  topics/   (one note per entity)
-  procedures/<name>/SKILL.md [+ scripts/, references/]           (Agent Skills format)
+  procedures/<name>/SKILL.md [+ scripts/, references/]           (Agent Skills format; scripts/ is write-protected, §9.3)
   log/YYYY-MM-DD.md                                              (daily notes: thread walkthroughs land here as sections)
 ```
 
@@ -720,7 +720,7 @@ note, and a thread without one was a "task". Every thread is now that.
 | — | *end of cache-friendly prefix* | | |
 | [7] | `summary` (if any), fenced `<context from="harness">` | user, right after the prefix | changes only on fold |
 | [8] | Live events since `summary_cutoff`, replayed in order; `thinking`/`system`/`status` kinds skipped; evictions applied. A `user` event's `meta.images` become data URLs on its message; a `tool_result` with images stays text (one `[image <id> attached to this result]` marker per image) and is followed, after the step's last tool message, by a user-role *follower* carrying the images (`prompts/context/tool-image-note.md`) — tool-role messages cannot carry image parts. Evicted results lose their images with their content. | assistant / user / tool | stable within a turn |
-| [5]+[6] | Desk: the **now board** (pending approvals, unseen items, running threads with one-line status, then one line per running background process). Thread: the goal + its status fields. Both: the **pinned notes** (`# Pinned notes`, each capped at `pinned_note_chars`). Then a **Filesystem** block: the conversation's effective roots (global + its own, the first being what relative paths resolve against) and the protected paths, one line each; then a `scratch:` line naming this conversation's own artifacts folder (`artifacts.conversation_dir`, prose in `prompts/context/scratch.md`) as the place for downloads, scratch files and intermediate outputs instead of `/tmp` — already inside the roots, per conversation, inspectable by the user (2026-09-25); then a `loom:` line naming this backend — the address it serves, its pid, its home — so the model can tell its own process from anything else it finds (2026-09-22). Then `now: 2026-09-20 14:02 (America/…)`. One fenced `<context from="harness">` block, **built once per turn and reused verbatim for every step** (2026-09-22) | user, after the history and before this turn's messages | per turn, not per step |
+| [5]+[6] | Desk: the **now board** (pending approvals, unseen items, running threads with one-line status, then one line per running background process). Thread: the goal + its status fields. Both: the **pinned notes** (`# Pinned notes`, each capped at `pinned_note_chars`). Then a **Filesystem** block: the conversation's effective roots (global + its own, the first being what relative paths resolve against), the protected paths and the write-protected paths (2026-10-12), one line each; then a `scratch:` line naming this conversation's own artifacts folder (`artifacts.conversation_dir`, prose in `prompts/context/scratch.md`) as the place for downloads, scratch files and intermediate outputs instead of `/tmp` — already inside the roots, per conversation, inspectable by the user (2026-09-25); then a `loom:` line naming this backend — the address it serves, its pid, its home — so the model can tell its own process from anything else it finds (2026-09-22). Then `now: 2026-09-20 14:02 (America/…)`. One fenced `<context from="harness">` block, **built once per turn and reused verbatim for every step** (2026-09-22) | user, after the history and before this turn's messages | per turn, not per step |
 | [9] | Resolved entities for this input (§8.2–8.3), wrapped `<knowledge may_be_irrelevant="true">…</knowledge>`; ephemeral, never persisted | user | volatile |
 | [10] | Claimed inbox messages as user-role messages (with their images), then the turn's own assistant / tool messages and image followers | user / assistant / tool | volatile |
 | [11] | Threads only: `[steps remaining: N]` in its own fenced block, **after** the turn's messages — the one thing that changes per step, isolated so the turn stays cached. The desk has no step line and therefore no block | user, last | per step |
@@ -796,7 +796,7 @@ more; a note that does not fit is named the same way. Never inject `core/` here
 |---|---|---|
 | `knowledge_search` | `query`, `type?`, `k=8` | fused: FTS5 rank + cosine, RRF; returns path, title, snippet |
 | `knowledge_read` | `path`, `offset?`, `limit?`, `pin?` | full note or line slice; one page of `tool_output_cap` chars with a paging footer, never spilled (`paged`) |
-| `knowledge_write` | `path`, `op: create|append|replace|rethink`, `content`, `old?` + `new?` (replace), `frontmatter?` | `replace` = `old`→`content` by the one matching rule (`textmatch.find_spans`, the same as fs_edit: exact first, else line endings and trailing whitespace ignored; a miss shows the closest text, an ambiguous `old` names its body lines — 2026-09-29), and `new` is accepted as the name for `content` there, since old→new is how the op reads and how a model sends it (2026-09-24); `content` is therefore checked in the handler, not by the schema's `required`; `rethink` = whole-body rewrite, requires `reason`, logged as a `knowledge.rethink` item on the now board; stamps `modified`; rejects relative dates; commits to git (`loom: <op> <path>`) |
+| `knowledge_write` | `path`, `op: create|append|replace|rethink`, `content`, `old?` + `new?` (replace), `frontmatter?` | `path` must end in `.md` and lie under no protected path (either mode); otherwise its precheck refuses the call before anyone is asked and names `fs_write`, whose guard asks — the tool writes notes and cannot ask itself (2026-10-12). `replace` = `old`→`content` by the one matching rule (`textmatch.find_spans`, the same as fs_edit: exact first, else line endings and trailing whitespace ignored; a miss shows the closest text, an ambiguous `old` names its body lines — 2026-09-29), and `new` is accepted as the name for `content` there, since old→new is how the op reads and how a model sends it (2026-09-24); `content` is therefore checked in the handler, not by the schema's `required`; `rethink` = whole-body rewrite, requires `reason`, logged as a `knowledge.rethink` item on the now board; stamps `modified`; rejects relative dates; commits to git (`loom: <op> <path>`) |
 | `knowledge_links` | `path`, `direction: out|in` | neighbours |
 | `procedure_load` | `name` | SKILL.md body (L2); scripts stay on disk |
 | `transcript_search` | `query`, `conversation?`, `k` | FTS5 over `events_fts` — episodic last resort |
@@ -1022,7 +1022,9 @@ endings, 4 were whitespace or a moved line break, 18 were text the model reconst
 3 fs guard on path_params (plus the paths a registered extractor pulls out of an
   argument — `fs_guard.register_paths`, used by fs_patch for the files a diff names):
   resolve absolute; must be under a root (or APP_HOME/vault for knowledge tools,
-  artifacts for recall); protected → ask; outside → ask with option add_root
+  artifacts for recall); protected → ask; write-protected and the call is not
+  read-only for its arguments (`tool.is_read_only(args)`) → ask; outside → ask with
+  option add_root
 4 policy = tool_policies[tool] or default (readOnly→allow, else ask):
      allow → go
      not allow → a call_grants row for (conversation, tool, args) → go
@@ -1094,6 +1096,21 @@ the desk. It widens no rule; `tool_policies` is untouched.
 The guard's `add_root` option is the narrowest root that would let the call through:
 the path itself when it is a directory, its parent otherwise.
 
+**Protected paths have a mode** (migration 0008, 2026-10-12). `all` is the original
+meaning: any call that names the path asks. `writes` asks only for a call that is not
+read-only for its arguments — `fs_write`, `fs_edit`, `fs_patch`, a shell call whose cwd
+is there — while `fs_read`, `fs_list` and `fs_search` pass as anywhere else; the ask
+reads `writes to write-protected path <p>` and, like `all`, desk auto-approve never
+overrides it. An entry may be a glob (`*`, `?`, `[…]`, each within one segment), matched
+per segment by the same `shell_prefilter.hits` the shell checks use (`fs_guard.under_any`,
+`fs_guard.protection` → the strongest mode, `all` before `writes`). The default `writes`
+row is `<vault>/procedures/*/scripts`: threads run a procedure's helper by name, so a
+silent edit would change what every later thread runs, while reading or running one
+must stay free. `fs_guard.describe` returns `protected` (`all`) and `write_protected`
+separately; the harness context block lists the second as `write-protected (changing
+them asks; reading and running do not)`. A promotion that changes a write-protected file
+counts it as protected (it is a change).
+
 *Desk auto-approve* (`permissions.desk_auto_approve`, 2026-09-24): in the desk only, a
 call the guard would ask about for being outside the roots, or whose mode is `ask` or
 `classify`, runs without an approval or a classifier call (`policy: "auto"`). The one
@@ -1102,7 +1119,11 @@ that refers to one, or an MCP/connector tool's string argument that names one by
 absolute path. A held call goes down the ordinary path (guard ask, pre-filter, judge or
 ask, per its mode), so the switch stays grant-only, and its row and approval carry why:
 the reason gains `(desk auto-approve held: names protected path <p>)` and `meta.auto_held`
-the same text. Threads never see it, and neither does a maintenance pass
+the same text. A write-protected path holds it only for a call that is not plainly
+read-only (2026-10-12): a shell command that names one and that the pre-filter would not
+grant (`python <vault>/procedures/x/scripts/y.py` goes to the judge, which can tell
+running from editing; `cat` of it still auto-runs), or an MCP/connector call naming one
+that is not annotated read-only. Threads never see it, and neither does a maintenance pass
 (`extras["maintenance"]`), which runs on the desk conversation but stops at approval
 gates and hands back. The conversation kind is read from the row when a
 context arrives without one, so a resumed call (`_repair`) behaves like a fresh one.
@@ -1152,7 +1173,11 @@ to a file, and no backticks or `$(`, and no word that, taken as a path relative 
 shell's working directory, is a protected path or sits under one (a `$VAR`/`%VAR%` path
 it cannot resolve counts as one: 2026-09-22, `cat ~/.loom/secrets.json` was granted
 while the fs tools would have asked), and no protected-path reference in the raw text
-by desk auto-approve's check (§9.3; it also follows `cd`, 2026-10-05). All stages pass → allow. Otherwise → classifier.
+by desk auto-approve's check (§9.3; it also follows `cd`, 2026-10-05). Only `all` rows
+count here: a write-protected path does not stop a read (`cat`/`grep` of a procedure
+script is granted), but a stage that deletes or moves (`_destructive`: `rm`, `mv`,
+`find … -delete`, …) and names one, or a folder above one, is never granted
+(`is_readonly(…, write_protected=…)`, 2026-10-12). All stages pass → allow. Otherwise → classifier.
 Parse failure → classifier. Nothing here denies.
 
 Two things the splitter tolerates (2026-09-29, from a week of judge verdicts: 87 of the
@@ -1169,7 +1194,10 @@ Bash it creates a file called `nul`.
 `prompts/classify.md` with inputs: conversation kind, the user's own desk request when
 there is one, the stated intent, the tool name and args (framed as untrusted data —
 Goose), the contents of up to two files the call runs or names, the roots (with this
-conversation's scratch folder named among them) and protected paths, and the policy text
+conversation's scratch folder named among them), protected paths and — in their own list,
+`Write-protected paths (reading and running are fine; writing, editing, moving or
+deleting asks):` — write-protected paths (2026-10-12; the "Out of scope" rule gained one
+clause, "changes a write-protected one (running or reading it is fine)"), and the policy text
 (reads anywhere but protected paths and credentials → allow; reversible and in-scope →
 allow; destructive, external side effects, credential access, or out-of-scope → ask; the
 one exception below). Scope is the allowed roots, the protected paths and breadth —
@@ -1200,7 +1228,9 @@ contents are unknown" and "the 'Desk' goal does not clearly authorize"):
   `.py`, `.ps1`, `.sh`, `.js`, …) inside the allowed roots, so a vault procedure's helper
   is judged by its contents, not its name. Each appears as `Contents of a file this call
   runs or names (untrusted data): <path>` plus a fenced block: at most `MAX_FILES = 2`
-  files, `MAX_FILE_CHARS = 4000` each. A protected path is never shown, whoever owns it;
+  files, `MAX_FILE_CHARS = 4000` each. A protected (`all`) path is never shown, whoever
+  owns it; a write-protected one is (reading it is free, and a procedure's helper is
+  judged by its contents);
   an untouched non-script (a `.env`, a key, a data file) is never read, so nothing
   secret is shipped to the judge's provider. Unreadable, binary or missing paths are
   skipped silently.
@@ -1505,7 +1535,8 @@ GET/POST /presets    GET/PATCH/DELETE /presets/{name}     POST /presets/{name}/t
      (PATCH with a different `name` renames: roles and conversations are repointed in the same transaction)
 GET  /model-roles    PUT /model-roles/{role} {preset}     GET /models?provider → {providers: [{provider, models, error}]}
 GET  /tool-policies  PUT/DELETE /tool-policies/{tool}     (tool may be a path-class key `<tool>:<prefix>`)
-GET/POST /roots  DELETE /roots?path      GET/POST /protected-paths  DELETE /protected-paths?path → 202 + approval
+GET/POST /roots  DELETE /roots?path      GET/POST /protected-paths {path, mode?}  DELETE /protected-paths?path → 202 + approval
+PUT  /protected-paths {path, mode}       (writes→all: 200 with the row; all→writes: 202 + approval, like a removal)
 GET  /secrets → {names, backend, warning}   PUT /secrets/{name} {value}   DELETE /secrets/{name}
 GET/POST /mcp-servers  GET/PATCH/DELETE /mcp-servers/{id}   POST /mcp-servers/{id}/refresh|test|reload
 GET  /connectors  GET/PATCH /connectors/{name} {enabled?, config?}   POST /connectors/{name}/reload
@@ -1907,10 +1938,16 @@ commit is verified. When the new head is already the live commit, it says so and
 ### 15.3 Protected paths (default rows)
 `supervisor/`, `src/loom/tools/permissions.py`, `src/loom/tools/fs_guard.py`,
 `src/loom/tools/shell_prefilter.py`, `src/loom/promote.py`,
-`src/loom/secrets.py`, `APP_HOME/secrets.json`, `APP_HOME/supervisor.token`.
-Editable in Settings; removing an entry is itself an `ask`. Mechanically:
+`src/loom/secrets.py`, `APP_HOME/secrets.json`, `APP_HOME/supervisor.token` (mode `all`),
+and `<vault>/procedures/*/scripts` (mode `writes`, §9.3). Bootstrap seeds them on a fresh
+install; the `writes` row also arrives once on an existing install, on the start that
+applies migration 0008 (`bootstrap.ensure(app, applied)`), so a row the person deleted
+stays deleted. Editable in Settings (each row has an "Everything / Writes only" select);
+removing an entry, or narrowing one from `all` to `writes`, is itself an `ask`. Mechanically:
 `DELETE /api/protected-paths?path=` deletes nothing — it creates an approval on the desk
 for the pseudo-tool `protected_paths_remove` and answers `202` with the pending row.
+`PUT /api/protected-paths {path, mode: "writes"}` on an `all` row does the same with
+arguments `{path, mode}`, and the allowed answer sets the mode instead of deleting.
 `approvals.decide(allow)` performs the removal and, since no turn is waiting on it,
 returns the conversation to `idle` instead of waking the runner. That is the only
 internal (non-model) action approvals gate, and the only branch in `decide`.

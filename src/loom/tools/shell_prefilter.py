@@ -196,9 +196,8 @@ def names_protected(words: Iterable[str], protected: Iterable[str] | None, cwd: 
             target = _key(normalise(word, cwd=cwd))
         except Exception:
             return True
-        for key in keys:
-            if target == key or target.startswith(key + "/"):
-                return True
+        if _hits(target, keys):
+            return True
     return False
 
 
@@ -311,9 +310,44 @@ def _ancestors(key: str) -> list[str]:
     return ["/".join(parts[:i]) or "/" for i in range(1, len(parts))]
 
 
+def _segment_match(word: str, entry: str) -> bool:
+    """One path segment against another, either of which may be a glob."""
+    if word == entry:
+        return True
+    for pattern, text in ((entry, word), (word, entry)):
+        if _GLOB.search(pattern):
+            regex = _glob_regex(pattern)
+            if regex is not None and regex.fullmatch(text):
+                return True
+    return False
+
+
+def _glob_key_hit(target: str, key: str, ancestors: bool) -> bool:
+    """A protected *glob* (`…/procedures/*/scripts`) against a target, segment by
+    segment (a `*` never crosses a `/`): the target is a match or sits under one, or —
+    with `ancestors` — is a folder above one."""
+    tparts, kparts = target.split("/"), key.split("/")
+    n = min(len(tparts), len(kparts))
+    if not all(_segment_match(tparts[i], kparts[i]) for i in range(n)):
+        return False
+    return len(tparts) >= len(kparts) or ancestors
+
+
+def hits(target: str, keys: list[str], ancestors: bool = False) -> str | None:
+    """The protected key `target` is, or sits under (both already `_key`ed). The one
+    matcher for protected paths: the fs guard asks it too (2026-10-12)."""
+    return _hits(target, keys, ancestors)
+
+
 def _hits(target: str, keys: list[str], ancestors: bool = False) -> str | None:
     """The protected key `target` is, or sits under; a glob also hits a key it matches.
-    With `ancestors`, a target above a key (or a glob matching a folder above one) hits."""
+    With `ancestors`, a target above a key (or a glob matching a folder above one) hits.
+    A key may itself be a glob (a protected `procedures/*/scripts`), matched per segment."""
+    globbed = [k for k in keys if _GLOB.search(k)]
+    for key in globbed:
+        if _glob_key_hit(target, key, ancestors):
+            return key
+    keys = [k for k in keys if k not in globbed]
     if _GLOB.search(target):
         literal = _GLOB.split(target, 1)[0].rsplit("/", 1)[0]
         regex = _glob_regex(target)
@@ -391,10 +425,18 @@ def protected_reference(text: str, protected: Iterable[str] | None, cwd: str | N
     return None
 
 
-def is_readonly(command: str, allowlist: list[str], protected: Iterable[str] | None = None, cwd: str | None = None) -> bool:
+def is_readonly(
+    command: str,
+    allowlist: list[str],
+    protected: Iterable[str] | None = None,
+    cwd: str | None = None,
+    write_protected: Iterable[str] | None = None,
+) -> bool:
     """True only when every stage is plainly read-only and names no protected path.
     `cwd` is what relative paths in the command resolve against (the shell's working
-    directory). Never raises."""
+    directory). `write_protected` paths (2026-10-12) do not stop a read — `cat` of a
+    procedure's script is a read — but a stage that deletes or moves one is a write,
+    should the allowlist ever hold such a command (`find … -delete`). Never raises."""
     try:
         if not command or not command.strip():
             return False
@@ -403,6 +445,7 @@ def is_readonly(command: str, allowlist: list[str], protected: Iterable[str] | N
             return False
         singles, pairs = _entries(allowlist)
         seen: list[str] = []
+        destructive = False
         for stage in stages:
             if not stage:
                 return False
@@ -416,6 +459,7 @@ def is_readonly(command: str, allowlist: list[str], protected: Iterable[str] | N
             if not words:
                 return False
             seen.extend(words)
+            destructive = destructive or _destructive(words)
             name = command_name(words[0])
             if name in singles:
                 continue
@@ -425,6 +469,8 @@ def is_readonly(command: str, allowlist: list[str], protected: Iterable[str] | N
         if names_protected(seen, protected, cwd):
             return False
         if protected_reference(command, protected, cwd):  # also follows `cd` and spellings `names_protected` misses
+            return False
+        if destructive and protected_reference(command, write_protected, cwd):
             return False
         return True
     except Exception:  # a pre-filter that raises would break a turn; doubt means classify

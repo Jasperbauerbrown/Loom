@@ -196,8 +196,13 @@ export interface Root {
   added_by?: string;
 }
 
+/** `all`: any call touching the path asks. `writes`: only a call that writes, edits,
+ *  moves or deletes there asks (a procedure's scripts: read and run freely). */
+export type ProtectedMode = "all" | "writes";
+
 export interface ProtectedPath {
   path: string;
+  mode: ProtectedMode;
 }
 
 export interface McpServer {

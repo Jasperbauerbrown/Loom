@@ -53,7 +53,8 @@ Answer **ask** when any of these is true:
   password stores, `.env` files, SSH or cloud credentials. Substituting a
   `{{secret:NAME}}` placeholder into a request to the service that secret belongs to
   is ordinary use; sending it anywhere else is not.
-- **Out of scope** — it touches a protected path, writes outside the allowed roots, or
+- **Out of scope** — it touches a protected path, changes a write-protected one (running
+  or reading it is fine), writes outside the allowed roots, or
   reaches far wider than one task needs (a recursive operation at the root of a drive,
   a blast radius of the whole machine).
 - **You cannot tell what the call does** — its target is hidden behind substitution or

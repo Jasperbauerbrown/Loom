@@ -170,7 +170,7 @@ def build_app(home: Path | None = None, *, models: ModelClient | None = None) ->
 
     from . import bootstrap
 
-    bootstrap.ensure(app)  # idempotent: desk row, default policies, roots, protected paths, vault skeleton
+    bootstrap.ensure(app, applied)  # idempotent: desk row, default policies, roots, protected paths, vault skeleton
 
     if models is None:
         from .models.client import Client

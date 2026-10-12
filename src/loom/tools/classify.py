@@ -142,13 +142,15 @@ def _shown_files(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) -
     """Normalised paths this call runs or names whose contents the judge sees, in
     priority order: files this conversation wrote, then files it owns otherwise (its
     artifacts folder, a `file_reads` row), then scripts inside the allowed roots. Each
-    group keeps the order the candidates appeared; deduplicated; a protected path never;
-    capped at `MAX_FILES`. A candidate that matches nothing costs nothing."""
+    group keeps the order the candidates appeared; deduplicated; a protected path never
+    (a write-protected one is shown: reading it is free, and a procedure's helper is
+    judged by its contents); capped at `MAX_FILES`. A candidate that matches nothing
+    costs nothing."""
     cwd = command_cwd(app, ctx, args)
     artifacts_root = _artifacts_root_for(app, ctx.conversation_id)
     file_reads = _file_reads_for(app, ctx.conversation_id)
     roots = fs_guard.effective_roots(app, ctx.conversation)
-    protected = fs_guard.protected_paths(app)
+    protected = fs_guard.protected_paths(app, "all")
 
     written: list[str] = []
     owned: list[str] = []
@@ -162,7 +164,7 @@ def _shown_files(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) -
         except Exception:
             continue
         key = fs_guard._key(path)
-        if key in seen or any(fs_guard._under(path, p) for p in protected):
+        if key in seen or fs_guard.under_any(path, protected):
             continue
         wrote = file_reads.get(key)
         if wrote:
@@ -211,6 +213,7 @@ def render_inputs(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) 
         rendered_args = rendered_args[:MAX_ARG_CHARS] + "\n… (arguments truncated)"
     root_lines = [f"- {p}" for p in paths["roots"]] or ["- (none)"]
     protected_lines = [f"- {p}" for p in paths["protected"]] or ["- (none)"]
+    write_protected_lines = [f"- {p}" for p in paths["write_protected"]] or ["- (none)"]
 
     intent_text = (ctx.intent or "").strip()[:MAX_ARG_CHARS] or "(none stated)"
     # A carried intent is the turn's earlier preamble, not this step's: say so, or the
@@ -275,6 +278,9 @@ def render_inputs(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) 
         "",
         "Protected paths:",
         *protected_lines,
+        "",
+        "Write-protected paths (reading and running are fine; writing, editing, moving or deleting asks):",
+        *write_protected_lines,
         "",
         'Answer with JSON only: {"decision":"allow|ask","reason":"…"}',
     ]
