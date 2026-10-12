@@ -6,6 +6,7 @@ import { WsClient } from "./lib/ws";
 import { href, navigate, useRoute } from "./lib/router";
 import { cls } from "./lib/format";
 import { api } from "./lib/api";
+import { setFaviconAccent } from "./lib/favicon";
 import { Toasts } from "./components/Toasts";
 import { TokenDialog } from "./components/TokenDialog";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -52,6 +53,7 @@ function applyAppearance({ theme, palette }: Appearance) {
   root.classList.toggle("dark", dark);
   if (palette && palette !== "default") root.dataset.palette = palette;
   else delete root.dataset.palette;
+  setFaviconAccent(getComputedStyle(root).getPropertyValue("--color-sky-600").trim());
 }
 
 function rememberAppearance(appearance: Appearance) {

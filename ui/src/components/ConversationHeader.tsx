@@ -79,6 +79,22 @@ function UsageBadge({ id }: { id: string }) {
   );
 }
 
+/** The desk's provider-reported usage since its latest manual Clear context action.
+ *  The original badge remains the all-time conversation total. */
+function DeskUsageBadge({ id }: { id: string }) {
+  const usage = useStore((s) => s.usage[id], Object.is);
+  if (!usage) return null;
+  const { prompt_tokens: input, completion_tokens: output, steps } = usage.since_clear;
+  return (
+    <Badge
+      tone="sky"
+      title={`${input.toLocaleString()} prompt / ${output.toLocaleString()} completion tokens since the latest manual Clear context marker (${steps} model steps)`}
+    >
+      since clear in {compactNumber(input)} · out {compactNumber(output)}
+    </Badge>
+  );
+}
+
 export function ConversationHeader({ id, children }: { id: string; children?: React.ReactNode }) {
   const conversation = useStore((s) => s.conversations[id], Object.is);
   const roles = useStore((s) => s.roles, Object.is);
@@ -148,6 +164,7 @@ export function ConversationHeader({ id, children }: { id: string; children?: Re
       ) : null}
       <OccupancyMeter id={id} />
       <UsageBadge id={id} />
+      {conversation?.kind === "desk" ? <DeskUsageBadge id={id} /> : null}
       {queue.depth > 0 || (queue.running?.length ?? 0) > 0 ? (
         <Badge tone="sky" title="Model queue: running / queued">
           queue {queue.running?.length ?? 0}/{queue.depth}

@@ -1459,3 +1459,8 @@ sessions do not re-litigate.
   refused eight times in 33 s with identical arguments, and only got through by switching
   to `fs_patch`. The empty value carries no intent, so refusing it was a special case
   aimed at a shape that is not ambiguous.
+- **2026-10-12** — **Keep lifetime usage and desk-since-clear usage distinct.** Both totals are
+  derived from provider usage metadata; only a manual clear marker resets the desk subtotal.
+  The browser tab uses the active palette's accent on a small woven Loom mark, updated when
+  appearance is applied. Rationale: the header keeps historical spend visible while making
+  the fresh-context tally legible; the favicon stays recognizable and in palette.

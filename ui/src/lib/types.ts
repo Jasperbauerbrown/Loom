@@ -322,6 +322,15 @@ export interface ConversationUsage {
   steps: number;
   steps_with_usage: number;
   turns: ConversationTurnUsage[];
+  /** Provider-reported totals after the latest manual Clear context marker. */
+  since_clear: ConversationUsageTotals;
+}
+
+export interface ConversationUsageTotals {
+  prompt_tokens: number;
+  completion_tokens: number;
+  steps: number;
+  steps_with_usage: number;
 }
 
 export interface QueueState {
