@@ -612,7 +612,10 @@ summary and moves `summary_cutoff` to the last event. Nothing is deleted: the tr
 stays visible below a divider and searchable with `transcript_search`. Refused (409)
 while a turn is running or waiting for approval. Available in the UI header and as
 `loom clear [--thread ID]`. Anti-thrash and headroom math are
-exactly Hydra's; they are proven on Ollama.
+exactly Hydra's; they are proven on Ollama. Since 2026-10-12 a clear also empties the
+conversation's pinned list through `pins.replace(..., [])` (§6.7), so the next turn
+assembles no pinned block — clearing context means clearing it, and the behaviour is the
+same however the clear is triggered (UI, API, `loom clear`, programmatic).
 
 ### 6.6 Calibration
 After each clean turn with reported `prompt_tokens`:
@@ -644,6 +647,8 @@ note, and a thread without one was a "task". Every thread is now that.
   through `knowledge_read(path, pin=true)` (unpinned with `pin=false`), by the spawning
   conversation at spawn, and by the person in the thread panel (`PATCH` `pinned_notes`).
   A pin to a missing note is refused. Knowledge resolution (§8.3) skips pinned paths.
+  A manual context clear (§6.5) empties the list — decided 2026-10-12 — so the fresh
+  context carries no pinned block; `pins.replace` is the only writer used for it.
 - **Context**: slot [5] every turn is the goal, the current status fields, then the pinned
   notes.
 - **Status**: one reader and one writer (`conversation/status.py`). `status_update(fields)`

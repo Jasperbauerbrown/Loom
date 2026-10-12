@@ -18,7 +18,7 @@ from typing import Any, Awaitable, Callable
 from .. import db, prompts
 from ..models import roles
 from ..models.types import PRIORITY_MAINTENANCE
-from . import events
+from . import events, pins
 from .context import Context
 
 log = logging.getLogger(__name__)
@@ -262,7 +262,9 @@ def clear(app, conversation_id: str, actor: str = "user") -> dict[str, Any]:  # 
     """Start the conversation's context fresh (decided 2026-09-21): the next turn replays
     nothing before this point. Transcript rows are untouched — they stay visible in the
     UI below a divider and searchable with transcript_search — so this is a cut, not a
-    delete: a `compaction` event of kind `clear` with an empty summary."""
+    delete: a `compaction` event of kind `clear` with an empty summary. Clearing also
+    empties the pinned list (decided 2026-10-12): the next turn assembles no pinned
+    block, whichever path triggered the clear."""
     conv = app.conversation(conversation_id)
     if conv is None:
         raise KeyError(conversation_id)
@@ -270,6 +272,7 @@ def clear(app, conversation_id: str, actor: str = "user") -> dict[str, Any]:  # 
         raise RuntimeError(f"conversation is {conv['status']}; cancel or answer it first")
     last = events.max_id(app, conversation_id)
     events.update(app, conversation_id, summary="", summary_cutoff=last)
+    pins.replace(app, conversation_id, [])
     ev = events.append(
         app, conversation_id, "compaction", f"context cleared by {actor}",
         {"kind": "clear", "folded_through": last, "kept_from": last + 1, "summary_chars": 0},
