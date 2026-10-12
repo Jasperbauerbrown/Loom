@@ -85,9 +85,17 @@ async def fs_write_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult
 # fs_edit
 # ---------------------------------------------------------------------------------
 def parse_edits(args: dict[str, Any]) -> list[Edit]:
-    """`old`/`new` or `edits=[…]`, never both. Raises `EditError` with what to resend."""
+    """`old`/`new` or `edits=[…]`, never both. Raises `EditError` with what to resend.
+
+    A form left at its empty value is absent: some models fill every optional field, and
+    `edits: []` beside an `old`/`new` pair (or `old: "", new: ""` beside a list) says
+    nothing — refusing it made one desk retry the same call eight times (2026-10-12)."""
     listed = args.get("edits")
+    if isinstance(listed, (list, tuple)) and not listed:
+        listed = None
     single = args.get("old") is not None or args.get("new") is not None
+    if listed is not None and single and not (args.get("old") or args.get("new")):
+        single = False
     if listed is not None and single:
         return _fail("pass either `old`/`new` or `edits`, not both")
     if listed is None:

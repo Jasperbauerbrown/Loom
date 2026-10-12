@@ -200,6 +200,21 @@ async def test_fs_edit_rejects_both_forms_at_once_and_neither(app, ctx, project)
     assert not both.ok and "not both" in both.content
     neither = await run(app, ctx, "fs_edit", {"path": str(target)})
     assert not neither.ok and "nothing to do" in neither.content
+    empty = await run(app, ctx, "fs_edit", {"path": str(target), "edits": []})
+    assert not empty.ok and "nothing to do" in empty.content
+
+
+async def test_fs_edit_treats_an_empty_form_as_absent(app, ctx, project):
+    """A model that fills every optional field sends the unused form empty (2026-10-12)."""
+    target = project / "a.py"
+    target.write_text("a\nb\n", encoding="utf-8")
+    await run(app, ctx, "fs_read", {"path": str(target)})
+    pair = await run(app, ctx, "fs_edit", {"path": str(target), "old": "a", "new": "x", "edits": []})
+    assert pair.ok and target.read_text(encoding="utf-8") == "x\nb\n"
+    listed = await run(
+        app, ctx, "fs_edit", {"path": str(target), "old": "", "new": "", "edits": [{"old": "b", "new": "y"}]}
+    )
+    assert listed.ok and target.read_text(encoding="utf-8") == "x\ny\n"
 
 
 async def test_fs_edit_says_when_the_text_is_not_there(app, ctx, project):

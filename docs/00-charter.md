@@ -1452,3 +1452,10 @@ sessions do not re-litigate.
   conversation but stops at approval gates and hands back, and a desk switch that
   widened it would break the same rule. Nothing static denies.
 - **2026-10-05** — **Promotion finds uv by a resolution chain, not an assumption.** The supervisor's `uv_command(home)` tries, first working wins (each verified with `--version`): `system.uv_path` setting (uv executable, or a python run as `-m uv`), the command remembered in `H/uv-command.json`, `uv` on PATH, `sys.executable -m uv`, each Python's user-site `Scripts/uv.exe`, each `py -0p` interpreter's `-m uv`. The winner is remembered and re-verified before reuse. Failure lists every candidate and its reason. Rationale: under `uv run` the supervisor's interpreter is the project venv with no uv module; two promotions (2026-09-28, 2026-09-29) failed "No module named uv".
+- **2026-10-12** — **An empty argument form is an absent one.** `fs_edit` reads `edits: []`
+  as no list, and `old: ""`/`new: ""` beside a non-empty list as no pair, so "never both"
+  only refuses two forms that each say something. Rationale: GPT 6 Luna fills every
+  optional schema field; on the desk it sent a correct `old`/`new` with `edits: []`, was
+  refused eight times in 33 s with identical arguments, and only got through by switching
+  to `fs_patch`. The empty value carries no intent, so refusing it was a special case
+  aimed at a shape that is not ambiguous.
