@@ -189,7 +189,8 @@ events(id INTEGER PK, conversation_id TEXT, kind TEXT
        -- meta.usage on assistant/tool_call rows: {prompt_tokens?, completion_tokens?}, whichever
        -- the provider reported for that step (client.py); never stored elsewhere — GET
        -- …/usage (§12.1) sums it on every call. Token metrics, 2026-09-29.
-events_fts  -- FTS5 external-content table over events.content for user/assistant/tool_result
+events_fts  -- FTS5 external-content table over events.content for user/assistant/tool_call/tool_result
+            -- 0007 (2026-10-12): tool_call added to the trigger and backfilled
 
 inbox(id INTEGER PK, conversation_id TEXT, source TEXT
       /*user|conversation:<id>|schedule:<id>|connector:<name>|process:<id>|system*/,
@@ -549,7 +550,8 @@ later bare steps fall back to that same text.
 on a repaired turn the last `user` event's. `request_from_user` is true only on the desk
 when every claimed row (or that event's `meta.source`) is `user` — the person's own typed
 message. A thread's goal or handoff (written by the desk model), a thread report, a
-connector or schedule message is someone else's text and stays untrusted (§9.5).
+connector or schedule message is someone else's text: untrusted, and not shown to the
+judge at all (§9.5, 2026-10-12).
 
 ### 6.4 Budgets and brakes
 - `step_budget`: desk 25, threads 60 (settings). Threads see
@@ -903,8 +905,17 @@ removed (scratch included), `prune_failures` entries it could not remove (2026-1
 conversations: [{id, title, kind, status, bytes, files}]}`, biggest first (§4.4).
 
 ### 8.7 Transcript recall
-`events_fts` is maintained by triggers on `events`. `transcript_search` returns the
-event, its conversation title and timestamp, and neighbours (±2 events) on request.
+`events_fts` is maintained by triggers on `events` (insert only; events are
+append-only) and indexes `user`, `assistant`, `tool_call` and `tool_result` events.
+Tool calls joined in 2026-10-12 (migration 0007, which backfilled the existing rows):
+before, a command that had been run could not be found — a thread spent 47 searches on
+an orca-slicer command line it had used before. A tool call's content is indexed as
+stored (the JSON list of `{id, name, arguments}`); the tokenizer splits on its
+punctuation, so the tool name and every argument word match. `transcript_search` returns
+the event, its conversation title and timestamp, and neighbours (±2 events) on request;
+a tool-call hit (and a tool-call neighbour) reads as `TOOL CALL name(arguments)`, the
+form `conversation_read` uses, not as a JSON snippet. The assistant text that
+accompanies a tool call lives in its `meta.text` and is not indexed.
 
 ### 8.8 Watcher
 Polling (`os.scandir` + mtime/size) every `vault_poll_seconds` (2). No `watchfiles`
@@ -953,7 +964,7 @@ Registry = native tools + MCP tools (prefixed `mcp_<server>_<tool>`) + connector
 | `fs_write` | create/overwrite (guarded); refuses a file this conversation has not read or that changed on disk since (the ledger below); keeps the file's line endings and BOM (2026-09-24) | no | allow (within roots) |
 | `fs_edit` | exact `old`→`new` replace, must be unique; or `edits=[{old,new,replace_all}]` applied in order, all-or-nothing, with one diff; same ledger check and ending/BOM preservation; on a `.ipynb`, `old`/`new` match cell sources and the JSON around them is preserved (2026-09-24) | no | allow (within roots) |
 | `fs_patch` | one unified diff across files: `patch`, `cwd`, `strip` (default: drop a leading `a/`/`b/`), `dry_run`; `/dev/null` creates or deletes, differing paths rename; a hunk is matched by its exact context-plus-deletions block (the `@@` line is a hint tried first, never fuzz), every path inside the diff is guarded (§9.3) and ledger-checked, and nothing is written unless every file applies (2026-09-24) | no | allow (within roots) |
-| `shell` | one command line, `cwd` in roots, env passthrough minus secrets, plus `TMPDIR` set to the conversation's artifacts folder (created on demand) so `mktemp` and `tempfile` land where the harness block's `scratch:` line points — `TEMP`/`TMP` are left alone, since Git Bash mounts `/tmp` at `TEMP` and the guard reads `/tmp` through one per-process mount table (§9.3, 2026-09-25); an explicit `env` still wins; timeout, output cap; `background=true` (+ `title`) starts a supervised long-running process instead and returns its id, pid and log path at once (§9.6); Windows: cmd.exe or Git Bash per setting (restart-required), whose quirks are appended to this tool's description from `prompts/context/shell-<flavour>.md` at registration rather than injected into the harness block every turn (2026-09-22); Git Bash is located from the Git install (registry `GitForWindows\InstallPath`, the standard folders, then the `git` on PATH), never from a bare `bash.exe` on PATH, which on Windows is the WSL launcher in System32 (2026-09-22); everything a foreground call starts ends with the call (kill-on-close Job Object on Windows, process group elsewhere — on POSIX the group is killed on a normal exit too, not only on a timeout: 2026-09-24), and the result says so — survivors are enumerated *before* the kill (the job's pid list on Windows, `ps -g`/`/proc` on POSIX; best effort, silent when the platform refuses) and the trailer names them on its own line after `[exit N]`: `[ended 1 process the command left running: game.exe pid 5732]`, at most 8 names then `, and N more`, also `meta["ended"]` (2026-09-24); `timeout_s` is the call's own, clamped by `conversation.tool_timeout_max_s`, and a timed-out call returns the output captured before the kill (§9.3) | no | classify (pre-filter first) |
+| `shell` | one command line, `cwd` in roots, env passthrough minus secrets, plus `TMPDIR` set to the conversation's artifacts folder (created on demand — before the cwd check, so a first call with `cwd` = that folder runs; the dispatcher's step-2 precheck makes it and fails a missing cwd before anyone is asked, 2026-10-12) so `mktemp` and `tempfile` land where the harness block's `scratch:` line points — `TEMP`/`TMP` are left alone, since Git Bash mounts `/tmp` at `TEMP` and the guard reads `/tmp` through one per-process mount table (§9.3, 2026-09-25); an explicit `env` still wins; timeout, output cap; `background=true` (+ `title`) starts a supervised long-running process instead and returns its id, pid and log path at once (§9.6); Windows: cmd.exe or Git Bash per setting (restart-required), whose quirks are appended to this tool's description from `prompts/context/shell-<flavour>.md` at registration rather than injected into the harness block every turn (2026-09-22); Git Bash is located from the Git install (registry `GitForWindows\InstallPath`, the standard folders, then the `git` on PATH), never from a bare `bash.exe` on PATH, which on Windows is the WSL launcher in System32 (2026-09-22); everything a foreground call starts ends with the call (kill-on-close Job Object on Windows, process group elsewhere — on POSIX the group is killed on a normal exit too, not only on a timeout: 2026-09-24), and the result says so — survivors are enumerated *before* the kill (the job's pid list on Windows, `ps -g`/`/proc` on POSIX; best effort, silent when the platform refuses) and the trailer names them on its own line after `[exit N]`: `[ended 1 process the command left running: game.exe pid 5732]`, at most 8 names then `, and N more`, also `meta["ended"]` (2026-09-24); `timeout_s` is the call's own, clamped by `conversation.tool_timeout_max_s`, and a timed-out call returns the output captured before the kill (§9.3) | no | classify (pre-filter first) |
 | `process` | `list` / `logs` / `stop` for background processes (§9.6); `logs` is the tail by default, `tail=true` asks for it explicitly, `since=<offset>` (or the older `offset`) reads forward from there, and the footer always names the offsets and the next call, so following a growing log needs no bookkeeping (2026-09-24); `paged`, never spilled | list, logs yes | allow |
 | `http` | GET/POST/… with headers/body; secret templating; an image response is returned as the image; `format` (raw / text / **markdown**, default markdown) decides what an HTML body becomes — an in-house `html.parser` converter (`tools/native/html_text.py`, no dependency) for markdown, a tag strip for text, untouched for raw; a body that is not HTML passes through whatever the format (2026-09-24) | no (GET treated read-only) | classify |
 | `web_search` | `query`, `k` (default `tools.web_search_results`, max 20) → a numbered list of title / url / snippet, from the provider in `tools.web_search_provider`: SearXNG (`tools.web_search_url`, no key), Brave, Exa or Tavily (key from the secret named in `tools.web_search_secret`). Unset provider, missing URL, missing secret, provider HTTP failure and a non-JSON body are five defined errors; the unset one (`prompts/context/web-search-unconfigured.md`) tells the model where the person configures it (2026-09-24) | yes | allow (no row: read-only) |
@@ -1003,7 +1014,11 @@ endings, 4 were whitespace or a moved line break, 18 were text the model reconst
 ### 9.3 Dispatcher pipeline (one path for every call)
 ```
 1 lookup tool → unknown → error result
-2 parse/validate args against schema → invalid → error result "resend the call"
+2 parse/validate args against schema → invalid → error result "resend the call";
+  then the tool's own precheck (`Tool.precheck`, a cheap "can this call run at all")
+  → its problem as an error result — before the guard, the judge or an approval, so
+  nobody is asked to approve a call that would fail at once (shell: the cwd must exist,
+  after the conversation's scratch folder is made — 2026-10-12)
 3 fs guard on path_params (plus the paths a registered extractor pulls out of an
   argument — `fs_guard.register_paths`, used by fs_patch for the files a diff names):
   resolve absolute; must be under a root (or APP_HOME/vault for knowledge tools,
@@ -1019,7 +1034,7 @@ endings, 4 were whitespace or a moved line break, 18 were text the model reconst
 7 bound output (cap → artifact spill) → tool_result content; after-hooks annotate
 ```
 **Path normalisation** (`fs_guard.normalise`, the one reading of a path for the guard,
-the shell's cwd — `dispatch._shell_cwd`, `classify.command_cwd` — the pre-filter's
+the shell's cwd — `shell.shell_cwd`, `classify.command_cwd` — the pre-filter's
 protected-path check and the classifier's owned-file lookup): absolute, `..`-resolved,
 forward slashes, case preserved, lexical (a symlink cannot move a path out of a root)
 and never raising. On Windows it reads a path the way Git Bash would, so the guard and
@@ -1151,11 +1166,14 @@ redirection that writes nowhere — `2>&1`, `1>&2`, `>/dev/null`, `2>/dev/null`,
 Bash it creates a file called `nul`.
 
 ### 9.5 Classifier
-`prompts/classify.md` with inputs: conversation kind and goal, the request that led
-here, the stated intent, the tool name and args (framed as untrusted data — Goose), the
-roots and protected paths, and the policy text (reversible and in-scope → allow;
-destructive, external side effects, credential access, or out-of-scope → ask; the one
-exception below). Output: strict JSON
+`prompts/classify.md` with inputs: conversation kind, the user's own desk request when
+there is one, the stated intent, the tool name and args (framed as untrusted data —
+Goose), the contents of up to two files the call runs or names, the roots (with this
+conversation's scratch folder named among them) and protected paths, and the policy text
+(reads anywhere but protected paths and credentials → allow; reversible and in-scope →
+allow; destructive, external side effects, credential access, or out-of-scope → ask; the
+one exception below). Scope is the allowed roots, the protected paths and breadth —
+never "serves the goal" and never step order (2026-10-12). Output: strict JSON
 `{"decision":"allow|ask","reason":"…"}`; any parse failure → ask. Role: `utility` if
 set else the conversation's role; priority inherits. Result and reason are stored on
 the tool_call event `meta` and shown in the UI on hover.
@@ -1165,23 +1183,32 @@ the tool_call event `meta` and shown in the UI on hover.
 contents are unknown" and "the 'Desk' goal does not clearly authorize"):
 
 - **The stated intent.** `ToolContext.intent` — what the assistant said it was about to
-  do at this step — renders as its own fenced untrusted block beside the request text,
-  `(none stated)` when empty.
-- **The goal is the `goal` column, never the title.** A title is a label, not a scope, so
-  the desk no longer renders a bare `Desk`. With no goal the line reads `(none recorded —
-  the stated intent below is this turn's scope)`, and the intent stays inside its fence:
-  untrusted text never rides on a bare label line.
-- **The files the call names, when this conversation owns them.** Candidate strings (the
-  shell command's words via the pre-filter's splitter, plus every string argument) are
-  normalised against the same cwd the shell tool will use (`classify.command_cwd`) and
-  matched against the conversation's artifacts folder and its `file_reads` rows. A match
-  is included as `Contents of a file this call runs or names (untrusted data): <path>`
-  plus a fenced block: at most `MAX_FILES = 2` files, `MAX_FILE_CHARS = 4000` each,
-  files this conversation *wrote* first. Unreadable, binary or missing paths are skipped
-  silently; a path the conversation has never touched is never read.
-- **Who wrote the request** (2026-09-25). The request block is labelled `Request that led
-  here (typed by the user on the desk):` when `ToolContext.request_from_user` is set
-  (§6.3) and `(untrusted data)` otherwise. The prompt treats the user's own specific
+  do at this step — renders as its own fenced untrusted block, `(none stated)` when
+  empty. The prompt says it describes the call (useful when the command alone is
+  opaque) and never approves one or makes one need asking.
+- **No goal line** (2026-10-12; it was the `goal` column, never the title, from
+  2026-09-24). A thread's goal is the desk model's text, so it could never authorise a
+  call; rendered, its instructions *to the worker* read as rules to the judge ("omit all
+  scaling" asked about a bounds-only `scale_stl.py`, "no custom flattener" about a
+  `--help`) and its plan invited grading order ("premature", "does not yet serve the
+  goal"). The judge decides on the call's effect, the roots and the protected paths.
+- **The files the call runs or names.** Candidate strings (the shell command's words via
+  the pre-filter's splitter, plus every string argument) are normalised against the
+  same cwd the shell tool will use (`classify.command_cwd`). Shown, in this order: files
+  this conversation *wrote* (`file_reads.wrote`), files it otherwise owns (its artifacts
+  folder, a `file_reads` row), then — since 2026-10-12 — any script (`SCRIPT_SUFFIXES`:
+  `.py`, `.ps1`, `.sh`, `.js`, …) inside the allowed roots, so a vault procedure's helper
+  is judged by its contents, not its name. Each appears as `Contents of a file this call
+  runs or names (untrusted data): <path>` plus a fenced block: at most `MAX_FILES = 2`
+  files, `MAX_FILE_CHARS = 4000` each. A protected path is never shown, whoever owns it;
+  an untouched non-script (a `.env`, a key, a data file) is never read, so nothing
+  secret is shipped to the judge's provider. Unreadable, binary or missing paths are
+  skipped silently.
+- **Whose request** (2026-09-25; narrowed 2026-10-12). The request block appears only as
+  `Request that led here (typed by the user on the desk):`, when
+  `ToolContext.request_from_user` is set (§6.3) and the text is non-empty. Every other
+  request — a thread's goal or handoff, a connector, schedule or thread-report message —
+  is untrusted, could authorise nothing, and is not rendered at all. The prompt treats the user's own specific
   request as authorisation for a **reversible** external effect — starting, stopping or
   restarting a local service, bot or server they named, a process that connects to a
   service they own — and for nothing else: sending messages, mail or posts on their
@@ -1211,6 +1238,18 @@ contents are unknown" and "the 'Desk' goal does not clearly authorize"):
   start the bot again" → `npm start` was asked because the bot "connects to Discord").
   And the reason is a verdict — the rule plus the thing in the call that triggered it —
   never a question or a request for more context.
+- **Effect, not plan; reads anywhere** (2026-10-12, printer threads: 36 asks, 35
+  allowed by the user, the one deny task-steering; on a rerun 8 of 10 shell calls
+  asked). The prompt says the judge judges what the call does, not whether it is the
+  right next step. A call that only reads is an allow wherever it reads unless it
+  touches a protected path or credentials — the same line the static pre-filter already
+  draws, so OrcaSlicer profiles under `AppData`/`Program Files` read by a `python -`
+  heredoc no longer ask while `cat` of the same file is granted. Status queries of this
+  machine (`arp -a`, `ipconfig`, `netstat`, `tasklist`) are reads, not external
+  queries. In scope means writes inside the allowed roots (the scratch folder is
+  rendered as one of them), outside protected paths, with a proportionate reach. These
+  were made by removing text — goal-scope, "serves the goal" — not by adding caveats,
+  since the flash-sized judge resolves conflicting rules conservatively (2026-09-30).
 
 ### 9.6 Background processes (decided 2026-09-22)
 A program that must outlive a tool call — a dev server, a bot, a watcher — is started

@@ -753,7 +753,8 @@ def _request(app, conv: dict[str, Any], rows: list[dict[str, Any]]) -> tuple[str
     last user event (a repaired turn claims nothing). `from_user` is true only on the
     desk when every row is the user's own typed message (source "user"); a thread's
     goal or handoff, a thread report, a connector or schedule message is someone else's
-    text and stays untrusted data (03 §9.5, 2026-09-25)."""
+    text and stays untrusted data (03 §9.5, 2026-09-25), which the judge is not shown at
+    all (2026-10-12)."""
     desk = conv.get("kind") == "desk"
     if rows:
         text = "\n".join(r.get("content") or "" for r in rows)

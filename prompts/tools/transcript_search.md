@@ -12,6 +12,10 @@ Arguments:
 - `neighbours` (optional, default false): also return the two events either side of each
   match, so you see the exchange rather than one line.
 
-Returns each match with its conversation title, timestamp, event kind and a snippet.
+Messages, tool calls (the tool and its arguments — a command line you ran) and tool
+results are all searched, so it finds the exact command that worked last time.
+
+Returns each match with its conversation title, timestamp, event kind and a snippet;
+a tool-call match shows the call itself (tool and arguments).
 If you learn something durable this way, write it to the vault so the next answer does
 not need a search.

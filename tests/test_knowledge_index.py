@@ -213,3 +213,33 @@ def test_transcript_search_and_neighbours(app):
     around = app.index.neighbours(hits[0]["event_id"], 2)
     assert [a["content"] for a in around][-1] == "and the nozzle is 0.4"
     assert app.index.transcript_search("nozzle", conversation_id="nope") == []
+
+
+def test_tool_calls_are_searchable_and_0007_backfills_them(app):
+    """A command that was run is findable (2026-10-12): new tool_call events are indexed
+    by the trigger, and 0007 backfills the ones written before it."""
+    from loom import db
+    from loom.conversation import events
+
+    conv = app.desk_id()
+    call = [{"id": "c1", "name": "shell", "arguments": {"command": "orca-slicer --export-gcode cube.3mf"}}]
+    live = events.append(app, conv, "tool_call", db.dumps(call))
+    hits = app.index.transcript_search("orca-slicer export-gcode")
+    assert [h["event_id"] for h in hits] == [live] and hits[0]["kind"] == "tool_call"
+
+    # a database from before 0007: the old trigger, and a tool call it never indexed
+    app.db.execute("DROP TRIGGER events_fts_ai")
+    app.db.execute(
+        "CREATE TRIGGER events_fts_ai AFTER INSERT ON events WHEN new.kind IN ('user', 'assistant', 'tool_result') "
+        "BEGIN INSERT INTO events_fts(rowid, content) VALUES (new.id, new.content); END"
+    )
+    app.db.execute("INSERT INTO events_fts(events_fts) VALUES ('delete-all')")
+    old = events.append(app, conv, "tool_call", db.dumps([{"id": "c2", "name": "shell", "arguments": {"command": "prusa-slicer --slice"}}]))
+    assert app.index.transcript_search("prusa-slicer") == []
+    app.db.execute("PRAGMA user_version=6")
+
+    assert db.migrate(app.db) == [7]
+    assert [h["event_id"] for h in app.index.transcript_search("prusa-slicer")] == [old]
+    assert [h["event_id"] for h in app.index.transcript_search("orca-slicer")] == [live]
+    newer = events.append(app, conv, "tool_call", db.dumps([{"id": "c3", "name": "shell", "arguments": {"command": "cura-engine slice"}}]))
+    assert [h["event_id"] for h in app.index.transcript_search("cura-engine")] == [newer]

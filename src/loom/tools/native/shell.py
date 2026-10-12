@@ -237,16 +237,36 @@ def scratch_dir(ctx: ToolContext) -> str | None:
     return normalise(str(folder))
 
 
+def shell_cwd(ctx: ToolContext, args: dict[str, Any]) -> str:
+    """The directory the command runs in: `cwd` resolved against the first allowed
+    root, or that root itself (`classify.command_cwd` makes the same choice)."""
+    roots = ctx.roots()
+    cwd_arg = args.get("cwd")
+    return normalise(str(cwd_arg), cwd=roots[0] if roots else None) if cwd_arg else (roots[0] if roots else os.getcwd())
+
+
+def precheck(ctx: ToolContext, args: dict[str, Any]) -> str | None:
+    """The call can run only in a directory that exists. The scratch folder is made
+    first: the harness names it as the conversation's own, so a first call with
+    cwd=<scratch> must not fail because nothing had written there yet (2026-10-12).
+    The dispatcher runs this before anyone is asked; the handler runs it again, since
+    a folder can vanish while an approval waits."""
+    scratch_dir(ctx)
+    cwd = shell_cwd(ctx, args)
+    if not Path(cwd).is_dir():
+        return f"cwd does not exist: {cwd}"
+    return None
+
+
 async def shell_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     command = str(args.get("command") or "").strip()
     if not command:
         return ToolResult.error("command is empty")
     app = ctx.app
-    roots = ctx.roots()
-    cwd_arg = args.get("cwd")
-    cwd = normalise(str(cwd_arg), cwd=roots[0] if roots else None) if cwd_arg else (roots[0] if roots else os.getcwd())
-    if not Path(cwd).is_dir():
-        return ToolResult.error(f"cwd does not exist: {cwd}")
+    problem = precheck(ctx, args)
+    if problem:
+        return ToolResult.error(problem)
+    cwd = shell_cwd(ctx, args)
 
     env = dict(os.environ)
     scratch = scratch_dir(ctx)
@@ -396,5 +416,6 @@ def tools(app: Any = None) -> list[Tool]:
             },
             handler=shell_handler,
             path_params=("cwd",),
+            precheck=precheck,
         )
     ]

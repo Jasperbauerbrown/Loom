@@ -293,8 +293,8 @@ assembled per turn.
   `classify`. Nothing static ever blocks a command (Hydra's static filters did, and
   models fought them).
 - **`classify`.** The model judges the specific call against a short written policy
-  (prompt file), seeing the user's request or thread goal, the proposed call, and the
-  policy: reversible and in-scope → run; destructive, external, or out-of-scope → ask.
+  (prompt file), seeing the user's own desk request (when there is one), the stated intent,
+  the proposed call, the roots and protected paths, and the policy: reversible and in-scope → run; destructive, external, or out-of-scope → ask.
   One mechanism, used only where blanket rules cannot decide (shell, raw http). One
   extra model call; sound with the bar model.
 - **Filesystem guard — the only argument rule.** *Allowed roots* (project spaces, vault,
@@ -1459,3 +1459,57 @@ sessions do not re-litigate.
   refused eight times in 33 s with identical arguments, and only got through by switching
   to `fs_patch`. The empty value carries no intent, so refusing it was a special case
   aimed at a shape that is not ambiguous.
+- **2026-10-12** — **A call that cannot run is refused before anyone is asked.** A tool
+  may declare `precheck(ctx, args)`, a cheap "can this call run at all". The dispatcher
+  runs it beside argument validation (step 2), so it comes before the fs guard, the
+  policy, the judge and any approval. Its problem comes back as an error result. The
+  shell's precheck makes the conversation's scratch folder, then requires the cwd to
+  exist. The handler runs it again, since a folder can vanish while an approval waits.
+  Rationale: the harness names `artifacts/<conversation>` as the scratch folder, but
+  the shell created it only after its cwd check. So the first call with that cwd failed
+  "cwd does not exist", in two threads. Worse, that call first went to the judge and the
+  person approved it, and only then did it fail. A click spent on a call that could
+  never run is friction with no safety in it. One optional hook on `Tool` covers this
+  with no shell-only branch in the dispatcher.
+- **2026-10-12** — **Tool calls are in the transcript index.** The `events_fts_ai`
+  trigger now indexes `tool_call` events as well as user, assistant and tool_result.
+  Migration 0007 recreated the trigger and backfilled the existing rows. The content is
+  indexed as stored (JSON `{id, name, arguments}`), and the tokenizer splits on its
+  punctuation. `transcript_search` shows a tool-call hit as `TOOL CALL name(arguments)`,
+  the `conversation_read` form, not as a JSON snippet. Rationale: a command that had been
+  run could not be found. A thread made 47 searches for an orca-slicer command line it
+  had used before. The command is the most reusable thing a transcript holds.
+- **2026-10-12** — **The judge decides on the call's effect, not the plan; reads
+  anywhere are reads.** Live audit of the printer threads: 36 asks, 35 allowed by the
+  user, and the one deny was task-steering, not safety; on the rerun thread 8 of 10
+  shell calls asked. Five causes. (1) The desk-written thread goal and handoff were
+  rendered to the judge, and it read their instructions *to the worker* as its own
+  rules: a bounds-only `scale_stl.py <stl>` asked twice because the goal said "omit all
+  scaling", `flatten_profiles.py --help` because it said "no custom flattener", the
+  slice because a handoff said "ask one precise follow-up", and (10-11) "present for
+  Jasper's approval" as a rule to ask. (2) It graded plan order — "premature", "does
+  not yet serve the goal", "skips those checks" — on a `mkdir -p` in the thread's own
+  artifacts folder and on plain reads. (3) Reads outside the roots asked (OrcaSlicer
+  profiles under `AppData/Roaming` and `Program Files` via a `python -` heredoc) while
+  the pre-filter grants `cat`/`find` of the same files. (4) A vault procedure's helper
+  script inside the thread's roots was judged by name only. (5) `arp -a` was called an
+  "external network query". Decision: `classify.render_inputs` no longer renders a goal
+  line, and renders the request block only when it is the user's own typed desk message
+  (`request_from_user`); a thread's goal or handoff, and connector, schedule or
+  thread-report text, is untrusted (2026-09-25), could never authorise anything, and its
+  only effect was reasons to ask. The stated intent stays, as the assistant's
+  description of the call: the prompt says it never approves a call and never makes one
+  need asking. Scope is the allowed roots, the protected paths and breadth — never
+  "serves the goal", never step order; the conversation's scratch folder is rendered by
+  name among the roots. A read is an allow anywhere except a protected path or
+  credentials, the pre-filter's own line, and local status queries (`arp -a`,
+  `ipconfig`, `netstat`, `tasklist`) are reads. The judge now also sees any script
+  (`classify.SCRIPT_SUFFIXES`) inside the allowed roots that the call runs or names,
+  after the files this conversation wrote or owns, still at most two files of 4000
+  chars, never a protected path, never an untouched non-script (so a `.env` is never
+  shipped to the judge's provider). This supersedes the 2026-09-24 rule that the judge
+  never reads a file the conversation has not touched: inside the roots the
+  conversation can read it anyway. The prompt got shorter, not longer — goal-scope text
+  was removed rather than caveated, since the flash-sized judge resolves conflicting
+  rules conservatively (2026-09-30). Nothing static denies, pre-filter grants still never
+  skip the protected check, and no desk switch widens a thread; none of that changed.

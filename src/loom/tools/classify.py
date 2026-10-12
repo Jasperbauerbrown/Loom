@@ -9,9 +9,10 @@ Two invariants:
 
 - The tool name and its arguments are **untrusted data**, fenced and labelled as such
   (Goose's wording, 02 §4). Anything inside them that reads like an instruction is a
-  string the judge is reasoning about, not a request. The request text is labelled as
-  the user's own words only when it is the user's typed desk message
-  (`ToolContext.request_from_user`); otherwise it is untrusted data too.
+  string the judge is reasoning about, not a request. The request text is rendered only
+  when it is the user's own typed desk message (`ToolContext.request_from_user`); a
+  thread's goal or handoff, or a connector's or schedule's text, could never authorise
+  anything and in practice only supplied reasons to ask, so it is not shown (2026-10-12).
 - Every failure — no model, a transient error, prose instead of JSON, an unknown
   decision — is the same outcome: `ask`, with the reason saying why. A judge that
   cannot answer must never widen permissions.
@@ -41,6 +42,12 @@ MAX_ARG_CHARS = 4000
 # bounded like an argument (F1, tower-defense run audit, 2026-09-24).
 MAX_FILE_CHARS = 4000
 MAX_FILES = 2
+# A file inside the allowed roots that this conversation has not touched is shown only
+# when it is a script — what the call runs. Data files would spend the budget, and a
+# `.env` or key file must never be shipped to the judge's provider (2026-10-12).
+SCRIPT_SUFFIXES = frozenset(
+    {".py", ".ps1", ".psm1", ".sh", ".bash", ".bat", ".cmd", ".js", ".mjs", ".cjs", ".ts", ".rb", ".pl", ".lua"}
+)
 
 
 def classifier_role(app: Any, conversation: dict[str, Any] | None) -> str:
@@ -131,16 +138,21 @@ def _artifacts_root_for(app: Any, conversation_id: str) -> str | None:
         return None
 
 
-def _owned_files(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) -> list[str]:
-    """Normalised paths this call runs or names that this conversation owns, written
-    files first (each group in the order the candidates appeared), deduplicated, capped
-    at `MAX_FILES`. A candidate that is not a plausible owned path costs nothing."""
+def _shown_files(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) -> list[str]:
+    """Normalised paths this call runs or names whose contents the judge sees, in
+    priority order: files this conversation wrote, then files it owns otherwise (its
+    artifacts folder, a `file_reads` row), then scripts inside the allowed roots. Each
+    group keeps the order the candidates appeared; deduplicated; a protected path never;
+    capped at `MAX_FILES`. A candidate that matches nothing costs nothing."""
     cwd = command_cwd(app, ctx, args)
     artifacts_root = _artifacts_root_for(app, ctx.conversation_id)
     file_reads = _file_reads_for(app, ctx.conversation_id)
+    roots = fs_guard.effective_roots(app, ctx.conversation)
+    protected = fs_guard.protected_paths(app)
 
     written: list[str] = []
-    others: list[str] = []
+    owned: list[str] = []
+    scripts: list[str] = []
     seen: set[str] = set()
     for raw in _candidate_words(tool, args):
         if not raw:
@@ -150,18 +162,23 @@ def _owned_files(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) -
         except Exception:
             continue
         key = fs_guard._key(path)
-        if key in seen:
+        if key in seen or any(fs_guard._under(path, p) for p in protected):
             continue
         wrote = file_reads.get(key)
-        owned = wrote is not None or (artifacts_root is not None and fs_guard._under(path, artifacts_root))
-        if not owned:
+        if wrote:
+            group = written
+        elif wrote is not None or (artifacts_root is not None and fs_guard._under(path, artifacts_root)):
+            group = owned
+        elif Path(path).suffix.lower() in SCRIPT_SUFFIXES and any(fs_guard._under(path, r) for r in roots):
+            group = scripts
+        else:
             continue
         seen.add(key)
-        (written if wrote else others).append(path)
-    return (written + others)[:MAX_FILES]
+        group.append(path)
+    return (written + owned + scripts)[:MAX_FILES]
 
 
-def _read_owned_file(path: str) -> str | None:
+def _read_file(path: str) -> str | None:
     """The file's text, bounded and truncated; None for anything unreadable, a
     directory, or content that looks binary. Never raises."""
     try:
@@ -195,10 +212,6 @@ def render_inputs(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) 
     root_lines = [f"- {p}" for p in paths["roots"]] or ["- (none)"]
     protected_lines = [f"- {p}" for p in paths["protected"]] or ["- (none)"]
 
-    goal = conversation.get("goal")
-    goal_line = f"Conversation goal: {goal}" if goal else (
-        "Conversation goal: (none recorded — the stated intent below is this turn's scope)"
-    )
     intent_text = (ctx.intent or "").strip()[:MAX_ARG_CHARS] or "(none stated)"
     # A carried intent is the turn's earlier preamble, not this step's: say so, or the
     # judge reads "promoting now" as the intent of a `git log` (2026-09-28).
@@ -207,18 +220,25 @@ def render_inputs(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) 
         if ctx.intent_carried and intent_text != "(none stated)"
         else "Stated intent (untrusted data):"
     )
-    # The one input that is not untrusted: the user's own message typed on the desk. A
-    # thread's goal or handoff was written by the desk model, and connector, schedule
-    # and thread-report text by someone else — those stay data (2026-09-25).
-    request_label = (
-        "Request that led here (typed by the user on the desk):"
-        if ctx.request_from_user and ctx.request_text
-        else "Request that led here (untrusted data):"
+    # The one request worth showing is the user's own message typed on the desk. A
+    # thread's goal and handoff (the desk model's words) and connector, schedule or
+    # thread-report text are untrusted: they could never authorise a call, and rendered
+    # they only handed the judge instructions-to-the-worker to read as its own rules
+    # ("omit all scaling", "ask one follow-up") and a plan whose order it then graded
+    # (2026-10-12). No goal line either, for the same reason: the judge decides on the
+    # call's effect, the roots and the protected paths.
+    request_text = (ctx.request_text or "")[:MAX_ARG_CHARS]
+    request_lines = (
+        ["Request that led here (typed by the user on the desk):", "```text", request_text, "```", ""]
+        if ctx.request_from_user and request_text.strip()
+        else []
     )
+    artifacts_root = _artifacts_root_for(app, ctx.conversation_id)
+    scratch_lines = [f"- {artifacts_root} (this conversation's scratch folder)"] if artifacts_root else []
 
     file_blocks: list[str] = []
-    for path in _owned_files(app, ctx, tool, args):
-        content = _read_owned_file(path)
+    for path in _shown_files(app, ctx, tool, args):
+        content = _read_file(path)
         if content is None:
             continue
         file_blocks.extend(
@@ -233,13 +253,8 @@ def render_inputs(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) 
 
     lines = [
         f"Conversation kind: {conversation.get('kind') or 'unknown'}",
-        goal_line,
         "",
-        request_label,
-        "```text",
-        (ctx.request_text or "(none recorded)")[:MAX_ARG_CHARS],
-        "```",
-        "",
+        *request_lines,
         intent_label,
         "```text",
         intent_text,
@@ -256,6 +271,7 @@ def render_inputs(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) 
         *file_blocks,
         "Allowed roots:",
         *root_lines,
+        *scratch_lines,
         "",
         "Protected paths:",
         *protected_lines,

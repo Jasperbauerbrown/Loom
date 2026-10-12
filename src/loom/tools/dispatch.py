@@ -3,6 +3,7 @@
 ```
 1 lookup tool          unknown          → error result
 2 validate arguments   malformed        → error result ("resend the call")
+  tool precheck        cannot run (e.g. shell cwd missing) → error result, before anyone is asked
 3 filesystem guard     outside/protected→ approval
 4 policy               allow | ask → approval | classify → pre-filter, then the judge
                        (desk auto-approve: ask/classify/outside-roots → allow; protected still asks;
@@ -203,6 +204,14 @@ async def dispatch(app: Any, ctx: ToolContext, call: ToolCall) -> ToolResult | A
     problems += validate_args(tool, args)
     if problems:
         return ToolResult.error("invalid arguments: " + "; ".join(str(p) for p in problems) + "; resend the call")
+    if tool.precheck is not None:
+        try:
+            problem = tool.precheck(ctx, args)
+        except Exception as exc:  # a broken precheck is not a reason to refuse the call
+            log.warning("dispatch: %s precheck failed: %s", tool.name, exc)
+            problem = None
+        if problem:
+            return ToolResult.error(problem)
 
     guard = fs_guard.check(app, ctx.conversation, tool, args)
     hold = _auto_hold(app, ctx, tool, args)

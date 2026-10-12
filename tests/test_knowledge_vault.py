@@ -336,6 +336,22 @@ async def test_transcript_search_tool(app):
     assert (await app.tools.get("transcript_search").handler(ctx, {"query": "zzzz"})).meta["count"] == 0
 
 
+async def test_transcript_search_renders_a_tool_call_hit_as_the_call(app):
+    from loom import db
+    from loom.conversation import events
+
+    ctx = _ctx(app)
+    call = [{"id": "c1", "name": "shell", "arguments": {"command": "orca-slicer --export-gcode cube.3mf"}}]
+    events.append(app, app.desk_id(), "tool_call", db.dumps(call), {"text": "slicing"})
+    search = app.tools.get("transcript_search").handler
+    result = await search(ctx, {"query": "orca-slicer"})
+    assert result.meta["count"] == 1
+    assert 'TOOL CALL shell({"command": "orca-slicer --export-gcode cube.3mf"})' in result.content
+    assert '"id"' not in result.content  # the call, not its JSON envelope
+    around = await search(ctx, {"query": "orca-slicer", "neighbours": True})
+    assert "tool_call: TOOL CALL shell(" in around.content
+
+
 def test_write_folds_a_frontmatter_block_found_in_the_body(app):
     """The model copies the shape it reads back; a leading block in `content` merges into
     the frontmatter instead of nesting (two live notes had two blocks, 2026-09-21)."""

@@ -187,6 +187,20 @@ async def procedure_load_handler(ctx: ToolContext, args: dict[str, Any]) -> Tool
 # ---------------------------------------------------------------------------------
 # transcript_search
 # ---------------------------------------------------------------------------------
+def _event_text(kind: str, content: str) -> str:
+    """An event as the transcript reads it. A tool call's content is the JSON list of
+    `{id, name, arguments}`; it reads as `TOOL CALL name(arguments)`, one per line, the
+    form `conversation_read` uses (`compaction.render_for_summary`)."""
+    if kind != "tool_call":
+        return content
+    from ...conversation import compaction
+
+    try:
+        return compaction.render_for_summary([{"kind": "tool_call", "content": content, "meta": {}}])
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return content
+
+
 async def transcript_search_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     query = str(args.get("query") or "").strip()
     if not query:
@@ -203,7 +217,10 @@ async def transcript_search_handler(ctx: ToolContext, args: dict[str, Any]) -> T
         head = f"[{row['ts']}] {title} ({row['kind']}, event {row['event_id']})"
         if want_neighbours:
             around = ctx.app.index.neighbours(row["event_id"], 2)
-            body = "\n".join(f"  {n['kind']}: {n['content'][:400]}" for n in around)
+            body = "\n".join(f"  {n['kind']}: {_event_text(n['kind'], n['content'])[:400]}" for n in around)
+        elif row["kind"] == "tool_call":
+            hit = ctx.app.db.execute("SELECT content FROM events WHERE id=?", (row["event_id"],)).fetchone()
+            body = "  " + _event_text("tool_call", hit["content"] if hit else "").replace("\n", "\n  ")
         else:
             body = f"  {row['snippet']}"
         blocks.append(f"{head}\n{body}")

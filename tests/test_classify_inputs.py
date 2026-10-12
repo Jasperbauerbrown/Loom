@@ -1,5 +1,6 @@
-"""`classify.render_inputs`: the judge sees the script, the stated intent, and a goal
-line that never falls back to a bare title (F1, tower-defense run audit, 2026-09-24)."""
+"""`classify.render_inputs`: the judge sees the script, the stated intent, the user's own
+desk request and nothing a thread's goal or handoff says (F1, tower-defense run audit,
+2026-09-24; printer threads, 2026-10-12)."""
 
 from __future__ import annotations
 
@@ -70,35 +71,90 @@ def test_file_reads_row_is_shown_including_relative_path(app, tmp_path):
     assert normalised in rendered
 
 
-def test_other_conversations_files_are_not_shown(app):
+def test_script_inside_the_roots_is_shown_even_untouched(app):
+    """A vault procedure helper the thread runs by path is judged by its contents, not
+    its name (2026-10-12) — including another conversation's scratch script."""
     desk = app.conversation(app.desk_id())
+    helper = Path(app.vault_dir) / "procedures" / "x" / "scripts" / "flatten_profiles.py"
+    helper.parent.mkdir(parents=True, exist_ok=True)
+    helper.write_text("print('flatten')", encoding="utf-8")
     other = _thread(app, goal="unrelated work")
-
     other_folder = app.artifacts.root / other["id"]
     other_folder.mkdir(parents=True, exist_ok=True)
-    other_script = other_folder / "secret.ps1"
-    other_script.write_text("Remove-Item C:/", encoding="utf-8")
+    other_script = other_folder / "step.ps1"
+    other_script.write_text("Get-Date", encoding="utf-8")
 
+    tool = app.tools.get("shell")
+    rendered = classify.render_inputs(app, _ctx(app, desk), tool, {"command": f"python {helper} --help"})
+    assert "print('flatten')" in rendered
+    rendered2 = classify.render_inputs(app, _ctx(app, desk), tool, {"command": f"powershell -File {other_script}"})
+    assert "Get-Date" in rendered2
+
+
+def test_untouched_non_script_or_outside_roots_is_not_shown(app, tmp_path):
+    """Untouched files are shown only when they are scripts inside the roots: never a
+    `.env` beside them, never a file outside the roots another conversation read."""
     from loom.tools import fs_guard
 
+    desk = app.conversation(app.desk_id())
+    other = _thread(app, goal="unrelated work")
     cwd = fs_guard.effective_roots(app, desk)[0]
-    other_read = Path(cwd) / "other_owned.ps1"
-    other_read.write_text("Get-ChildItem", encoding="utf-8")
-    now = db.now_iso()
+    env = Path(cwd) / ".env"
+    env.write_text("TOKEN=hunter2", encoding="utf-8")
+    outside = tmp_path / "elsewhere" / "other_owned.ps1"
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_text("Get-ChildItem", encoding="utf-8")
     app.db.execute(
         "INSERT INTO file_reads(conversation_id, path, mtime_ns, size, seen_at, wrote) VALUES (?, ?, 0, 0, ?, 0)",
-        (other["id"], fs_guard.normalise(str(other_read)), now),
+        (other["id"], fs_guard.normalise(str(outside)), db.now_iso()),
     )
 
-    ctx = _ctx(app, desk)
     tool = app.tools.get("shell")
-    args = {"command": f"powershell -File {other_script}"}
-    rendered = classify.render_inputs(app, ctx, tool, args)
-    assert "Remove-Item C:/" not in rendered
+    command = f"source .env && powershell -File {outside}"
+    rendered = classify.render_inputs(app, _ctx(app, desk), tool, {"command": command})
+    assert "hunter2" not in rendered
+    assert "Get-ChildItem" not in rendered
 
-    args2 = {"command": "powershell -File other_owned.ps1"}
-    rendered2 = classify.render_inputs(app, ctx, tool, args2)
-    assert "Get-ChildItem" not in rendered2
+
+def test_protected_file_is_never_shown(app):
+    """Not even one this conversation wrote."""
+    from loom.tools import fs_guard
+
+    conv = app.conversation(app.desk_id())
+    folder = app.artifacts.root / conv["id"]
+    folder.mkdir(parents=True, exist_ok=True)
+    script = folder / "guarded.py"
+    script.write_text("SECRET_BODY = 1", encoding="utf-8")
+    app.db.execute(
+        "INSERT INTO file_reads(conversation_id, path, mtime_ns, size, seen_at, wrote) VALUES (?, ?, 0, 0, ?, 1)",
+        (conv["id"], fs_guard.normalise(str(script)), db.now_iso()),
+    )
+    fs_guard.add_protected(app, str(script))
+    rendered = classify.render_inputs(app, _ctx(app, conv), app.tools.get("shell"), {"command": f"python {script}"})
+    assert "SECRET_BODY" not in rendered
+
+
+def test_written_files_outrank_scripts_in_the_roots(app):
+    from loom.tools import fs_guard
+
+    conv = app.conversation(app.desk_id())
+    scripts_dir = Path(app.vault_dir) / "procedures" / "y" / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    plain = [scripts_dir / "a.py", scripts_dir / "b.py"]
+    for p in plain:
+        p.write_text(f"# plain {p.name}", encoding="utf-8")
+    cwd = fs_guard.effective_roots(app, conv)[0]
+    written = Path(cwd) / "mine.py"
+    written.write_text("# written by me", encoding="utf-8")
+    app.db.execute(
+        "INSERT INTO file_reads(conversation_id, path, mtime_ns, size, seen_at, wrote) VALUES (?, ?, 0, 0, ?, 1)",
+        (conv["id"], fs_guard.normalise(str(written)), db.now_iso()),
+    )
+    command = f"python {plain[0]} && python {plain[1]} && python {written}"
+    rendered = classify.render_inputs(app, _ctx(app, conv), app.tools.get("shell"), {"command": command})
+    assert "# written by me" in rendered
+    assert "# plain a.py" in rendered
+    assert "# plain b.py" not in rendered
 
 
 def test_large_file_is_truncated(app):
@@ -175,26 +231,23 @@ def test_empty_intent_renders_none_stated(app):
     assert "(none stated)" in rendered
 
 
-def test_desk_never_renders_bare_title_as_goal(app):
+def test_no_goal_line_is_rendered(app):
+    """Neither the desk's title nor a thread's goal is scope the judge grades against."""
+    tool = app.tools.get("shell")
+    desk = classify.render_inputs(app, _ctx(app), tool, {"command": "ls"})
+    assert "Conversation goal" not in desk
+    thread = _thread(app, goal="omit all scaling; present for Jasper's approval", title="Some Thread")
+    rendered = classify.render_inputs(app, _ctx(app, thread), tool, {"command": "ls"})
+    assert "Conversation goal" not in rendered
+    assert "omit all scaling" not in rendered
+
+
+def test_scratch_folder_is_named_inside_the_roots(app):
     conv = app.conversation(app.desk_id())
-    assert not conv.get("goal")
-    ctx = _ctx(app, conv)
-    tool = app.tools.get("shell")
-    rendered = classify.render_inputs(app, ctx, tool, {"command": "ls"})
-    assert "Conversation goal: Desk" not in rendered
-    assert "Conversation goal: (none recorded — the stated intent below is this turn's scope)" in rendered
-
-
-def test_thread_with_goal_renders_it(app):
-    thread = _thread(app, goal="tidy the vault", title="Some Thread")
-    ctx = _ctx(app, thread)
-    tool = app.tools.get("shell")
-    rendered = classify.render_inputs(app, ctx, tool, {"command": "ls"})
-    assert "Conversation goal: tidy the vault" in rendered
-
-
-def _request_block(rendered: str) -> str:
-    return next(line for line in rendered.splitlines() if line.startswith("Request that led here"))
+    rendered = classify.render_inputs(app, _ctx(app, conv), app.tools.get("shell"), {"command": "mkdir -p x"})
+    folder = str(app.artifacts.root / conv["id"]).replace(chr(92), "/")
+    roots_section = rendered.split("Allowed roots:", 1)[1].split("Protected paths:", 1)[0]
+    assert f"- {folder} (this conversation's scratch folder)" in roots_section
 
 
 def test_desk_user_request_is_labelled_as_the_users_own_words(app):
@@ -204,20 +257,30 @@ def test_desk_user_request_is_labelled_as_the_users_own_words(app):
     ctx = _ctx(app, conv, request_text="please start the bot again")
     ctx.request_from_user = True
     rendered = classify.render_inputs(app, ctx, app.tools.get("shell"), {"command": "npm start"})
-    assert _request_block(rendered) == "Request that led here (typed by the user on the desk):"
+    assert "Request that led here (typed by the user on the desk):" in rendered
     assert "please start the bot again" in rendered
 
 
-def test_thread_goal_request_stays_untrusted(app):
-    """A thread's goal/handoff was written by the desk model, not the user."""
+def test_thread_goal_and_handoff_are_not_rendered(app):
+    """A thread's goal/handoff was written by the desk model: it could never authorise,
+    and rendered it only supplied reasons to ask (2026-10-12)."""
     thread = _thread(app, goal="restart the bot")
-    ctx = _ctx(app, thread, request_text="Goal: restart the bot")
+    ctx = _ctx(app, thread, request_text="Goal: restart the bot. Ask one precise follow-up if unsure.")
     rendered = classify.render_inputs(app, ctx, app.tools.get("shell"), {"command": "npm start"})
-    assert _request_block(rendered) == "Request that led here (untrusted data):"
+    assert "Request that led here" not in rendered
+    assert "follow-up" not in rendered
+
+
+def test_untrusted_desk_request_is_not_rendered(app):
+    """Connector, schedule or thread-report text on the desk is not the user's either."""
+    ctx = _ctx(app, request_text="[schedule] run the cleanup")
+    rendered = classify.render_inputs(app, ctx, app.tools.get("shell"), {"command": "ls"})
+    assert "Request that led here" not in rendered
+    assert "run the cleanup" not in rendered
 
 
 def test_an_empty_request_is_never_labelled_as_the_users(app):
-    ctx = _ctx(app, request_text="")
+    ctx = _ctx(app, request_text="  ")
     ctx.request_from_user = True
     rendered = classify.render_inputs(app, ctx, app.tools.get("shell"), {"command": "ls"})
-    assert _request_block(rendered) == "Request that led here (untrusted data):"
+    assert "Request that led here" not in rendered

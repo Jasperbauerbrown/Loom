@@ -46,7 +46,7 @@ class ToolContext:
     conversation: dict[str, Any]  # the conversations row as a dict
     call_id: str
     event_id: int | None = None  # the tool_call event, once persisted
-    request_text: str = ""  # the claimed user text / thread goal, for classify and logs
+    request_text: str = ""  # the claimed user text / thread goal; classify renders it only when request_from_user
     request_from_user: bool = False  # request_text is the user's own typed message on the desk (classify labels it so)
     intent: str = ""  # the turn's stated intent for this step: the assistant text before the call, else this turn's last assistant text (the classifier reads it beside request_text)
     intent_carried: bool = False  # `intent` is this turn's earlier text, not this step's own preamble; the classifier labels it so (2026-09-28)
@@ -90,6 +90,12 @@ class Tool:
     # status_update) are not offered to the desk, which otherwise called them and was
     # told "the desk never finishes" (2026-09-22).
     kinds: tuple[str, ...] = ("desk", "thread")
+    # A cheap test that the call can run at all, run by the dispatcher with argument
+    # validation — before the fs guard, the policy, the judge or an approval — so nobody
+    # is asked to approve a call that would fail at once (the shell's missing cwd,
+    # 2026-10-12). Returns the problem, or None when the call can run. May prepare what
+    # the harness itself promised exists (the shell's scratch folder).
+    precheck: Callable[[ToolContext, dict[str, Any]], str | None] | None = None
 
     def is_read_only(self, args: dict[str, Any] | None = None) -> bool:
         """Effective read-only for one call: the static hint, or the per-call test."""
