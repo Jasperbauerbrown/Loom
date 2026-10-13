@@ -138,6 +138,35 @@ async def test_ask_pauses_and_resumes(app, fake, monkeypatch):
     assert len([c for c in fake.calls if c.purpose == "turn"]) == 2
 
 
+async def test_an_approval_answered_while_the_step_still_runs_resumes_the_turn(app, fake, tmp_path):
+    """A step's read-only calls run first: one asks, then a sibling call keeps the turn
+    busy. An answer given in that window finds the turn running, so its wake is a no-op;
+    the turn must resume itself once it pauses with nothing left pending (2026-10-13:
+    the desk sat in `waiting_approval` on an approval already allowed)."""
+    desk = app.desk_id()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("far away", encoding="utf-8")
+    fake.on("classify", lambda req: Scripted(content='{"decision":"allow","reason":"harmless"}'))
+    fake.script(
+        Scripted(content="", tool_calls=[("fs_read", {"path": str(outside)}), ("shell", {"command": "echo hi"})]),
+        Scripted(content="done"),
+    )
+    loop = asyncio.get_running_loop()
+    app.bus.listen(lambda e: e["type"] == "approval.requested"
+                   and loop.call_soon(approvals.decide, app, e["data"]["id"], "allow"))
+    conversation.post(app, desk, "read it and echo")
+    await _run(app, desk)
+    for _ in range(5):  # the re-wake is scheduled with call_soon
+        await asyncio.sleep(0)
+        task = app.tasks.get(f"turn:{desk}")
+        if task is not None and not task.done():
+            await task
+    assert app.conversation(desk)["status"] == "idle"
+    results = _events(app, desk, ["tool_result"])
+    assert len(results) == 2 and all(r["meta"]["ok"] for r in results)
+    assert "far away" in " ".join(r["content"] for r in results)
+
+
 async def test_crash_repair_synthesises_interrupted(app, fake):
     desk = app.desk_id()
     # simulate a crash: a persisted tool_call with no result and status left `running`

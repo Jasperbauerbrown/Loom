@@ -114,8 +114,13 @@ async def run_turn(app, conversation_id: str) -> None:  # type: ignore[no-untype
     # Rows posted during this turn's last model call had no step boundary left to be
     # claimed at (the mid-turn claim runs after tool dispatch only). A clean turn re-wakes
     # for them; a paused or failed one leaves them for the approval / next message /
-    # restart, so a persistent failure cannot spin (2026-09-21).
-    if state is not None and not state.paused and state.failed is None and inbox.pending_count(app, conversation_id):
+    # restart, so a persistent failure cannot spin (2026-09-21). A pause whose approvals
+    # were all answered while the step still ran lost that answer's wake (the turn held
+    # the lock), so it resumes itself (2026-10-13).
+    if state is not None and state.failed is None and (
+        inbox.pending_count(app, conversation_id) if not state.paused
+        else not approvals.pending(app, conversation_id)
+    ):
         asyncio.get_running_loop().call_soon(wake, app, conversation_id)
 
 
