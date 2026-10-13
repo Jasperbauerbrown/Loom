@@ -1574,3 +1574,15 @@ sessions do not re-litigate.
   The browser tab uses the active palette's accent on a small woven Loom mark, updated when
   appearance is applied. Rationale: the header keeps historical spend visible while making
   the fresh-context tally legible; the favicon stays recognizable and in palette.
+- **2026-10-13** — **Protected paths name the checkout, and the plan checks both trees.**
+  Under the supervisor the backend runs from a release, so `repo_root()` is the release
+  folder; `promote_plan` joined changed paths onto it while the rows named `C:/Loom/...`,
+  and reported "no protected paths" for a diff to `fs_guard.py`, `shell_prefilter.py`
+  and `supervisor/`. The plan now checks under the release and under `checkout_root`;
+  bootstrap seeds a fresh install against the checkout, not the release.
+- **2026-10-13** — **The effort ladder's inline test is "every step", not "the last
+  step".** Two desk requests that named their last step ("promote", "copy into the DB")
+  were run inline and turned into investigations on the desk. Inline now needs every
+  step nameable from context; locating, comparing, or explaining a surprise is a
+  thread's. Reconsidering mid-turn stays in prose (a few tool calls short of the named
+  last step means exploring), not a runner nudge, per the capable-model bar.
