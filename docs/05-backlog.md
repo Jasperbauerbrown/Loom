@@ -11,6 +11,9 @@ Each item names its source. "Audit" means `reference/tool-parity-audit.md` §3.
   processes and sub-threads started before an approval pause are not stopped by a cancel
   after the resume. Model calls outside the step loop (turn-start knowledge resolution,
   the thread status safety net) are not raced; they are short.
+
+## Completed 2026-10-12
+- **Write-protected paths for procedure scripts.** `vault/procedures/*/scripts` now ask to edit rather than run. Judge effects over plans — refuse unrunnable calls before asking. Tool call indexing added. (commit `86acead`)
 - **Desk auto-approve holds on a bare protected name.** A word matching a protected path
   relative to the cwd holds even inside prose, e.g. `git commit -m "fix supervisor"` in
   the repo root. Costs a click, never a deny.
