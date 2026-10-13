@@ -210,7 +210,10 @@ def plan(app: Any, ref: str) -> Plan:
                         error=f"could not diff {current[:7]}..{commit[:7]}: {out}")
         changed = [line.strip().replace("\\", "/") for line in out.splitlines() if line.strip()]
 
-    protected = [p for p in changed if _is_protected(app, repo, p)]
+    # A release's paths are not the ones the protected rows name: those were seeded
+    # against the development checkout it was built from, so ask about both trees.
+    roots = list(dict.fromkeys(r for r in (repo, checkout_root(app)) if r is not None))
+    protected = [p for p in changed if _is_protected(app, roots, p)]
 
     worktree = _worktree_for(repo, ref, commit)
     dirty: list[str] = []
@@ -310,10 +313,12 @@ def pull_checkout(app: Any) -> dict[str, Any]:
     return out
 
 
-def _is_protected(app: Any, repo: Path, relative: str) -> bool:
-    """A protected-paths row may be stored repo-relative or absolute; ask about both so
-    neither spelling can slip a change past the guard (03 §15.3)."""
-    return fs_guard.is_protected(app, str(repo / relative)) or fs_guard.is_protected(app, relative)
+def _is_protected(app: Any, roots: list[Path], relative: str) -> bool:
+    """A protected-paths row may be stored repo-relative or absolute, under the release
+    or the checkout; ask about every spelling so none can slip a change past the guard
+    (03 §15.3)."""
+    return (any(fs_guard.is_protected(app, str(root / relative)) for root in roots)
+            or fs_guard.is_protected(app, relative))
 
 
 # ---------------------------------------------------------------------------------

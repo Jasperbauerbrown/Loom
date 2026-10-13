@@ -1946,7 +1946,10 @@ commit is verified. When the new head is already the live commit, it says so and
 `supervisor/`, `src/loom/tools/permissions.py`, `src/loom/tools/fs_guard.py`,
 `src/loom/tools/shell_prefilter.py`, `src/loom/promote.py`,
 `src/loom/secrets.py`, `APP_HOME/secrets.json`, `APP_HOME/supervisor.token` (mode `all`),
-and `<vault>/procedures/*/scripts` (mode `writes`, §9.3). Bootstrap seeds them on a fresh
+and `<vault>/procedures/*/scripts` (mode `writes`, §9.3). Repo rows name the development
+checkout (`bootstrap.checkout_root()`: a release runs from a worktree of the supervisor's
+mirror, whose origin is the checkout), and `promote_plan` checks each changed path under
+both the release it runs from and that checkout. Bootstrap seeds them on a fresh
 install; the `writes` row also arrives once on an existing install, on the start that
 applies migration 0008 (`bootstrap.ensure(app, applied)`), so a row the person deleted
 stays deleted. Editable in Settings (each row has an "Everything / Writes only" select);

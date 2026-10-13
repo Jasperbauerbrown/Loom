@@ -154,6 +154,41 @@ def test_plan_in_the_mirror_fetches_before_resolving_a_branch(app, repo, monkeyp
     assert plan.ok and plan.commit == fourth and plan.changed_files == ["notes.md"]
 
 
+def release_of(repo, tmp_path, sha: str) -> Path:
+    """A release as the supervisor builds one: a worktree of a bare mirror whose origin
+    is the checkout, standing on `sha`."""
+    mirror = tmp_path / "releases" / "src.git"
+    mirror.parent.mkdir(parents=True)
+    git("clone", "-q", "--bare", str(repo["path"]), str(mirror), cwd=tmp_path)
+    release = tmp_path / "releases" / "rel-1"
+    git("worktree", "add", "-q", "--detach", str(release), sha, cwd=mirror)
+    return release
+
+
+def test_plan_from_a_release_sees_paths_protected_in_the_checkout(app, repo, monkeypatch, tmp_path):
+    """The protected rows name the checkout (`repo` registers `<checkout>/supervisor`);
+    a backend running from a release must still flag a diff touching them (2026-10-13:
+    `promote_plan` said "no protected paths" for a diff to fs_guard.py and supervisor/)."""
+    monkeypatch.chdir(tmp_path)  # the live server's cwd is not the checkout
+    release = release_of(repo, tmp_path, repo["first"])
+    monkeypatch.setattr(promote, "repo_root", lambda _app: release)
+    plan = promote.plan(app, repo["second"])
+    assert plan.ok and plan.current_commit == repo["first"]
+    assert plan.protected_files == ["supervisor/__main__.py"]
+
+
+def test_bootstrap_seeds_protected_paths_against_the_checkout_a_release_came_from(repo, monkeypatch, tmp_path):
+    from loom import bootstrap
+
+    (repo["path"] / "src" / "loom").mkdir(parents=True)
+    release = release_of(repo, tmp_path, repo["first"])
+    (release / "src" / "loom").mkdir(parents=True)
+    monkeypatch.setattr(bootstrap, "repo_root", lambda: release)
+    assert bootstrap.checkout_root() == repo["path"]
+    monkeypatch.setattr(bootstrap, "repo_root", lambda: repo["path"])  # a checkout is its own
+    assert bootstrap.checkout_root() == repo["path"]
+
+
 def test_plan_in_a_checkout_does_not_fetch_a_ref_it_resolves(app, repo, monkeypatch):
     """A development checkout's origin is a real remote: a ref that resolves locally is
     planned without touching the network."""

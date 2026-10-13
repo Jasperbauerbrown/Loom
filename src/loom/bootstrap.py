@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 from pathlib import Path
 
 from . import db
@@ -94,6 +95,25 @@ def repo_root() -> Path | None:
     return None
 
 
+def checkout_root() -> Path | None:
+    """The development checkout, which is what protected paths name. A release runs from
+    a worktree of the supervisor's mirror (`.git` is a file), whose origin is the checkout
+    it was built from; anything else is its own checkout. Only a worktree costs a git call."""
+    root = repo_root()
+    if root is None or not (root / ".git").is_file():
+        return root
+    try:
+        proc = subprocess.run(["git", "remote", "get-url", "origin"], cwd=str(root),
+                              capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return root
+    url = proc.stdout.strip() if proc.returncode == 0 else ""
+    target = Path(url) if url else None
+    if target is not None and (target / "pyproject.toml").exists() and (target / "src" / "loom").exists():
+        return target
+    return root
+
+
 def _norm(p: str) -> str:
     return str(Path(p).expanduser()).replace("\\", "/")
 
@@ -133,7 +153,7 @@ def ensure(app, applied: list[int] | None = None) -> None:  # type: ignore[no-un
         # arrive with migration 0008 on an existing install — once, on that start.
         fresh = conn.execute("SELECT COUNT(*) FROM protected_paths").fetchone()[0] == 0
         if fresh:
-            for p in default_protected_paths(repo_root(), app.home):
+            for p in default_protected_paths(checkout_root(), app.home):
                 conn.execute("INSERT OR IGNORE INTO protected_paths(path) VALUES (?)", (p,))
         if fresh or WRITES_PROTECTED_MIGRATION in (applied or []):
             for p in default_write_protected_paths(app.vault_dir):
