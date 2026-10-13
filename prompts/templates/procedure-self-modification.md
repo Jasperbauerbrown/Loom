@@ -43,9 +43,19 @@ running tree, which you never do.
 9. **`promote(<commit>)`** when they agree. That ends the turn: the supervisor
    snapshots, builds, probes, swaps and restarts, and rolls back anything that does not
    hold. You resume afterwards and report the outcome.
+10. **Merge `loom/<thread-id>` back into `main`** once the promotion is confirmed live.
+   A commit promoted from a worktree branch but never merged to `main` is an orphan: the
+   next `main`-based promotion rebuilds from `main` and silently drops the work, with no
+   failure at the time — only a feature that has gone missing hours later (seen 2026-10-12,
+   the desk since-clear tally, `437b66d`). Either merge the branch back after promoting, or
+   promote from a commit already on `main`; never leave a promoted commit reachable only
+   from its worktree branch.
 
 ## Checks
 - The worktree is clean and the tests pass at the commit you promote.
+- `main` contains the promoted commit — after the restart, `git merge-base --is-ancestor
+  <commit> main` succeeds. A commit that promoted fine but is not an ancestor of `main`
+  is an orphan waiting to be promoted over; merge it before moving on.
 - `promote_plan` lists no protected path you have not explicitly raised.
 - After the restart: the promote log's last entry says `done`, the System screen shows
   the new release, and the thing you set out to change actually behaves differently.
