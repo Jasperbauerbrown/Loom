@@ -325,6 +325,10 @@ async def test_websocket_requires_the_token_when_set(app):
 async def test_root_serves_the_ui_with_an_spa_fallback(client):
     root = await client.get("/")
     assert root.status_code == 200 and "<html" in root.text.lower()
+    assert 'href="/favicon.svg"' in root.text
+    favicon = await client.get("/favicon.svg")
+    assert favicon.status_code == 200 and favicon.headers["content-type"].startswith("image/svg+xml")
+    assert "viewBox=\"0 0 64 64\"" in favicon.text and "#0284c7" in favicon.text
     deep = await client.get("/threads/01J8")  # a client-side route, not a file
     assert deep.status_code == 200 and deep.text == root.text
     assert (await client.get("/api/nothing-here")).status_code == 404
@@ -397,6 +401,29 @@ async def test_usage_endpoint_sums_meta_and_groups_by_turn(client):
     t1, t2 = body["turns"]
     assert t1["user_event_id"] == u1 and (t1["prompt_tokens"], t1["completion_tokens"], t1["steps"]) == (10, 4, 1)
     assert t2["user_event_id"] == u2 and (t2["prompt_tokens"], t2["completion_tokens"], t2["steps"]) == (28, 5, 2)
+
+    assert body["since_clear"] == {
+        "prompt_tokens": 38,
+        "completion_tokens": 9,
+        "steps": 3,
+        "steps_with_usage": 3,
+    }
+
+    # Manual context clear resets only the additional subtotal; lifetime totals remain.
+    from loom.conversation import compaction
+
+    compaction.clear(app, desk)
+    ev.append(app, desk, "user", "after clear")
+    ev.append(app, desk, "assistant", "fresh", {"usage": {"prompt_tokens": 7, "completion_tokens": 2}})
+    body = (await client.get(f"/api/conversations/{desk}/usage")).json()
+    assert (body["prompt_tokens"], body["completion_tokens"]) == (45, 11)
+    assert (body["since_clear"]["prompt_tokens"], body["since_clear"]["completion_tokens"]) == (7, 2)
+    assert body["since_clear"]["steps"] == 1
+    compaction.clear(app, desk)
+    body = (await client.get(f"/api/conversations/{desk}/usage")).json()
+    assert (body["prompt_tokens"], body["completion_tokens"]) == (45, 11)
+    assert (body["since_clear"]["prompt_tokens"], body["since_clear"]["completion_tokens"]) == (0, 0)
+    assert body["since_clear"]["steps"] == 0
     assert (await client.get("/api/conversations/nope/usage")).status_code == 404
 
 

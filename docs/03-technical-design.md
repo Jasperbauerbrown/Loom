@@ -1523,7 +1523,7 @@ GET  /conversations/{id}/images/{image_id} → the bytes, immutable cache header
 POST /conversations/{id}/cancel         POST /conversations/{id}/archive (→ {…, worktree_message} when a checkout was released)     POST /conversations/{id}/clear (409 while running)
 GET  /conversations/{id}/occupancy      GET  /conversations/{id}/artifacts     GET /artifacts/{id}?offset&limit
 GET  /conversations/{id}/usage → {prompt_tokens, completion_tokens, steps, steps_with_usage, turns: [{user_event_id, started_at, prompt_tokens, completion_tokens, steps}]}
-     (totals summed from `meta.usage` over the conversation's assistant/tool_call events, §4.2; `turns` is the last 20, grouped by the preceding user event; derived on every call, never stored)
+     (totals summed from `meta.usage` over the conversation's assistant/tool_call events, §4.2; `turns` is the last 20, grouped by the preceding user event; `since_clear` has the same four totals since the latest manual clear marker, or all-time when none exists; derived on every call, never stored)
 GET  /processes?conversation_id&status  GET  /processes/{id}   GET /processes/{id}/logs?offset&limit   POST /processes/{id}/stop   (§9.6; starting one is a model action, `shell(background=true)`)
 GET  /conversations/{id}/inbox          rows posted but not yet in the transcript (surfaces render them as *queued*)
 GET  /conversations/{id}/status         → {fields|null, owner|null, source: note|transcript|none}   PUT /conversations/{id}/status {fields} (owner `user`; a note block keeps its owner)
@@ -1616,6 +1616,8 @@ the Tailwind colour variables the components already use (`neutral-*` surfaces, 
 accent, `white`), so no component knows palettes exist (a palette may add a dark-only block, `:root.dark[data-palette=…]`, still only variables — nord uses one to order its Polar Night stops); the last applied pair is
 remembered in `localStorage` so a reload does not flash the default look.
 
+The browser-tab favicon is a compact Loom mark on a rounded accent tile. Its SVG data URL is recolored from the computed `--color-sky-600` whenever appearance is applied, so theme/palette changes update it without a reload; `/favicon.svg` is the static default before the app starts.
+
 A render error is an expected input, not the end of the session: one `ErrorBoundary`
 component wraps the routed screen (keyed on the route, so navigating away clears it) and
 the shell itself. The failure costs the screen it broke — the error and its stack, a
@@ -1638,7 +1640,7 @@ is the last line, not a licence: the shapes crossing the bus are one shape (§12
   also raises a toast, which fades on its own timer (or stays if configured to) and
   disappears the moment its item is seen or dismissed anywhere. Inbox rows posted
   by a background process carry a *from process* caption. Header: occupancy meter (used/limit, colour by proximity to compaction),
-  queue indicator, model role in use, token totals (in/out, from `meta.usage`).
+  queue indicator, model role in use, all-conversation token totals (in/out, from `meta.usage`), and a distinct desk-only in/out total since the latest manual Clear context marker (all-time until the first manual clear).
 - **Threads**. List (status, goal, last update, depth tree). Thread view = same
   conversation component + a **Status/plan panel** rendering the status as an editable
   form (`GET`/`PUT /conversations/{id}/status`), the **pinned notes** (links; unpin; add

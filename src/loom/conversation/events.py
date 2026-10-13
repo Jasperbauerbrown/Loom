@@ -108,12 +108,40 @@ def usage_summary(app, conversation_id: str) -> dict[str, Any]:  # type: ignore[
         current["completion_tokens"] += int(usage.get("completion_tokens") or 0)
         current["steps"] += 1
 
+    clear_id = app.db.execute(
+        """
+        SELECT id FROM events
+        WHERE conversation_id = ? AND kind = 'compaction'
+          AND json_extract(meta, '$.kind') = 'clear'
+        ORDER BY id DESC LIMIT 1
+        """,
+        (conversation_id,),
+    ).fetchone()
+    since_clear = app.db.execute(
+        """
+        SELECT
+            COALESCE(SUM(json_extract(meta, '$.usage.prompt_tokens')), 0) AS prompt_tokens,
+            COALESCE(SUM(json_extract(meta, '$.usage.completion_tokens')), 0) AS completion_tokens,
+            COUNT(*) AS steps,
+            COALESCE(SUM(CASE WHEN json_extract(meta, '$.usage') IS NOT NULL THEN 1 ELSE 0 END), 0) AS steps_with_usage
+        FROM events
+        WHERE conversation_id = ? AND kind IN ('assistant', 'tool_call') AND id > ?
+        """,
+        (conversation_id, int(clear_id[0]) if clear_id else 0),
+    ).fetchone()
+
     return {
         "prompt_tokens": int(totals["prompt_tokens"] or 0),
         "completion_tokens": int(totals["completion_tokens"] or 0),
         "steps": int(totals["steps"] or 0),
         "steps_with_usage": int(totals["steps_with_usage"] or 0),
         "turns": turns[-20:],
+        "since_clear": {
+            "prompt_tokens": int(since_clear["prompt_tokens"] or 0),
+            "completion_tokens": int(since_clear["completion_tokens"] or 0),
+            "steps": int(since_clear["steps"] or 0),
+            "steps_with_usage": int(since_clear["steps_with_usage"] or 0),
+        },
     }
 
 

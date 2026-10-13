@@ -1569,3 +1569,8 @@ sessions do not re-litigate.
   makes the behaviour identical for every trigger — UI button, `POST /clear`, `loom
   clear`, programmatic. Clear is a cut, not a delete: transcript rows still stay; only
   the pins go with the context they were pinned into.
+- **2026-10-12** — **Keep lifetime usage and desk-since-clear usage distinct.** Both totals are
+  derived from provider usage metadata; only a manual clear marker resets the desk subtotal.
+  The browser tab uses the active palette's accent on a small woven Loom mark, updated when
+  appearance is applied. Rationale: the header keeps historical spend visible while making
+  the fresh-context tally legible; the favicon stays recognizable and in palette.
