@@ -1586,3 +1586,10 @@ sessions do not re-litigate.
   step nameable from context; locating, comparing, or explaining a surprise is a
   thread's. Reconsidering mid-turn stays in prose (a few tool calls short of the named
   last step means exploring), not a runner nudge, per the capable-model bar.
+- **2026-10-13** — **Presets are listed by a native tool, not by calling Loom's own
+  API.** `presets_list` reads the `presets`/`model_roles` tables directly (read-only,
+  default allow) and `conversation_create`'s prompt points at it instead of
+  `GET /api/presets`. Reason: Loom should never interact with itself as part of normal
+  operation — an agent→API path risks bypassing approval flows — which also shelves the
+  proposed always-on API auth. Both alternatives (endpoint-pointer prompt, always-on
+  auth) rejected the same day.

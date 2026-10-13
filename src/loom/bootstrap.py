@@ -44,6 +44,7 @@ DEFAULT_TOOL_POLICIES: dict[str, str] = {
     "conversation_read": "allow",
     "conversation_list": "allow",
     "conversation_finish": "allow",
+    "presets_list": "allow",
     "schedule_create": "allow",
     "schedule_list": "allow",
     "schedule_delete": "allow",

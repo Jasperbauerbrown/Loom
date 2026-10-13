@@ -977,6 +977,7 @@ Registry = native tools + MCP tools (prefixed `mcp_<server>_<tool>`) + connector
 | `knowledge_*`, `procedure_load`, `transcript_search`, `artifact_recall` | §8.4 | mixed | allow (core/ → ask) |
 | `status_update` | publish the thread's status as a `status` event in its own transcript; threads only (`kinds`) | no | allow |
 | `conversation_create / send / read / list / finish` | §6.7; `create` takes `notes` to pin and `isolation`/`isolation_root` (a git worktree of its own, §15.1); `read` renders each result as `TOOL RESULT (ok|ERROR; <policy> → <decision>: <reason>)`, the verdict present only when the harness did not simply allow the call (asked, classified, auto-approved) — what a self-review reads permission friction off (§4.3); `finish` is threads only (`kinds`) and delivers the summary, the walkthrough section and the ids of everything the thread produced | read/list yes | allow |
+| `presets_list` | list the enabled model presets — name, provider, model, `notes`, and the params worth weighing when choosing one (`effective_ctx`, `max_tokens`, `reasoning`, `multimodal`, plus everything else the preset sets) — and the role bindings from `model_roles`; reads the `presets`/`model_roles` tables directly, never HTTP: agents must not interact with Loom's own API (2026-10-13) | yes | allow |
 | `schedule_create / list / delete` | §11 | list yes | allow (caps enforced) |
 | `item_post` | put a notification/setup item on the now board | no | allow |
 | `secret_set` | store a secret the user pasted (value never echoed) | no | ask |
