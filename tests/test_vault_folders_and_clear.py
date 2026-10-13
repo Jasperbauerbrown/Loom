@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from loom.conversation import compaction, context, events
+from loom.conversation import compaction, context, events, pins
 from loom.knowledge.vault import VaultError
 
 
@@ -78,6 +78,25 @@ def test_clear_cuts_replay_but_keeps_transcript(app):
     # the old events are still there for episodic recall
     hits = app.index.transcript_search("ender")
     assert any(h["event_id"] == 1 for h in hits)
+
+
+def test_clear_also_unpins_pinned_notes(app):
+    """Decided 2026-10-12: clearing context empties the pinned list too, through
+    pins.replace — so no pinned block survives into the fresh context."""
+    _make_notes(app)
+    desk = app.desk_id()
+    events.append(app, desk, "user", "question")
+    pins.replace(app, desk, ["devices/a.md"])
+    assert pins.get(app.conversation(desk)) == ["devices/a.md"]
+    row = compaction.clear(app, desk)
+    # the pinned list is emptied via pins.replace (announced row) and stays empty
+    assert pins.get(app.conversation(desk)) == []
+    assert pins.get(row) == []
+    # the compaction event is still written exactly as before
+    assert row["summary"] == "" and row["summary_cutoff"] == 1
+    kinds = [e["kind"] for e in events.list_events(app, desk)]
+    assert kinds == ["user", "compaction"]
+    assert events.list_events(app, desk, kinds=["compaction"])[0]["meta"]["kind"] == "clear"
 
 
 async def test_clear_endpoint_refuses_while_running(client):

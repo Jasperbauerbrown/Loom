@@ -1560,3 +1560,12 @@ sessions do not re-litigate.
   opposite of why it exists. Running is not writing. Only the judge can tell
   `python helper.py` from `sed -i … helper.py`, so a run reaches the judge, not the
   user.
+- **2026-10-12** — **Clearing context also unpins.** A manual clear (03 §6.5) wrote the
+  `compaction`/`clear` event, zeroed the summary and moved `summary_cutoff`, but left
+  `conversations.pinned_notes` intact — the next turn re-assembled `pinned_block()` from
+  the same list, so "fresh context" kept carrying old pins. `compaction.clear` now also
+  empties the list via `pins.replace(app, id, [])` (the module's one writer; no
+  hand-rolled SQL), before the `clear` event is written. Holding inside `clear` itself
+  makes the behaviour identical for every trigger — UI button, `POST /clear`, `loom
+  clear`, programmatic. Clear is a cut, not a delete: transcript rows still stay; only
+  the pins go with the context they were pinned into.
