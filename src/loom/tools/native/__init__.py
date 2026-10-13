@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import fs, http, misc, process, screen, shell, web_search
+from . import fs, http, misc, presets, process, screen, shell, web_search
 
 
 def tools(app: Any = None) -> list[Any]:
@@ -25,6 +25,7 @@ def tools(app: Any = None) -> list[Any]:
         *web_search.tools(),
         *screen.tools(),
         *misc.tools(),
+        *presets.tools(),
     ]
 
 
