@@ -1609,3 +1609,22 @@ sessions do not re-litigate.
   call. It lives in `system.md` and `kind-desk.md` only — the runner counts nothing and
   the desk still sees no step line; the step budget remains a runaway brake, not the
   split.
+- **2026-10-13** — **The desk sees `[tool calls this turn: N]`, and a step is one tool
+  call.** Prose-only sizing failed in practice: the desk ran a 31-call survey inline
+  (5 parallel batches — "five steps" if a batch counts as one), sized jobs by the
+  request's wording ("quickly", "fast"), read "keep desk clear" as "don't spawn", and
+  did a thread's first searches before spawning because "look up what is already
+  written" read as the disk. Fixes: the unit is a tool call, batched calls each
+  counting; size by the work's shape, never the wording; "keep the desk clear" or an
+  explicit ask means spawn first; pre-spawn lookups are knowledge only; and
+  `conversation_create` no longer says threads are for work "whose end you cannot
+  name" (a summary table has a nameable end). The count is shown, every step, in the
+  desk's trailing block — information the model cannot track itself, not scaffolding;
+  nothing enforces it and the step budget stays a brake. Supersedes "the desk still
+  sees no step line" above.
+- **2026-10-13** — **The preset dialog shows every reasoning value the client sends.**
+  It knew only off/on/budget and rendered anything else, unset included, as `off`, so
+  saving a preset set to `high` (or left at the provider default) silently rewrote it.
+  It now offers provider default (nothing sent), off, on, low/medium/high effort and a
+  token budget, and warns when a budget is not below `max_tokens` (OpenRouter then has
+  nothing left for the answer). An unknown string reads as medium, as the client does.

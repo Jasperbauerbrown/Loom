@@ -13,11 +13,12 @@ Message layout sent to the model:
                 immediately before this turn's first user message. Ephemeral.
     user…      slot [10]: this turn's claimed inbox rows, then whatever the runner appends
                 (assistant steps with in-turn reasoning, tool results, mid-turn inbox).
-    user       the step budget, `[steps remaining: N]`, threads only — the one thing that
-                changes per step, so it sits last and the growing turn stays cached.
+    user       the per-step line: a thread's budget `[steps remaining: N]`, the desk's
+                `[tool calls this turn: N]` — the one thing that changes per step, so it
+                sits last and the growing turn stays cached.
 
 Everything above the turn's own messages is therefore byte-stable *within* a turn: only
-the trailing budget line is re-prefilled each step. The cost of that is a snapshot: the
+the trailing step line is re-prefilled each step. The cost of that is a snapshot: the
 now board, the goal and status, the pinned notes, the roots and the `now:` clock are as
 they were at turn start. A thread that pins a note or writes its status mid-turn sees
 the change in its next turn; meanwhile it has the note's text and its own status write
@@ -110,9 +111,9 @@ class Context:
     def messages(self, app, steps_remaining: int | None = None) -> list[dict[str, Any]]:  # type: ignore[no-untyped-def]
         """One system message (stable prefix), then the summary as a user-role context
         block, the live history, the harness block, this turn's messages, and last the
-        step budget for a thread. Exactly one system message: chat templates (Qwen 3.x
+        step line (a thread's budget, the desk's tool-call count). Exactly one system message: chat templates (Qwen 3.x
         among them) reject a system message that is not first (decided 2026-09-20). The
-        only part that changes between steps is the trailing budget line, so everything
+        only part that changes between steps is the trailing step line, so everything
         before this turn's own messages stays byte-identical and cached (2026-09-22)."""
         out = [*self.prefix]
         if self.conv.get("summary"):
@@ -120,7 +121,8 @@ class Context:
         out.extend(self.history)
         out.append(self.harness(app))
         out.extend(self.turn)
-        tail = steps_message(self.conv, steps_remaining)
+        calls = sum(len(m.get("tool_calls") or []) for m in self.turn)
+        tail = steps_message(self.conv, steps_remaining, calls)
         if tail is not None:
             out.append(tail)
         return out
@@ -328,12 +330,16 @@ def volatile_message(app, conv: dict[str, Any]) -> dict[str, Any]:  # type: igno
     return {"role": "user", "content": f"{CONTEXT_OPEN}\n" + "\n\n".join(parts) + f"\n{CONTEXT_CLOSE}"}
 
 
-def steps_message(conv: dict[str, Any], steps_remaining: int | None) -> dict[str, Any] | None:
-    """The thread's step budget, alone in its own block at the very end of the prompt.
-    It is the only thing that differs between two steps of one turn, so isolating it
-    here leaves the whole prompt before it cacheable (2026-09-22). The desk has no
-    budget line and so no tail at all."""
-    if conv.get("kind") != "thread" or steps_remaining is None:
+def steps_message(conv: dict[str, Any], steps_remaining: int | None, tool_calls: int = 0) -> dict[str, Any] | None:
+    """The per-step line, alone in its own block at the very end of the prompt. It is
+    the only thing that differs between two steps of one turn, so isolating it here
+    leaves the whole prompt before it cacheable (2026-09-22). A thread sees its budget;
+    the desk sees how many tool calls this turn has made, every step including the
+    first, so the desk/thread split has a number to stand on (2026-10-13). Calls made
+    together in one step each count."""
+    if conv.get("kind") == "desk":
+        return {"role": "user", "content": f"{CONTEXT_OPEN}\n[tool calls this turn: {tool_calls}]\n{CONTEXT_CLOSE}"}
+    if steps_remaining is None:
         return None
     return {"role": "user", "content": f"{CONTEXT_OPEN}\n[steps remaining: {steps_remaining}]\n{CONTEXT_CLOSE}"}
 

@@ -226,7 +226,7 @@ async def test_tool_images_are_stored_referenced_and_followed(app, fake):
     bus = [e for e in seen if e["type"] == "tool.result"][0]
     assert bus["data"]["images"] == refs
 
-    msgs = fake.calls[1].messages
+    msgs = fake.calls[1].messages[:-1]  # drop the desk's trailing tool-call count
     assert msgs[-2]["role"] == "tool" and msgs[-1]["role"] == "user"
     assert msgs[-1]["images"] == [URL] and "attached to this message" in msgs[-1]["content"]
     # the next turn replays the same shape from the transcript
@@ -234,7 +234,7 @@ async def test_tool_images_are_stored_referenced_and_followed(app, fake):
     conversation.post(app, desk, "and now?")
     await _run(app, desk)
     roles = [m["role"] for m in fake.calls[2].messages]
-    assert roles[-5:] == ["tool", "user", "assistant", "user", "user"]  # result, follower, answer, volatile block, new message
+    assert roles[-6:] == ["tool", "user", "assistant", "user", "user", "user"]  # result, follower, answer, volatile block, new message, tool-call count
     replayed = [m for m in fake.calls[2].messages if m.get("images")]
     assert len(replayed) == 1 and replayed[0]["images"] == [URL]
 
@@ -251,7 +251,7 @@ async def test_user_images_flow_from_inbox_to_event_to_request(app, fake):
     assert user["meta"]["images"] == [{"id": ref["id"], "mime": "image/png"}]
     posted = [e for e in seen if e["type"] == "inbox.posted"][0]
     assert posted["data"]["meta"]["images"][0]["id"] == ref["id"]
-    last = fake.calls[0].messages[-1]
+    last = fake.calls[0].messages[-2]  # [-1] is the desk's tool-call count
     assert last["role"] == "user" and last["content"] == "what is this" and last["images"] == [URL]
 
 
@@ -395,4 +395,4 @@ async def test_messages_endpoint_accepts_image_ids(client):
     user = _events(app, desk, ["user"])[-1]
     assert user["meta"]["images"] == [{"id": image_id, "mime": "image/png"}] and user["content"] == ""
     request = [c for c in app.models.calls if c.purpose == "turn"][-1]
-    assert request.messages[-1]["images"] == [URL]
+    assert request.messages[-2]["images"] == [URL]  # [-1] is the desk's tool-call count

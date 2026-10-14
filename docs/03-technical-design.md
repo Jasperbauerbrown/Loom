@@ -164,7 +164,7 @@ providers(name TEXT PK, kind TEXT /*ollama|openai_compatible*/, base_url TEXT,
           api_key_ref TEXT, params TEXT /*json defaults*/, enabled INT)
 presets(name TEXT PK, provider TEXT, model TEXT,
         params TEXT /*json: max_tokens, temperature, top_p, effective_ctx, num_ctx,
-        keep_alive, timeout_s, reasoning (on|off|budget), repetition_penalty,
+        keep_alive, timeout_s, reasoning (unset|off|on|low|medium|high|budget:N), repetition_penalty,
         presence_penalty, frequency_penalty, token_factor_seed,
         multimodal (bool), image_tokens (per-image prompt-token estimate)*/,
         notes TEXT, enabled INT, created_at TEXT, updated_at TEXT)
@@ -558,7 +558,9 @@ judge at all (§9.5, 2026-10-12).
 
 ### 6.4 Budgets and brakes
 - `step_budget`: desk 25, threads 60 (settings). Threads see
-  `[steps remaining: N]`; the last step has tools disabled.
+  `[steps remaining: N]`; the last step has tools disabled. The desk sees no budget but
+  `[tool calls this turn: N]` (§7 slot [11]) — the count its five-call split is sized
+  in, not a brake.
 - `forced_compactions_per_turn` 2; `model_error_retries` 1.
 - Tool execution timeout per tool (default 120s shell, 60s http, 300s MCP); a timed-out
   call returns an error result.
@@ -641,10 +643,15 @@ note, and a thread without one was a "task". Every thread is now that.
   refused above `max_thread_depth` (default 3). Row written and `conversation.created`
   emitted **before** the first turn is scheduled. *When* to spawn is prose, not
   mechanism (`system.md`, `kind-desk.md`; decided 2026-09-22, sized 2026-10-13): the
-  desk keeps work of about five quick steps or fewer; anything more — a survey, an
-  investigation, a build — goes to a thread before the desk's first step; a result that
-  raises a new question, or about five steps without the end in reach, is the sign that
-  the desk is exploring. The number lives in prose only; the runner counts nothing.
+  desk keeps work of about five tool calls or fewer, calls batched in one step each
+  counting; anything more — a survey, an investigation, a build, a summary across many
+  files — goes to a thread before the desk's first step, sized by the work's shape and
+  never by the request's wording ("quick", "fast"); a result that raises a new question,
+  or about five calls without the end in reach, is the sign that the desk is exploring.
+  "Keep the desk clear" or an explicit ask for a thread means spawn first. The rule is
+  prose; the one mechanism is information: the desk's trailing
+  `[tool calls this turn: N]` line (§7 slot [11], 2026-10-13), so the count is read,
+  not remembered. Nothing enforces it.
 - **Pinned notes** (`conversations.pinned_notes`, json list; `conversation/pins.py` is
   the one reader and writer): the notes a conversation keeps in slot [5] every turn,
   each capped at `pinned_note_chars` (6,000) with a visible marker. Pinned by the thread
@@ -732,7 +739,7 @@ note, and a thread without one was a "task". Every thread is now that.
 | [5]+[6] | Desk: the **now board** (pending approvals, unseen items, running threads with one-line status, then one line per running background process). Thread: the goal + its status fields. Both: the **pinned notes** (`# Pinned notes`, each capped at `pinned_note_chars`). Then a **Filesystem** block: the conversation's effective roots (global + its own, the first being what relative paths resolve against), the protected paths and the write-protected paths (2026-10-12), one line each; then a `scratch:` line naming this conversation's own artifacts folder (`artifacts.conversation_dir`, prose in `prompts/context/scratch.md`) as the place for downloads, scratch files and intermediate outputs instead of `/tmp` — already inside the roots, per conversation, inspectable by the user (2026-09-25); then a `loom:` line naming this backend — the address it serves, its pid, its home — so the model can tell its own process from anything else it finds (2026-09-22). Then `now: 2026-09-20 14:02 (America/…)`. One fenced `<context from="harness">` block, **built once per turn and reused verbatim for every step** (2026-09-22) | user, after the history and before this turn's messages | per turn, not per step |
 | [9] | Resolved entities for this input (§8.2–8.3), wrapped `<knowledge may_be_irrelevant="true">…</knowledge>`; ephemeral, never persisted | user | volatile |
 | [10] | Claimed inbox messages as user-role messages (with their images), then the turn's own assistant / tool messages and image followers | user / assistant / tool | volatile |
-| [11] | Threads only: `[steps remaining: N]` in its own fenced block, **after** the turn's messages — the one thing that changes per step, isolated so the turn stays cached. The desk has no step line and therefore no block | user, last | per step |
+| [11] | The per-step line in its own fenced block, **after** the turn's messages — the one thing that changes per step, isolated so the turn stays cached. Thread: `[steps remaining: N]`. Desk: `[tool calls this turn: N]`, every step from the first (0), counted from the turn's assistant messages so batched calls each count and a mid-turn compaction's rebuild keeps the number (2026-10-13) | user, last | per step |
 
 Images on the wire: inside Loom `content` is always a string and images ride an
 in-memory `images` key of data URLs. `models.client.messages_for` renders them per
@@ -1752,7 +1759,7 @@ is the last line, not a licence: the shapes crossing the bus are one shape (§12
   secret picker, default params, concurrency, enabled; probe button lists live
   models). *Presets* (CRUD: name, provider, model picked from the probe list or typed,
   every generation/window parameter with provider defaults shown as placeholders,
-  reasoning mode, repetition/presence/frequency penalties, a *multimodal* toggle with
+  reasoning (provider default / off / on / low·medium·high effort / token budget, warned when the budget is not below max tokens), repetition/presence/frequency penalties, a *multimodal* toggle with
   the per-image token estimate, notes;
   "test" runs one short completion; shows calibrated
   `token_factor_seed` read-only; usage count of roles/threads pointing at it; delete

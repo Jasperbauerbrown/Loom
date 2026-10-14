@@ -32,11 +32,12 @@ def _kinds(app, cid):
 
 def _context(req):
     """The harness context block (now board / goal + status, pinned notes, now line).
-    A thread's `[steps remaining: N]` is its own trailing block since 2026-09-22."""
+    The per-step line (a thread's `[steps remaining: N]`, the desk's `[tool calls this
+    turn: N]`) is its own trailing block since 2026-09-22."""
     blocks = [
         m["content"]
         for m in req.messages
-        if m["role"] == "user" and str(m.get("content", "")).startswith("<context") and "[steps remaining:" not in m["content"]
+        if m["role"] == "user" and str(m.get("content", "")).startswith("<context") and "[steps remaining:" not in m["content"] and "[tool calls this turn:" not in m["content"]
     ]
     assert blocks, "no harness context block in the request"
     return blocks[-1]

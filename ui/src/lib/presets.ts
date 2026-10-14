@@ -12,3 +12,23 @@ export function copyName(source: string, taken: Iterable<string>): string {
     if (!used.has(candidate)) return candidate;
   }
 }
+
+export type ReasoningMode = "" | "off" | "on" | "low" | "medium" | "high" | "budget";
+
+/** Every value the model client understands (`models/client.py`): unset (the provider's
+ *  own default; nothing is sent), off, on, an effort level, or `budget:<tokens>`. Any
+ *  other string is read the way the client reads it — as medium effort — so the dialog
+ *  never shows one thing while the backend does another. */
+export function parseReasoning(v: unknown): { mode: ReasoningMode; budget: string } {
+  if (typeof v !== "string" || !v) return { mode: "", budget: "" };
+  if (v === "off" || v === "on" || v === "low" || v === "medium" || v === "high") return { mode: v, budget: "" };
+  const m = /^budget:(\d+)$/.exec(v);
+  if (m) return { mode: "budget", budget: m[1] };
+  return { mode: "medium", budget: "" };
+}
+
+/** The inverse: what is saved. Unset saves nothing, so the provider default applies. */
+export function formatReasoning(mode: ReasoningMode, budget: string): string | undefined {
+  if (mode === "") return undefined;
+  return mode === "budget" ? `budget:${budget || "0"}` : mode;
+}

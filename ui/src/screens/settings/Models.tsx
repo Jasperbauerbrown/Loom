@@ -22,7 +22,7 @@ import {
   Tr,
 } from "../../components/ui";
 import { cls } from "../../lib/format";
-import { copyName } from "../../lib/presets";
+import { copyName, formatReasoning, parseReasoning, type ReasoningMode } from "../../lib/presets";
 import { navigate } from "../../lib/router";
 import { ScalarFields } from "./SettingsField";
 
@@ -394,14 +394,6 @@ function PresetsPanel({
   );
 }
 
-function parseReasoning(v: unknown): { mode: "off" | "on" | "budget"; budget: string } {
-  if (typeof v !== "string" || !v) return { mode: "off", budget: "" };
-  if (v === "on") return { mode: "on", budget: "" };
-  if (v === "off") return { mode: "off", budget: "" };
-  const m = /^budget:(\d+)$/.exec(v);
-  if (m) return { mode: "budget", budget: m[1] };
-  return { mode: "off", budget: "" };
-}
 
 /** One dialog for three jobs: edit `preset` (its name is editable; a rename cascades
  *  on the server), create from scratch, or create a new preset seeded from `source`
@@ -475,8 +467,7 @@ function PresetDialog({
       setError("name, provider and model are required");
       return;
     }
-    const reasoning =
-      reasoningMode === "budget" ? `budget:${reasoningBudget || "0"}` : reasoningMode;
+    const reasoning = formatReasoning(reasoningMode, reasoningBudget);
     // An edit keeps the preset's own calibration (the server keeps it anyway); a
     // duplicate starts uncalibrated, since the seed was measured for the source.
     const inherited = Object.fromEntries(
@@ -591,12 +582,19 @@ function PresetDialog({
         <FieldRow label="Frequency penalty" help="-2 to 2. Penalises tokens by how often they have already appeared.">
           <Input type="number" step="any" value={frequencyPenalty} onChange={(e) => setFrequencyPenalty(e.target.value)} placeholder="0" />
         </FieldRow>
-        <FieldRow label="Reasoning">
+        <FieldRow
+          label="Reasoning"
+          help="Effort levels map to OpenRouter's reasoning effort; a budget caps reasoning tokens and must stay below max tokens or the answer gets none. Ollama only knows on/off: any level or budget means on."
+        >
           <div className="flex gap-1.5">
-            <Select value={reasoningMode} onChange={(e) => setReasoningMode(e.target.value as any)}>
+            <Select value={reasoningMode} onChange={(e) => setReasoningMode(e.target.value as ReasoningMode)}>
+              <option value="">provider default</option>
               <option value="off">off</option>
               <option value="on">on</option>
-              <option value="budget">budget</option>
+              <option value="low">low effort</option>
+              <option value="medium">medium effort</option>
+              <option value="high">high effort</option>
+              <option value="budget">token budget</option>
             </Select>
             {reasoningMode === "budget" && (
               <Input
@@ -607,6 +605,11 @@ function PresetDialog({
               />
             )}
           </div>
+          {reasoningMode === "budget" && num(maxTokens) !== undefined && Number(reasoningBudget || 0) >= num(maxTokens)! && (
+            <p className="mt-1 text-[11px] text-red-600 dark:text-red-400">
+              Budget is not below max tokens ({maxTokens}): reasoning can use the whole response and leave no answer.
+            </p>
+          )}
         </FieldRow>
         <FieldRow
           label="Multimodal (vision input)"

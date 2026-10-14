@@ -26,9 +26,10 @@ def _collect(app):
 
 def _ctx_block(req):
     """The harness context block (now board / goal + status, pinned notes, filesystem,
-    now line). Since 2026-09-22 a thread's `[steps remaining: N]` rides in its own block
-    at the very end — `_steps_tail` returns that one."""
-    blocks = [b for b in _ctx_blocks(req) if "[steps remaining:" not in b]
+    now line). Since 2026-09-22 the per-step line (a thread's `[steps remaining: N]`, the
+    desk's `[tool calls this turn: N]`) rides in its own block at the very end —
+    `_steps_tail` returns that one."""
+    blocks = [b for b in _ctx_blocks(req) if not _is_step_line(b)]
     assert blocks, "no harness context block in the request"
     return blocks[-1]
 
@@ -37,9 +38,13 @@ def _ctx_blocks(req):
     return [m["content"] for m in req.messages if m["role"] == "user" and str(m.get("content", "")).startswith("<context")]
 
 
+def _is_step_line(block):
+    return "[steps remaining:" in block or "[tool calls this turn:" in block
+
+
 def _steps_tail(req):
-    """The trailing budget block, or None for the desk (which has no step budget)."""
-    tails = [b for b in _ctx_blocks(req) if "[steps remaining:" in b]
+    """The trailing per-step block: a thread's budget or the desk's tool-call count."""
+    tails = [b for b in _ctx_blocks(req) if _is_step_line(b)]
     return tails[-1] if tails else None
 
 
@@ -73,8 +78,9 @@ async def test_desk_turn_persists_and_streams(app, fake):
     assert sum(1 for m in req.messages if m["role"] == "system") == 1  # chat templates want exactly one, first
     ctx_msg = _ctx_block(req)
     assert "now:" in ctx_msg and "# Now board" in ctx_msg
-    assert req.messages[-2]["content"] == ctx_msg  # volatile context sits nearest the query
-    assert req.messages[-1] == {"role": "user", "content": "hi"}
+    assert req.messages[-3]["content"] == ctx_msg  # volatile context sits nearest the query
+    assert req.messages[-2] == {"role": "user", "content": "hi"}
+    assert req.messages[-1]["content"] == _steps_tail(req) and "[tool calls this turn: 0]" in _steps_tail(req)
     assert req.tools and any(t["function"]["name"] == "fs_read" for t in req.tools)
     # calibration wrote a factor
     assert 0.5 <= app.conversation(desk)["token_factor"] <= 4.0
@@ -107,8 +113,9 @@ async def test_tool_call_round_trip(app, fake, tmp_path):
     assert tr["meta"]["ok"] and "alpha beta" in tr["content"] and tr["meta"]["policy"] == "allow"
     # second call replays the tool exchange
     msgs = fake.calls[1].messages
-    assert msgs[-2]["role"] == "assistant" and msgs[-2]["tool_calls"][0]["function"]["name"] == "fs_read"
-    assert msgs[-1]["role"] == "tool"
+    assert msgs[-3]["role"] == "assistant" and msgs[-3]["tool_calls"][0]["function"]["name"] == "fs_read"
+    assert msgs[-2]["role"] == "tool"
+    assert "[tool calls this turn: 1]" in msgs[-1]["content"]
 
 
 # -- approvals: pause, decide, resume -----------------------------------------------------
@@ -580,10 +587,15 @@ async def test_harness_block_is_one_snapshot_per_turn_and_the_budget_is_the_only
     assert second[-1]["content"].endswith("[steps remaining: 12]\n</context>")
     assert "[steps remaining:" not in first[-2]["content"]
 
-    # the desk has no budget, so it has no tail at all
+    # the desk has no budget; its tail counts this turn's tool calls, batched calls each
+    # counting, from zero on the first step (2026-10-13)
     desk_ctx = context.assemble(app, app.conversation(app.desk_id()), [], None)
-    assert context.steps_message(app.conversation(app.desk_id()), 5) is None
-    assert "[steps remaining:" not in desk_ctx.messages(app, 5)[-1]["content"]
+    assert desk_ctx.messages(app)[-1]["content"].endswith("[tool calls this turn: 0]\n</context>")
+    desk_ctx.turn.append({"role": "assistant", "content": "", "tool_calls": [{"id": "a"}, {"id": "b"}]})
+    desk_ctx.turn.append({"role": "assistant", "content": "", "tool_calls": [{"id": "c"}]})
+    after = desk_ctx.messages(app)
+    assert after[-1]["content"].endswith("[tool calls this turn: 3]\n</context>")
+    assert "[steps remaining:" not in after[-1]["content"]
 
 
 async def test_a_turns_steps_share_a_cached_prefix(app, fake, tmp_path):
