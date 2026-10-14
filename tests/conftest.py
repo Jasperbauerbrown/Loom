@@ -118,7 +118,10 @@ async def client(app):
 
     api = create_app(app)
     async with api.router.lifespan_context(api):
-        transport = httpx.ASGITransport(app=api)
+        # peer = loom.test (non-loopback): since 2026-10-13 loopback peers are exempt
+        # from general.lan_token, and the default ("127.0.0.1") would make auth tests
+        # assert nothing. Auth tests want network clients.
+        transport = httpx.ASGITransport(app=api, client=("loom.test", 123))
         async with httpx.AsyncClient(transport=transport, base_url="http://loom.test") as http:
             http.loom = app  # type: ignore[attr-defined]
             http.api = api  # type: ignore[attr-defined]

@@ -33,6 +33,37 @@ async def test_token_is_enforced_everywhere_but_health(client):
     assert ok.status_code == 200
 
 
+async def test_loopback_peers_skip_the_token(client):
+    """The `client` fixture's peer is loom.test (non-loopback); here the same app must
+    serve loopback peers (this machine) without the token, so LAN exposure doesn't
+    change local access (03 §21.1)."""
+    import httpx
+
+    app = client.loom
+    app.settings.set(app.db, "general.lan_token", "s3cret")
+
+    for host in ("127.0.0.1", "127.0.0.42", "::1", "::ffff:127.0.0.1"):  # incl. dual-stack-mapped IPv4
+        transport = httpx.ASGITransport(app=client.api, client=(host, 123))
+        async with httpx.AsyncClient(transport=transport, base_url="http://loom.test") as http:
+            response = await http.get("/api/settings")
+            assert response.status_code == 200, f"loopback peer {host} was asked for the token"
+
+
+async def test_non_loopback_peers_are_unaffected_by_the_loopback_exemption(client):
+    app = client.loom
+    app.settings.set(app.db, "general.lan_token", "s3cret")
+
+    assert (await client.get("/api/settings")).status_code == 401  # peer loom.test
+
+
+async def test_an_empty_token_means_no_auth_anywhere(client):
+    app = client.loom
+    app.settings.set(app.db, "general.lan_token", "")
+
+    assert (await client.get("/api/settings")).status_code == 200  # non-loopback, no header
+    assert (await client.get("/api/settings", headers={"Authorization": "Bearer wrong"})).status_code == 200
+
+
 async def test_version_and_queue(client):
     version = (await client.get("/api/system/version")).json()
     assert version["version"] == client.loom.version and version["schema_version"] >= 1
@@ -313,11 +344,27 @@ async def test_websocket_requires_the_token_when_set(app):
 
     app.settings.set(app.db, "general.lan_token", "s3cret")
     api = create_app(app)
-    with TestClient(api) as http:
+    with TestClient(api) as http:  # default peer host "testclient" is not an IP → non-loopback
         with pytest.raises(WebSocketDisconnect):
             with http.websocket_connect("/ws") as socket:
                 socket.receive_json()
         with http.websocket_connect("/ws?token=s3cret") as socket:
+            socket.send_json({"type": "ping"})
+            assert socket.receive_json()["type"] == "pong"
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "::1"])
+async def test_websocket_from_loopback_needs_no_token(app, host):
+    """Parametrised rather than two TestClients in one test: a second lifespan on the
+    same app closes over the first one's already-closed db."""
+    from fastapi.testclient import TestClient
+
+    from loom.server.app import create_app
+
+    app.settings.set(app.db, "general.lan_token", "s3cret")
+    api = create_app(app)
+    with TestClient(api, client=(host, 123)) as http:
+        with http.websocket_connect("/ws") as socket:
             socket.send_json({"type": "ping"})
             assert socket.receive_json()["type"] == "pong"
 

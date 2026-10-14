@@ -1593,3 +1593,11 @@ sessions do not re-litigate.
   operation — an agent→API path risks bypassing approval flows — which also shelves the
   proposed always-on API auth. Both alternatives (endpoint-pointer prompt, always-on
   auth) rejected the same day.
+- **2026-10-13** — **Loopback clients are exempt from `general.lan_token`.** Once the
+  token is set, non-loopback peers must send it on every `/api` request and `/ws`
+  connection, but clients on 127.0.0.0/8 and ::1 never need it (empty token = no auth
+  anywhere). Reason: LAN access must not change access from this machine — no token
+  entry for the local browser/CLI, and processes on the machine keep querying Loom
+  easily. Perhaps temporary: revisit if the threat model changes to other local
+  users/processes. The `lan_token` field help text, which claimed "Empty = loopback
+  only" (bind address is `general.bind_host`'s job), was corrected to match.

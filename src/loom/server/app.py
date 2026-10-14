@@ -5,15 +5,18 @@ wired together. Routers come from `server.routers.ROUTERS` by name; a module lis
 there that does not import is a startup error, never a silently skipped feature — a
 half-mounted API is exactly the UI/backend disagreement the charter forbids.
 
-Auth (03 §21.1): while `general.lan_token` is empty nothing is required (loopback);
-once set, every `/api` request needs `Authorization: Bearer <token>` and `/ws` needs
-`?token=`. `GET /api/system/health` is always open so a supervisor watchdog and a
-misconfigured surface can both still ask whether the backend is alive.
+Auth (03 §21.1): while `general.lan_token` is empty nothing is required anywhere. Once
+set, every `/api` request from a non-loopback peer needs `Authorization: Bearer <token>`
+and `/ws` needs `?token=`; loopback clients (this machine) never need the token, so
+opening the port to the LAN does not change access from here. `GET /api/system/health`
+is always open so a supervisor watchdog and a misconfigured surface can both still ask
+whether the backend is alive.
 """
 
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import logging
 import os
 import secrets as _secrets
@@ -92,7 +95,9 @@ def create_app(app: App) -> FastAPI:
         path = request.url.path
         if path.startswith(API_PREFIX) and path not in OPEN_PATHS:
             token = str(app.settings.get("general.lan_token") or "")
-            if token and not _authorised(request.headers.get("authorization"), request.query_params.get("token"), token):
+            if token and not _is_loopback(request.client) and not _authorised(
+                request.headers.get("authorization"), request.query_params.get("token"), token
+            ):
                 return JSONResponse({"detail": "missing or invalid bearer token"}, status_code=401)
         return await call_next(request)
 
@@ -103,7 +108,7 @@ def create_app(app: App) -> FastAPI:
     @api.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
         token = str(app.settings.get("general.lan_token") or "")
-        if token:
+        if token and not _is_loopback(websocket.client):
             supplied = websocket.query_params.get("token") or ""
             header = websocket.headers.get("authorization")
             if not _authorised(header, supplied, token):
@@ -113,6 +118,20 @@ def create_app(app: App) -> FastAPI:
 
     _mount_ui(api)
     return api
+
+
+def _is_loopback(client: Any) -> bool:
+    """True when the ASGI peer is this machine (127.0.0.0/8 or ::1)."""
+    host = getattr(client, "host", None)
+    if not host:
+        return False
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    # a dual-stack (::) socket reports IPv4 peers as ::ffff:x.x.x.x
+    mapped = getattr(addr, "ipv4_mapped", None)
+    return bool((mapped or addr).is_loopback)
 
 
 def _authorised(header: str | None, query_token: str | None, expected: str) -> bool:

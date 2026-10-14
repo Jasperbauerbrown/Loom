@@ -2079,12 +2079,17 @@ UI: `react`, `react-dom`, `vite`, `typescript`, `tailwindcss`, one Markdown rend
 - JSON in and out. Errors: FastAPI `{"detail": "message"}` with 4xx/5xx.
 - Rows are returned as their table row with JSON columns decoded and `*_at` as ISO-8601
   UTC strings. Lists are plain arrays.
-- Auth: when `general.lan_token` is set, every `/api` request carries
-  `Authorization: Bearer <token>` and `/ws` carries `?token=`; loopback without a token
-  needs nothing. The UI keeps the token as `loom_token` in browser storage; any 401
-  opens one shared token dialog (however many calls failed), stores the answer and
-  retries the failed calls, and the socket reconnects with it. Settings, General has a
-  button that clears the stored token.
+- Auth: when `general.lan_token` is empty nothing is required anywhere; once set, every
+  `/api` request from a non-loopback peer carries `Authorization: Bearer <token>` and
+  `/ws` carries `?token=`, while loopback clients on this machine never need the token —
+  opening the port to the LAN does not change local access (browser, CLI, agents).
+  Peer addresses that are not a parseable IP (e.g. a proxy) count as non-loopback, so
+  they authenticate. The loopback exemption is **perhaps temporary**: added 2026-10-13
+  so LAN exposure wouldn't change access from this machine; revisit if the threat model
+  changes (other local users/processes sharing the machine). The UI keeps the token as
+  `loom_token` in browser storage; any 401 opens one shared token dialog (however many
+  calls failed), stores the answer and retries the failed calls, and the socket
+  reconnects with it. Settings, General has a button that clears the stored token.
 - Settings: `GET /api/settings` → `{"values": {...}, "schema": [Field...], "groups": {...}}`;
   `PATCH /api/settings` takes a partial `{key: value}` map, validates all-or-nothing,
   returns the new values, emits `settings.changed {keys}`.

@@ -186,7 +186,7 @@ FIELDS: list[Field] = [
     Field("general.timezone", "str", "UTC", "Timezone", "IANA name, e.g. America/Denver.", "text"),
     Field("general.bind_host", "str", "127.0.0.1", "Bind address", "Use 0.0.0.0 to serve on the LAN (set a token).", "text", restart=True),
     Field("general.port", "int", 8500, "Port", "", "number", min=1024, max=65535, restart=True),
-    Field("general.lan_token", "str", "", "LAN bearer token", "Required on every request when bound beyond loopback. Empty = loopback only.", "secret"),
+    Field("general.lan_token", "str", "", "LAN bearer token", "Required on every request from outside this machine once set. Loopback never needs it. Empty = no auth.", "secret"),
     Field("general.theme", "enum", "system", "Theme", "Light or dark; system follows the OS.", "select", choices=("system", "light", "dark")),
     Field("general.palette", "enum", "default", "Palette", "Colour palette; the theme picks its light or dark side.", "select", choices=("default", "slate", "warm", "forest", "nord", "mono", "grape", "ocean", "ember", "moss")),
     Field("general.notification_fade_seconds", "int", 6, "Notification fade", "Seconds a notification popup stays before fading. 0 keeps it until dismissed; the now board keeps the item either way.", "number", min=0, max=120),
