@@ -1601,3 +1601,11 @@ sessions do not re-litigate.
   easily. Perhaps temporary: revisit if the threat model changes to other local
   users/processes. The `lan_token` field help text, which claimed "Empty = loopback
   only" (bind address is `general.bind_host`'s job), was corrected to match.
+- **2026-10-13** — **The desk/thread split is sized in steps: about five quick steps or
+  fewer stays on the desk, anything more is a thread's.** Replaces "every step nameable"
+  (decided the same day), which the model self-certified: after two calls it could
+  always name the next, so investigations kept running on the desk. A rough count is a
+  test the model cannot redefine mid-turn, and needs no up-front plan before the first
+  call. It lives in `system.md` and `kind-desk.md` only — the runner counts nothing and
+  the desk still sees no step line; the step budget remains a runaway brake, not the
+  split.

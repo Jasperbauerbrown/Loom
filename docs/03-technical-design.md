@@ -637,10 +637,11 @@ note, and a thread without one was a "task". Every thread is now that.
   (below). `depth = parent.depth + 1`;
   refused above `max_thread_depth` (default 3). Row written and `conversation.created`
   emitted **before** the first turn is scheduled. *When* to spawn is prose, not
-  mechanism (`system.md`, `kind-desk.md`; decided 2026-09-22): the test is whether the
-  end of the work can be named from where the desk stands — a survey, an investigation,
-  a build cannot, and go to a thread before the desk's first step — and a result that
-  raises a new question instead of answering one is the sign that the desk is exploring.
+  mechanism (`system.md`, `kind-desk.md`; decided 2026-09-22, sized 2026-10-13): the
+  desk keeps work of about five quick steps or fewer; anything more — a survey, an
+  investigation, a build — goes to a thread before the desk's first step; a result that
+  raises a new question, or about five steps without the end in reach, is the sign that
+  the desk is exploring. The number lives in prose only; the runner counts nothing.
 - **Pinned notes** (`conversations.pinned_notes`, json list; `conversation/pins.py` is
   the one reader and writer): the notes a conversation keeps in slot [5] every turn,
   each capped at `pinned_note_chars` (6,000) with a visible marker. Pinned by the thread
