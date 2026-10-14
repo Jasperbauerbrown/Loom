@@ -13,5 +13,5 @@ export default defineConfig({
       "/ws": { target: "http://127.0.0.1:8500", ws: true },
     },
   },
-  test: { environment: "node", include: ["src/**/*.test.ts"] },
+  test: { environment: "node", include: ["src/**/*.test.{ts,tsx}"] },
 });

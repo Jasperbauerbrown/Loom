@@ -269,17 +269,26 @@ export function Dialog({
   wide?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  // Latest onClose in a ref so the effect below runs once per dialog mount: parents
+  // pass a fresh inline closure every render, and re-running the effect re-focused the
+  // dialog container — stealing focus from the content on every keystroke (on mobile
+  // that closed the soft keyboard each time a character was typed).
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
-        onClose();
+        onCloseRef.current();
       }
     };
     document.addEventListener("keydown", onKey);
-    ref.current?.focus();
+    // Focus the container only if nothing inside already holds focus, so an autofocused
+    // input (TokenDialog) keeps it and the soft keyboard opens on the field, not the frame.
+    const active = document.activeElement;
+    if (ref.current && !(active && ref.current.contains(active))) ref.current.focus();
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, []);
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-6" onMouseDown={onClose}>
       <div
