@@ -180,6 +180,8 @@ DEFAULT_SHELL_READONLY = [
     "cd",
 ]
 
+DEFAULT_DEFERRED_TOOLS = ["schedule_create", "schedule_delete", "schedule_list", "secret_set", "knowledge_links", "fs_patch", "presets_list", "item_post", "http"]
+
 FIELDS: list[Field] = [
     # General
     Field("general.display_name", "str", "", "Your name", "How Loom addresses you.", "text"),
@@ -213,6 +215,7 @@ FIELDS: list[Field] = [
     Field("conversation.thread_archive_days", "int", 14, "Archive finished threads after (days)", "", "number", min=1, max=3650),
     Field("conversation.max_thread_depth", "int", 3, "Max thread depth", "", "number", min=1, max=10),
     Field("conversation.tool_expose_max", "int", 48, "Max tools exposed per turn", "Above this, non-native tools load via tool_search.", "number", min=8, max=512),
+    Field("conversation.deferred_tools", "list", DEFAULT_DEFERRED_TOOLS, "Deferred tools", "Tools hidden from the model's tool list (one name per line) until it loads them with tool_search; this trims the schemas sent every step. A deferred tool still runs if called by name. Unknown names are ignored.", "list"),
     Field("conversation.pinned_note_chars", "int", 6000, "Pinned note cap (chars)", "Each note a conversation pins is shown up to this many characters per turn; the rest is a knowledge_read away.", "number", min=500, max=50000),
     Field("conversation.tool_timeout_shell_s", "int", 120, "Shell timeout (s)", "", "number", min=1, max=3600),
     Field("conversation.tool_timeout_http_s", "int", 60, "HTTP timeout (s)", "", "number", min=1, max=3600),

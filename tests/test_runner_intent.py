@@ -263,3 +263,41 @@ async def test_a_resumed_desk_call_keeps_the_users_request(app, fake):
     await _run(app, desk)
 
     assert seen == [("please start the bot again", True)]
+
+
+async def test_length_truncated_reply_runs_no_calls_and_turn_continues(app, fake):
+    desk = app.desk_id()
+    ran: list[str] = []
+    _probe(app, "probe", "allow", ran)
+    fake.script(
+        Scripted(content="", tool_calls=[("probe", {"n": 1}), ("probe", {"n": 2})], finish_reason="length"),
+        Scripted(content="recovered"),
+    )
+    conversation.post(app, desk, "go")
+    await _run(app, desk)
+
+    assert ran == []
+    evs = events.list_events(app, desk, limit=1000)
+    tc = [e for e in evs if e["kind"] == "tool_call"][0]
+    assert tc["meta"]["finish_reason"] == "length"
+    results = [e for e in evs if e["kind"] == "tool_result"]
+    assert len(results) == 2 and all(e["meta"]["ok"] is False for e in results)
+    assert "output-token limit" in results[0]["content"]
+    assert [e for e in evs if e["kind"] == "assistant"][-1]["content"] == "recovered"
+
+
+async def test_identical_calls_in_one_reply_run_once(app, fake):
+    desk = app.desk_id()
+    ran: list[str] = []
+    _probe(app, "probe", "allow", ran)
+    fake.script(
+        Scripted(content="", tool_calls=[("probe", {"a": 1, "b": 2}), ("probe", {"b": 2, "a": 1}), ("probe", {"a": 2})]),
+        Scripted(content="done"),
+    )
+    conversation.post(app, desk, "go")
+    await _run(app, desk)
+
+    assert len(ran) == 2
+    results = [e for e in events.list_events(app, desk, limit=1000) if e["kind"] == "tool_result"]
+    assert [e["meta"]["ok"] for e in results] == [True, False, True]
+    assert "identical" in results[1]["content"]

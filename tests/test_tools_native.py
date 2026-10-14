@@ -407,12 +407,47 @@ async def test_http_rejects_bad_methods_and_empty_urls(app, ctx):
 # ---------------------------------------------------------------------------------
 # tool_search / secret_set / artifact_recall
 # ---------------------------------------------------------------------------------
-async def test_tool_search_returns_definitions_and_exposes_them_for_the_turn(app, ctx):
-    result = await run(app, ctx, "tool_search", {"query": "read a file", "k": 3})
+async def test_tool_search_returns_deferred_definitions_and_exposes_them_for_the_turn(app, ctx):
+    result = await run(app, ctx, "tool_search", {"query": "schedule", "k": 3})
     assert result.ok and result.meta["count"] > 0
-    assert set(result.meta["names"]) <= set(app.tools.names())
+    assert all(n.startswith("schedule_") for n in result.meta["names"])
     assert ctx.extras["exposed"] == set(result.meta["names"])
     assert "parameters" in result.content
+
+
+async def test_tool_search_skips_tools_already_in_the_list(app, ctx):
+    result = await run(app, ctx, "tool_search", {"query": "read a file"})
+    assert "fs_read" not in result.meta.get("names", [])
+    result = await run(app, ctx, "tool_search", {"query": "fs_read"})
+    assert result.meta["count"] == 0 and "already in your tool list: " in result.content and "fs_read" in result.content
+
+
+def test_expose_hides_deferred_until_loaded_and_ignores_unknown(app):
+    names = lambda ts: [t.name for t in ts]
+    deferred = {"http", "schedule_list", "no_such_tool"}
+    shown = names(app.tools.expose(512, None, deferred))
+    assert "http" not in shown and "schedule_list" not in shown and "fs_read" in shown
+    assert shown == sorted(shown)
+    loaded = names(app.tools.expose(512, {"http"}, deferred))
+    assert "http" in loaded and "schedule_list" not in loaded
+    assert names(app.tools.expose(512)) == app.tools.names()
+    assert {"http", "schedule_list"} <= {t.name for t in app.tools.unexposed(512, None, deferred)}
+
+
+def test_context_tools_default_defers_and_tool_search_names_them(app):
+    from loom.conversation.context import Context
+    from loom.config import DEFAULT_DEFERRED_TOOLS
+    ctx = Context.__new__(Context)
+    ctx.conv = {"kind": "desk"}
+    ctx.exposed = set()
+    tools = {t.name: t for t in ctx.tools(app)}
+    for n in DEFAULT_DEFERRED_TOOLS:
+        assert n not in tools
+    assert "http" in tools["tool_search"].description and "fs_patch" in tools["tool_search"].description
+    again = {t.name: t for t in ctx.tools(app)}
+    assert again["tool_search"].description == tools["tool_search"].description
+    ctx.exposed = {"http"}
+    assert "http" in {t.name for t in ctx.tools(app)}
 
 
 async def test_tool_search_says_so_when_nothing_matches(app, ctx):

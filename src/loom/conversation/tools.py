@@ -1,5 +1,5 @@
 """Threads (03 §6.7) and the conversation-facing tools: conversation_create / send /
-read / list / finish, status_update, item_post. The surface contract exposed to the
+stop / read / list / finish, status_update, item_post. The surface contract exposed to the
 model, so the desk spawns and talks to threads the same way a surface does.
 """
 
@@ -14,7 +14,7 @@ from typing import Any
 from .. import db, items, prompts
 from ..ids import ulid
 from ..tools.registry import Tool, ToolContext, ToolResult
-from . import compaction, events, pins, status
+from . import compaction, events, pins, status, stop
 
 log = logging.getLogger(__name__)
 
@@ -293,6 +293,21 @@ async def _send(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     return ToolResult(f"sent to {target} ({other.get('title') or other['kind']}); it will be read at that conversation's next step")
 
 
+async def _stop(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+    app = ctx.app
+    target = args.get("conversation_id", "")
+    other = app.conversation(target)
+    if other is None:
+        return ToolResult.error(f"conversation {target} not found")
+    if not stop.is_descendant(app, ctx.conversation_id, target):
+        return ToolResult.error(f"conversation {target} is not one of your threads; you can only stop threads you spawned, or their sub-threads")
+    stopped = stop.stop(app, target, actor=f"conversation {ctx.conversation_id}", reason=args.get("reason") or "")
+    if not stopped:
+        return ToolResult(f"nothing to stop: {target} is {other['status']} with no work in flight")
+    names = ", ".join(f"{s['id']} (\"{s['title']}\", was {s['was']})" for s in stopped)
+    return ToolResult(f"stopped {len(stopped)}: {names}. Worktrees are kept; a later conversation_send reopens a stopped thread.")
+
+
 async def _read(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     app = ctx.app
     other = app.conversation(args.get("conversation_id", ""))
@@ -426,6 +441,8 @@ def tools() -> list[Tool]:
         ),
         Tool("conversation_send", prompts.load("tools/conversation_send"),
              _schema({"conversation_id": {"type": "string"}, "content": {"type": "string"}}, ["conversation_id", "content"]), _send),
+        Tool("conversation_stop", prompts.load("tools/conversation_stop"),
+             _schema({"conversation_id": {"type": "string"}, "reason": {"type": "string", "description": "short; recorded in the stopped thread's transcript"}}, ["conversation_id"]), _stop),
         Tool("conversation_read", prompts.load("tools/conversation_read"),
              _schema({"conversation_id": {"type": "string"}, "limit": {"type": "integer"}, "before": {"type": "integer"}}, ["conversation_id"]), _read, read_only=True),
         Tool("conversation_list", prompts.load("tools/conversation_list"),

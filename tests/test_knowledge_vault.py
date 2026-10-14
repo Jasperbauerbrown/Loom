@@ -441,3 +441,51 @@ async def test_knowledge_read_pin_and_unpin(app):
 
     r = await dispatch.execute(app, ctx(), tool, {"path": "projects/missing.md", "pin": True})
     assert not r.ok and pinned() == ["devices/pi.md"]
+
+
+WRAPPED = "# P\n\nThe release pointer names the live release;\n  as of 2026-10-13 that is v2.\n\nNext paragraph here.\n"
+
+
+def test_replace_prose_wrapped_file_unwrapped_old(app):
+    """A soft line break renders as a space, so a sentence copied unwrapped matches a
+    hard-wrapped note (2026-10-14); `new` is inserted as given, not reflowed."""
+    app.vault.write("projects/w.md", WRAPPED, op="create")
+    note = app.vault.write(
+        "projects/w.md", "names v3; nothing else", op="replace",
+        old="names the live release; as of 2026-10-13 that is v2.",
+    )
+    assert "The release pointer names v3; nothing else\n\nNext paragraph here." in note.body
+
+
+def test_replace_prose_unwrapped_file_wrapped_old(app):
+    app.vault.write("projects/u.md", "One long line that is not wrapped at all.\n\nAfter.\n", op="create")
+    note = app.vault.write("projects/u.md", "short", op="replace", old="long line that\n  is not wrapped\nat all.")
+    assert "One short\n\nAfter." in note.body
+
+
+def test_replace_prose_does_not_match_a_paragraph_break_with_a_space(app):
+    app.vault.write("projects/w.md", WRAPPED, op="create")
+    with pytest.raises(VaultError) as exc:
+        app.vault.write("projects/w.md", "x", op="replace", old="v2. Next paragraph here.")
+    assert "not found" in str(exc.value)
+    # and a blank line in old does not match a mere soft break
+    with pytest.raises(VaultError):
+        app.vault.write("projects/w.md", "x", op="replace", old="live release;\n\nas of 2026-10-13")
+    # but a blank line matches a blank line
+    note = app.vault.write("projects/w.md", "v2. Done.", op="replace", old="v2.\n\nNext paragraph here.")
+    assert "v2. Done.\n" in note.body
+
+
+def test_replace_prose_ambiguity_still_errors(app):
+    app.vault.write("projects/a.md", "alpha beta\ngamma\n\nalpha\nbeta gamma\n", op="create")
+    with pytest.raises(VaultError) as exc:
+        app.vault.write("projects/a.md", "x", op="replace", old="alpha beta gamma")
+    assert "appears 2 times" in str(exc.value)
+
+
+def test_textmatch_prose_tier_is_opt_in_so_fs_edit_stays_strict():
+    from loom.textmatch import find_spans
+
+    text = "names the live release;\n  as of today\n"
+    assert find_spans(text, "names the live release; as of today") == []
+    assert find_spans(text, "names the live release; as of today", prose=True) == [(0, len(text) - 1)]

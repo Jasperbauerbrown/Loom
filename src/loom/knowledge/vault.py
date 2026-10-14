@@ -313,7 +313,7 @@ class Vault:
         elif op == "replace":
             if old is None or old == "":
                 raise VaultError("replace requires `old`: the exact text to swap out")
-            spans = find_spans(old_body, old)
+            spans = find_spans(old_body, old, prose=True)
             if not spans:
                 hint = closest_excerpt(old_body, old)
                 raise VaultError(

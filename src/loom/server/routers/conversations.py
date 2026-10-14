@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from ... import conversation as conv_pkg
 from ... import db
 from ...artifacts import IMAGE_MIMES, sniff_image
-from ...conversation import events, inbox, pins, status, worktree
+from ...conversation import events, inbox, pins, status, stop, worktree
 from ...conversation.context import occupancy
 from ..deps import get_app
 
@@ -288,10 +288,10 @@ async def get_image(conversation_id: str, image_id: str, app=Depends(get_app)) -
 @router.post("/conversations/{conversation_id}/cancel")
 async def cancel(conversation_id: str, app=Depends(get_app)) -> dict[str, Any]:
     row = _row(app, conversation_id)
-    running = row["status"] == "running"
-    if running:
-        app.cancel_flags.add(conversation_id)
-    return {"cancelling": running, "status": row["status"]}
+    # One codepath with the `conversation_stop` tool. The desk's cancel keeps its old
+    # reach (its own turn's work; the runner stops that), not every thread it ever spawned.
+    stopped = stop.stop(app, conversation_id, actor="user", cascade=row["kind"] != "desk")
+    return {"cancelling": bool(stopped), "status": row["status"], "stopped": [s["id"] for s in stopped]}
 
 
 @router.post("/conversations/{conversation_id}/clear")

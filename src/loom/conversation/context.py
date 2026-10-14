@@ -32,12 +32,12 @@ import datetime as _dt
 import logging
 import os
 import zoneinfo
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .. import db, items, prompts
 from ..artifacts import conversation_dir
-from ..tools.registry import Tool
+from ..tools.registry import Tool, deferred_set
 from . import events, inbox, pins, status, worktree
 
 log = logging.getLogger(__name__)
@@ -134,7 +134,15 @@ class Context:
         kind = self.conv.get("kind") or "thread"
         # Thread-only tools (conversation_finish, status_update) never reach the desk,
         # which otherwise called them and was told "the desk never finishes" (2026-09-22).
-        return [t for t in app.tools.expose(limit, self.exposed) if kind in t.kinds]
+        deferred = deferred_set(app)
+        tools = [t for t in app.tools.expose(limit, self.exposed, deferred) if kind in t.kinds]
+        # tool_search names what is deferred (built here from the setting, so the prompt
+        # file stays soul-only and the text is byte-stable while the setting is).
+        names = sorted(n for n in deferred if n not in self.exposed and n in app.tools and kind in app.tools.get(n).kinds)
+        if names:
+            note = prompts.load("context/deferred-tools").replace("{names}", ", ".join(names))
+            tools = [replace(t, description=f"{t.description}\n\n{note}") if t.name == "tool_search" else t for t in tools]
+        return tools
 
     def tool_schemas(self, app, enabled: bool = True) -> list[dict[str, Any]] | None:  # type: ignore[no-untyped-def]
         tools = self.tools(app, enabled)

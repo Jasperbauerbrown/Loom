@@ -77,7 +77,7 @@ async def test_disabled_presets_are_excluded_and_marked_in_bindings(app, ctx):
 # ---------------------------------------------------------------------------------
 def test_conversation_create_prompt_points_at_the_tool_not_the_endpoint():
     text = prompts.load("tools/conversation_create")
-    assert "run `presets_list` to list valid names and what each is for" in text
+    assert "`presets_list`" in text and "to list valid names and what each is for" in text
     assert "api/presets" not in text
     assert "http://" not in text
 

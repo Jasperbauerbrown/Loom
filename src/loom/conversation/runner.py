@@ -230,7 +230,7 @@ async def _turn(app, state: TurnState) -> None:  # type: ignore[no-untyped-def]
 
         # tool calls: persist first (persist before act), then dispatch
         calls_json = [{"id": c.id, "name": c.name, "arguments": c.arguments} for c in result.tool_calls]
-        tool_call_meta = {"text": result.content, "step": state.steps, "reasoning_chars": len(result.reasoning or "")}
+        tool_call_meta = {"text": result.content, "step": state.steps, "reasoning_chars": len(result.reasoning or ""), "finish_reason": result.finish_reason}
         if usage_meta:
             tool_call_meta["usage"] = usage_meta
         ev = events.append(app, cid, "tool_call", db.dumps(calls_json), tool_call_meta)
@@ -253,7 +253,7 @@ async def _turn(app, state: TurnState) -> None:  # type: ignore[no-untyped-def]
             assistant_msg["reasoning"] = text
         ctx.turn.append(assistant_msg)
 
-        paused = await _dispatch_calls(app, state, ctx, ev, result.tool_calls, result.content or "")
+        paused = await _dispatch_calls(app, state, ctx, ev, result.tool_calls, result.content or "", result.finish_reason)
         if paused:
             state.paused = True
             return  # status is waiting_approval; resume re-enters at step 1
@@ -429,15 +429,29 @@ def _is_read_only(app, call: ToolCall) -> bool:  # type: ignore[no-untyped-def]
         return False
 
 
-async def _dispatch_calls(app, state: TurnState, ctx: Context, event_id: int, calls: list[ToolCall], text: str = "") -> bool:  # type: ignore[no-untyped-def]
-    """Run the calls of one step. Returns True if the turn must pause for approval."""
+async def _dispatch_calls(app, state: TurnState, ctx: Context, event_id: int, calls: list[ToolCall], text: str = "", finish_reason: str = "") -> bool:  # type: ignore[no-untyped-def]
+    """Run the calls of one step. Returns True if the turn must pause for approval.
+    A reply cut off at the output-token limit (`finish_reason == "length"`) is truncated
+    or degenerate: none of its calls run. Within a reply, a call byte-identical to an
+    earlier one does not run again. Both get a failed result per call id (2026-10-14)."""
     cid = state.cid
     for c in calls:
         app.bus.emit("tool.call", {"call_id": c.id, "name": c.name, "args": c.arguments, "event_id": event_id}, cid)
     intent, carried = _intent(app, state, text)
     ctxs = {c.id: _tool_ctx(app, state, c.id, event_id, intent=intent, intent_carried=carried) for c in calls}
     outcomes: dict[str, Any] = {}
-    ro = [c for c in calls if _is_read_only(app, c)]
+    if finish_reason == "length":
+        for c in calls:
+            outcomes[c.id] = ToolResult.error(prompts.load("context/tool-reply-truncated"))
+    else:
+        first: dict[str, str] = {}
+        for c in calls:
+            key = c.name + "|" + json.dumps(c.arguments, sort_keys=True, separators=(",", ":"), default=str)
+            if key in first:
+                outcomes[c.id] = ToolResult.error(prompts.load("context/tool-duplicate-call").replace("{first_id}", first[key]))
+            else:
+                first[key] = c.id
+    ro = [c for c in calls if c.id not in outcomes and _is_read_only(app, c)]
     if ro:
         results = await asyncio.gather(*(_dispatch_one(app, ctxs[c.id], c) for c in ro), return_exceptions=True)
         for c, r in zip(ro, results):

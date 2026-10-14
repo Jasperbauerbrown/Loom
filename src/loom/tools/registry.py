@@ -162,24 +162,40 @@ class Registry:
     def names(self) -> list[str]:
         return sorted(self._tools)
 
-    def expose(self, limit: int, extra: set[str] | None = None) -> list[Tool]:
-        """Tools to put in the model's `tools` parameter this turn: all of them if the
-        count is within `limit`, otherwise native tools plus any names in `extra` (loaded
-        by tool_search earlier in the turn). Sorted by name for a byte-stable prefix."""
-        tools = self.all()
-        if len(tools) <= limit:
-            return tools
+    def expose(self, limit: int, extra: set[str] | None = None, deferred: set[str] | frozenset[str] | None = None) -> list[Tool]:
+        """Tools to put in the model's `tools` parameter this turn. A tool in `deferred`
+        (setting `conversation.deferred_tools`; unknown names are ignored) is hidden
+        until its name is in `extra` (loaded by tool_search earlier in the turn). Over
+        `limit` tools, non-native tools are hidden the same way. Sorted by name for a
+        byte-stable prefix."""
         extra = extra or set()
+        deferred = deferred or frozenset()
+        tools = [t for t in self.all() if t.name not in deferred or t.name in extra]
+        if len(self._tools) <= limit:
+            return tools
         return [t for t in tools if t.source == "native" or t.name in extra]
 
-    def search(self, query: str, k: int = 10) -> list[Tool]:
-        """Cheap substring/word match over name + description for `tool_search`."""
+    def unexposed(self, limit: int, extra: set[str] | None = None, deferred: set[str] | frozenset[str] | None = None) -> list[Tool]:
+        """The complement of `expose`: what only tool_search can bring in."""
+        shown = {t.name for t in self.expose(limit, extra, deferred)}
+        return [t for t in self.all() if t.name not in shown]
+
+    def search(self, query: str, k: int = 10, pool: list[Tool] | None = None) -> list[Tool]:
+        """Cheap substring/word match over name + description for `tool_search`
+        (over `pool` when given, else every tool)."""
         q = query.lower().split()
         scored = []
-        for t in self.all():
+        for t in (self.all() if pool is None else pool):
             hay = f"{t.name} {t.description}".lower()
             score = sum(hay.count(w) for w in q)
             if score:
                 scored.append((score, t))
         scored.sort(key=lambda s: (-s[0], s[1].name))
         return [t for _, t in scored[:k]]
+
+
+def deferred_set(app: "App") -> frozenset[str]:
+    """Names from `conversation.deferred_tools` that are registered tools (unknown names
+    are ignored)."""
+    wanted = app.settings.get("conversation.deferred_tools") or []
+    return frozenset(n for n in wanted if n in app.tools)

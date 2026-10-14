@@ -41,6 +41,7 @@ DEFAULT_TOOL_POLICIES: dict[str, str] = {
     "status_update": "allow",
     "conversation_create": "allow",
     "conversation_send": "allow",
+    "conversation_stop": "allow",
     "conversation_read": "allow",
     "conversation_list": "allow",
     "conversation_finish": "allow",

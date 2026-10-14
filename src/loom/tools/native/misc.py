@@ -11,7 +11,7 @@ from typing import Any
 
 from ... import prompts
 from ...artifacts import IMAGE_ID_RE
-from ..registry import Tool, ToolContext, ToolResult
+from ..registry import Tool, ToolContext, ToolResult, deferred_set
 
 
 async def tool_search_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
@@ -19,13 +19,19 @@ async def tool_search_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolRes
     if not query:
         return ToolResult.error("query is empty")
     k = max(1, int(args.get("k") or 10))
-    found = ctx.app.tools.search(query, k)
+    app = ctx.app
+    kind = ctx.conversation.get("kind") or "thread"
+    exposed = ctx.extras.setdefault("exposed", set())
+    limit = int(app.settings.get("conversation.tool_expose_max"))
+    pool = [t for t in app.tools.unexposed(limit, exposed, deferred_set(app)) if kind in t.kinds]
+    found = app.tools.search(query, k, pool)
     if not found:
+        already = [t.name for t in app.tools.search(query, k) if t not in pool]
+        note = f"; already in your tool list: {', '.join(already)}" if already else ""
         return ToolResult(
-            content=f"[no tools match {query!r}; registered tools: {', '.join(ctx.app.tools.names())}]",
+            content=f"[no unloaded tools match {query!r}{note}; tools you can load: {', '.join(t.name for t in pool) or 'none'}]",
             meta={"count": 0},
         )
-    exposed = ctx.extras.setdefault("exposed", set())
     exposed.update(tool.name for tool in found)
     definitions = [tool.to_json() for tool in found]
     body = json.dumps(definitions, indent=2, ensure_ascii=False)

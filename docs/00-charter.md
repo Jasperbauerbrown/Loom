@@ -1628,3 +1628,42 @@ sessions do not re-litigate.
   It now offers provider default (nothing sent), off, on, low/medium/high effort and a
   token budget, and warns when a budget is not below `max_tokens` (OpenRouter then has
   nothing left for the answer). An unknown string reads as medium, as the client does.
+
+- **2026-10-14** — **A reply cut off at the output limit runs none of its tool calls; identical
+  calls in one reply run once.** Desk event #4471 degenerated into one `conversation_create`
+  call repeated 41 times until `max_tokens`, and 40 complete calls made 40 threads. In the
+  runner (one codepath, no per-tool cases): a step with tool calls and `finish_reason`
+  `length` dispatches nothing and gives every call a failed result telling the model to
+  resend fewer, shorter calls; a call byte-identical (name + canonical arguments) to an earlier one
+  in the same reply gets a failed "duplicate of call X" result. Every call id still gets one result.
+- **2026-10-14** — **Notes match across soft line breaks.** `knowledge_write` replace missed
+  three times on a hard-wrapped note because `old` was copied as one unwrapped line (or the
+  reverse). In markdown a soft line break renders as a space, so for the vault only,
+  `textmatch.find_spans(..., prose=True)` adds a last tier, tried only when exact and the
+  line-ending/trailing-whitespace tiers find nothing: a whitespace run with at most one
+  newline equals any other such run on both sides; a blank line (paragraph break) still
+  matches only a blank line. Spans index the original text, `new` is inserted as given
+  (no reflow), uniqueness and the closest-text hint are unchanged. This does not reopen
+  §2.1 (2026-09-29): it is markdown's semantics, not forgiveness of a model's mistake, and
+  `fs_edit` and the notebook stay strict because in code where a line breaks is meaning.
+- **2026-10-14** — **Rarely used native tools are deferred behind `tool_search`.** The 33
+  natives cost ~12K tokens of schema every step and several are almost never called.
+  `conversation.deferred_tools` (list setting, UI textarea, one name per line; default
+  `schedule_*`, `secret_set`, `knowledge_links`, `fs_patch`, `presets_list`, `item_post`,
+  `http`) names tools hidden until `tool_search` loads them for the turn; unknown names are
+  ignored. Hiding is exposure only: a deferred tool called by name still dispatches, policy
+  unchanged, nothing blocks. The model learns what is deferred from `tool_search`'s own
+  description, to which the harness appends `prompts/context/deferred-tools.md` with the
+  current names (sorted, so byte-stable while the setting is). `tool_search` now searches
+  only unexposed tools and, when a query matches only tools already in the list, says so
+  (a desk search had returned tools it already had).
+- **2026-10-14** — **The desk can stop the threads it spawned: `conversation_stop`.**
+  Cancelling 39 accidental duplicate threads took ~25 minutes of `conversation_send`
+  "please call conversation_finish", and messages sat unread behind approval gates. The
+  tool (desk and thread; one id per call, policy `allow` like `conversation_send`) stops
+  descendants only, through the same `stop()` the cancel endpoint now calls: a running
+  turn is interrupted, a `waiting_approval` conversation's approvals are denied so it
+  ends instead of resuming, queued inbox rows are discarded, sub-threads are stopped
+  recursively. It ends `idle` (the existing cancel end state; `done`/`failed` stay
+  reserved for the thread's own finish) with a `stopped by … : reason` system event.
+  Worktrees are kept.

@@ -46,7 +46,7 @@ def _slow_tool(app, started: asyncio.Event, name: str = "slow") -> dict:
             raise
         return ToolResult(content="finished")
 
-    app.tools.register(Tool(name=name, description="sleeps", parameters={"type": "object", "properties": {}}, handler=handler))
+    app.tools.register(Tool(name=name, description="sleeps", parameters={"type": "object", "properties": {"n": {"type": "integer"}}}, handler=handler))
     permissions.set_policy(app, name, "allow")
     return seen
 
@@ -198,7 +198,7 @@ async def test_cancel_interrupts_a_running_tool_and_records_it(app, fake):
     desk = app.desk_id()
     started = asyncio.Event()
     seen = _slow_tool(app, started)
-    fake.script(Scripted(content="", tool_calls=[("slow", {}), ("slow", {})]))  # never answered: the turn ends at the cancel
+    fake.script(Scripted(content="", tool_calls=[("slow", {"n": 1}), ("slow", {"n": 2})]))  # never answered: the turn ends at the cancel
     conversation.post(app, desk, "go")
     task = app.tasks[f"turn:{desk}"]
     await asyncio.wait_for(started.wait(), 10)

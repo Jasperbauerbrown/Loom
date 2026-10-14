@@ -579,7 +579,13 @@ judge at all (§9.5, 2026-10-12).
   Outcomes: the partial assistant text is persisted with `meta.cancelled=true`
   (`finish_reason` `cancelled`); every cancelled or unstarted call gets one result,
   `ok=false`, `meta.cancelled=true`, with `prompts/context/tool-cancelled.md` as its text
-  (after any output); the UI badges it "cancelled". At turn end a cancelled turn writes
+  (after any output); the UI badges it "cancelled". Two more call classes get a failed result instead of running (2026-10-14): when a step
+  returns tool calls with `finish_reason` `length` (also Ollama's `done_reason` `length`) the reply
+  is truncated or degenerate, so *none* of its calls run (`prompts/context/tool-reply-truncated.md`),
+  and the turn goes on so the model can resend fewer; and within one reply a call identical
+  to an earlier one (same name, same canonical-JSON arguments) is not run again
+  (`prompts/context/tool-duplicate-call.md`, naming the first call's id). The `tool_call` event
+  is persisted first either way and its `meta.finish_reason` is recorded. At turn end a cancelled turn writes
   one `system` event — `cancelled by user; stopped: model call, shell, background
   process "x", sub-thread "y"`, `meta.stopped` = `{calls, processes, threads}` — and only
   then (persist before act) stops the background processes this turn started (ids ≥ the
@@ -587,6 +593,20 @@ judge at all (§9.5, 2026-10-12).
   sets the cancel signal of each sub-thread it spawned whose turn is still scheduled or
   running; each sub-thread does the same for its own. A cancelled thread ends `idle`
   without reporting to its parent.
+- Stopping (2026-10-14): `conversation/stop.py` `stop(app, id, actor, reason, cascade)`
+  is the one codepath under the cancel endpoint and the `conversation_stop` tool. A
+  running turn gets its signal. A `waiting_approval` conversation has no turn, so its
+  pending approvals are answered `deny` after the signal is set: the resume that answer
+  wakes repairs the dangling call with the denied result and ends `idle` without calling
+  the model. Undelivered inbox rows are discarded (a queued "please finish" must not
+  restart it; a later message reopens it as usual). With `cascade` every descendant
+  thread not already over is stopped the same way — this covers sub-threads spawned
+  before an approval pause, which the runner's turn-scoped sweep (ULID floor) misses. An
+  actor other than the user first writes a `system` event `stopped by <actor>: <reason>`
+  (`meta.actor`, `reason`, `was`). The end state is `idle`, as for a cancel; nothing is
+  reported to the parent and worktrees are kept. The UI cancel cascades for threads, not
+  for the desk, and its button still shows only while running (a paused conversation is
+  answered with the approval card).
 
 ### 6.5 Compaction ladder (decided, from Hydra/Manus)
 ```
@@ -812,7 +832,7 @@ more; a note that does not fit is named the same way. Never inject `core/` here
 |---|---|---|
 | `knowledge_search` | `query`, `type?`, `k=8` | fused: FTS5 rank + cosine, RRF; returns path, title, snippet |
 | `knowledge_read` | `path`, `offset?`, `limit?`, `pin?` | full note or line slice; one page of `tool_output_cap` chars with a paging footer, never spilled (`paged`) |
-| `knowledge_write` | `path`, `op: create|append|replace|rethink`, `content`, `old?` + `new?` (replace), `frontmatter?` | `path` must end in `.md` and lie under no protected path (either mode); otherwise its precheck refuses the call before anyone is asked and names `fs_write`, whose guard asks — the tool writes notes and cannot ask itself (2026-10-12). `replace` = `old`→`content` by the one matching rule (`textmatch.find_spans`, the same as fs_edit: exact first, else line endings and trailing whitespace ignored; a miss shows the closest text, an ambiguous `old` names its body lines — 2026-09-29), and `new` is accepted as the name for `content` there, since old→new is how the op reads and how a model sends it (2026-09-24); `content` is therefore checked in the handler, not by the schema's `required`; `rethink` = whole-body rewrite, requires `reason`, logged as a `knowledge.rethink` item on the now board; stamps `modified`; rejects relative dates; commits to git (`loom: <op> <path>`) |
+| `knowledge_write` | `path`, `op: create|append|replace|rethink`, `content`, `old?` + `new?` (replace), `frontmatter?` | `path` must end in `.md` and lie under no protected path (either mode); otherwise its precheck refuses the call before anyone is asked and names `fs_write`, whose guard asks — the tool writes notes and cannot ask itself (2026-10-12). `replace` = `old`→`content` by the one matching rule (`textmatch.find_spans`, the same as fs_edit: exact first, else line endings and trailing whitespace ignored, and for notes only (`prose=True`) last a whitespace run with at most one newline equals any other, since a soft line break is a space in markdown, 2026-10-14; a miss shows the closest text, an ambiguous `old` names its body lines — 2026-09-29), and `new` is accepted as the name for `content` there, since old→new is how the op reads and how a model sends it (2026-09-24); `content` is therefore checked in the handler, not by the schema's `required`; `rethink` = whole-body rewrite, requires `reason`, logged as a `knowledge.rethink` item on the now board; stamps `modified`; rejects relative dates; commits to git (`loom: <op> <path>`) |
 | `knowledge_links` | `path`, `direction: out|in` | neighbours |
 | `procedure_load` | `name` | SKILL.md body (L2); scripts stay on disk |
 | `transcript_search` | `query`, `conversation?`, `k` | FTS5 over `events_fts` — episodic last resort |
@@ -967,9 +987,16 @@ and `extras` (per-turn scratch; `tool_search` puts the names it exposed in
 Registry = native tools + MCP tools (prefixed `mcp_<server>_<tool>`) + connector tools
 (prefixed `<connector>_<tool>`). Each tool declares the conversation `kinds` that see it (default both);
 `conversation_finish` and `status_update` are thread-only and never reach the desk
-(2026-09-22). All are exposed every turn unless the count exceeds
-`tool_expose_max` (48), in which case native tools stay and the rest are reachable via
-`tool_search(query)` which returns matching definitions to load for the rest of the turn.
+(2026-09-22). Tools named in `conversation.deferred_tools`
+(default: `schedule_*`, `secret_set`, `knowledge_links`, `fs_patch`, `presets_list`,
+`item_post`, `http`; unknown names ignored; 2026-10-14) are not exposed until loaded;
+beyond that all are exposed every turn unless the count exceeds `tool_expose_max` (48), in
+which case native tools stay and the rest are reachable the same way.
+`tool_search(query)` searches only the tools not currently exposed (a query that matches
+only exposed tools says so) and returns their definitions, loaded for the rest of the turn;
+its description gets the deferred names appended by the harness
+(`prompts/context/deferred-tools.md`). Deferral is exposure only: a deferred tool called by
+name still runs under its normal policy.
 
 ### 9.2 Native tool inventory (decided) and default policies
 | Tool | Purpose | readOnly | Default policy |
@@ -987,12 +1014,12 @@ Registry = native tools + MCP tools (prefixed `mcp_<server>_<tool>`) + connector
 | `screenshot` | capture a monitor, the whole virtual screen, a region or a window (by title, Windows) as an image; `scale` downsizes; via PowerShell/System.Drawing on Windows, `screencapture` on macOS, `grim`/`gnome-screenshot`/`import`/`scrot` on Linux — no dependency. `window=` captures the window's own pixels (`PrintWindow` with `PW_RENDERFULLCONTENT`, falling back to the rect copy when it fails or comes back all black), so an occluded window is still readable; `region=` and `monitor=` capture whatever is visible at that spot. A failure is plain text on stdout with a non-zero exit, and a `#< CLIXML` stream is decoded, so the model reads "no window whose title contains …" rather than PowerShell's serialised error (2026-09-24) | yes | allow |
 | `knowledge_*`, `procedure_load`, `transcript_search`, `artifact_recall` | §8.4 | mixed | allow (core/ → ask) |
 | `status_update` | publish the thread's status as a `status` event in its own transcript; threads only (`kinds`) | no | allow |
-| `conversation_create / send / read / list / finish` | §6.7; `create` takes `notes` to pin and `isolation`/`isolation_root` (a git worktree of its own, §15.1); `read` renders each result as `TOOL RESULT (ok|ERROR; <policy> → <decision>: <reason>)`, the verdict present only when the harness did not simply allow the call (asked, classified, auto-approved) — what a self-review reads permission friction off (§4.3); `finish` is threads only (`kinds`) and delivers the summary, the walkthrough section and the ids of everything the thread produced | read/list yes | allow |
+| `conversation_create / send / stop / read / list / finish` | §6.7; `create` takes `notes` to pin and `isolation`/`isolation_root` (a git worktree of its own, §15.1); `read` renders each result as `TOOL RESULT (ok|ERROR; <policy> → <decision>: <reason>)`, the verdict present only when the harness did not simply allow the call (asked, classified, auto-approved) — what a self-review reads permission friction off (§4.3); `stop(conversation_id, reason)` stops a thread the caller spawned or any sub-thread below it (a non-descendant is an error result; one id per call) through `conversation/stop.py`, the codepath `POST /conversations/{id}/cancel` shares (2026-10-14, §6.4); `finish` is threads only (`kinds`) and delivers the summary, the walkthrough section and the ids of everything the thread produced | read/list yes | allow |
 | `presets_list` | list the enabled model presets — name, provider, model, `notes`, and the params worth weighing when choosing one (`effective_ctx`, `max_tokens`, `reasoning`, `multimodal`, plus everything else the preset sets) — and the role bindings from `model_roles`; reads the `presets`/`model_roles` tables directly, never HTTP: agents must not interact with Loom's own API (2026-10-13) | yes | allow |
 | `schedule_create / list / delete` | §11 | list yes | allow (caps enforced) |
 | `item_post` | put a notification/setup item on the now board | no | allow |
 | `secret_set` | store a secret the user pasted (value never echoed) | no | ask |
-| `tool_search` | load deferred tool definitions | yes | allow |
+| `tool_search` | load deferred (unexposed) tool definitions; searches only those | yes | allow |
 | `promote_plan` | §15: what promoting a ref would change | yes | allow (no row; read-only) |
 | `promote` | §15 | no | ask |
 
@@ -1021,7 +1048,12 @@ nothing matches exactly, the same lines are matched with line endings and traili
 whitespace ignored, the span still indexes the original text so nothing around it is
 rewritten, and `new` is written with the file's own endings. Everything the model can
 see — indentation, wording, where a line breaks — must still match, and one exact
-occurrence wins over loose ones. A miss says where the closest text is and shows the
+occurrence wins over loose ones.
+Notes get one more tier, last (`prose=True`, 2026-10-14): a whitespace run with at most one
+newline equals any other, because a soft line break renders as a space, so a hard-wrapped
+note and the same sentence copied unwrapped (or the reverse) match; a blank line still
+matches only a blank line, `new` is inserted as given (no reflow), and `fs_edit` and the
+notebook never pass `prose`: code has no such equivalence. A miss says where the closest text is and shows the
 file (-) against `old` (+) as a diff, and an ambiguous `old` names the lines it is
 on; a thread had retried one wrong `old` six times on "copy the text exactly", and
 sent CRLF against an LF file five times. Of 26 failed edits in one week, 2 were line

@@ -124,3 +124,126 @@ async def test_finish_accepts_today_in_the_walkthrough(app, fake):
         "SELECT content FROM events WHERE conversation_id=? AND kind='tool_result' ORDER BY id DESC LIMIT 1", (tid,)
     ).fetchone()["content"]
     assert "could not write the walkthrough" not in result
+
+
+# -- conversation_stop (2026-10-14) --------------------------------------------------------
+
+import asyncio
+import time
+
+from loom.conversation.tools import _stop
+from loom.tools import approvals
+from loom.tools.registry import ToolContext
+
+
+async def _until(pred, timeout: float = 20.0) -> None:  # type: ignore[no-untyped-def]
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if pred():
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError("condition not met in time")
+
+
+def _stop_as(app, caller: str, target: str, reason: str = "duplicate"):
+    ctx = ToolContext(app=app, conversation=app.conversation(caller), call_id="c")
+    return _stop(ctx, {"conversation_id": target, "reason": reason})
+
+
+def _thread(app, parent: str, goal: str) -> str:
+    return conversation.create_thread(app, goal=goal, parent_id=parent, created_by="user")["id"]
+
+
+async def _hold_in_model(app, fake, *cids):
+    fake.default = lambda req: Scripted(content="thinking", delay_s=30)
+    await _until(lambda: all(any(c.conversation_id == t for c in fake.calls) for t in cids))
+
+
+async def test_stop_a_running_thread(app, fake):
+    desk = app.desk_id()
+    tid = _thread(app, desk, "map the house")
+    await _hold_in_model(app, fake, tid)
+    result = await _stop_as(app, desk, tid, "accidental duplicate")
+    assert result.ok and tid in result.content
+    await asyncio.wait_for(app.tasks[f"turn:{tid}"], 10)
+    assert app.conversation(tid)["status"] == "idle"
+    stops = [e for e in events.list_events(app, tid, kinds=["system"], limit=100) if e["meta"].get("actor")]
+    assert len(stops) == 1 and "accidental duplicate" in stops[0]["content"]
+    # a stopped thread does not report back and wake the desk
+    assert not app.db.execute("SELECT 1 FROM inbox WHERE conversation_id=? AND source=?", (desk, f"conversation:{tid}")).fetchall()
+    assert tid not in app.cancel_flags
+
+
+async def test_stop_a_thread_waiting_on_approval(app, fake):
+    desk = app.desk_id()
+    fake.on("classify", lambda req: Scripted(content='{"decision":"ask","reason":"writes files"}'))
+    fake.default = lambda req: Scripted(content="", tool_calls=[("shell", {"command": "echo hi > out.txt"})])
+    tid = _thread(app, desk, "write a file")
+    await _until(lambda: app.conversation(tid)["status"] == "waiting_approval")
+    await _settle(app)
+    queued = conversation.post(app, desk, "unrelated")  # desk noise must not matter
+    del queued
+    # a "please finish" the thread would otherwise pick up on resume
+    conversation.post(app, tid, "please call conversation_finish", source=f"conversation:{desk}")
+    await _settle(app)
+    calls_before = len([c for c in fake.calls if c.conversation_id == tid and c.purpose == "turn"])
+    result = await _stop_as(app, desk, tid, "not needed")
+    assert result.ok
+    await _until(lambda: app.conversation(tid)["status"] == "idle")
+    await _settle(app)
+    assert approvals.pending(app, tid) == []
+    assert app.db.execute("SELECT status FROM approvals WHERE conversation_id=?", (tid,)).fetchone()["status"] == "denied"
+    # no further model call: the denied call was repaired, the turn ended without resuming
+    assert len([c for c in fake.calls if c.conversation_id == tid and c.purpose == "turn"]) == calls_before
+    tr = events.list_events(app, tid, kinds=["tool_result"], limit=10)
+    assert tr and not tr[-1]["meta"]["ok"]
+    assert inbox_pending(app, tid) == 0
+    assert app.conversation(tid)["status"] == "idle"
+
+
+def inbox_pending(app, cid: str) -> int:
+    from loom.conversation import inbox
+
+    return inbox.pending_count(app, cid)
+
+
+async def test_stop_refuses_a_conversation_that_is_not_a_descendant(app, fake):
+    desk = app.desk_id()
+    a = _thread(app, desk, "thread a")
+    b = _thread(app, desk, "thread b")
+    await _hold_in_model(app, fake, a, b)
+    # a sibling is not a descendant, and neither is an ancestor or the desk
+    for caller, target in ((a, b), (a, desk), (a, a), (desk, "nope")):
+        result = await _stop_as(app, caller, target)
+        assert not result.ok, (caller, target)
+    assert b not in app.cancel_flags and a not in app.cancel_flags
+    assert app.conversation(b)["status"] == "running"
+    for t in (a, b):
+        app.cancel_flags.add(t)
+    await _settle(app)
+
+
+async def test_stop_cascades_to_sub_threads(app, fake):
+    desk = app.desk_id()
+    parent = _thread(app, desk, "parent")
+    await _until(lambda: app.conversation(parent) is not None)
+    await _settle_quiet(app, fake)
+    child = _thread(app, parent, "child")
+    grandchild = _thread(app, child, "grandchild")
+    await _hold_in_model(app, fake, child, grandchild)
+    # the caller is the desk: grandchildren count as descendants, recursively
+    result = await _stop_as(app, desk, child, "dupe tree")
+    assert result.ok
+    await _settle(app)
+    for t in (child, grandchild):
+        assert app.conversation(t)["status"] == "idle"
+        assert [e for e in events.list_events(app, t, kinds=["system"], limit=100) if e["meta"].get("actor")]
+    # the parent was not stopped, and a thread can stop its own sub-threads
+    assert not [e for e in events.list_events(app, parent, kinds=["system"], limit=100) if e["meta"].get("actor")]
+    again = await _stop_as(app, parent, grandchild)
+    assert again.ok and "nothing to stop" in again.content
+
+
+async def _settle_quiet(app, fake):
+    fake.default = lambda req: Scripted(content="ok")
+    await _settle(app)

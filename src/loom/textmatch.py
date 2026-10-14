@@ -7,11 +7,20 @@ endings and trailing whitespace ignored — the two things a transcript cannot s
 the model cannot copy them. Everything the model can see — indentation, wording, where
 a line breaks — still has to match: forgiving those would absorb a weaker model's
 mistakes (charter §2.1). A miss is told where it missed (2026-09-29).
+
+A third tier, `prose=True`, exists for markdown notes only (the vault's `replace`,
+2026-10-14) and runs only when both tiers above found nothing: a whitespace run with at
+most one newline is one space, because a soft line break renders as a space, so a
+hard-wrapped note and a sentence copied unwrapped (or the reverse) are the same text.
+That is markdown's own semantics, not forgiveness of a model's mistake, so it does not
+contradict §2.1; a blank line (a paragraph break) still must match as a blank line.
+Code has no such equivalence, so `fs_edit` and the notebook never pass `prose`.
 """
 
 from __future__ import annotations
 
 import difflib
+import re
 
 
 def _lf(text: str) -> str:
@@ -32,7 +41,25 @@ def _line_starts(text: str) -> list[int]:
     return starts
 
 
-def find_spans(text: str, old: str) -> list[tuple[int, int]]:
+_HSPACE = r"[^\S\n]"  # whitespace that is not a newline (spaces, tabs, a stray CR)
+_SOFT = rf"(?:{_HSPACE}+|{_HSPACE}*\n{_HSPACE}*)"  # a space or one soft line break
+_PARA = rf"{_HSPACE}*\n(?:{_HSPACE}*\n)+{_HSPACE}*"  # a blank line or more
+
+
+def _prose_spans(text: str, old: str) -> list[tuple[int, int]]:
+    """Matches of `old` in `text` where any whitespace run with at most one newline
+    equals any other, and runs with a blank line equal only each other. Leading and
+    trailing whitespace of `old` is not part of the match."""
+    parts = re.split(r"(\s+)", old.strip())
+    if len(parts) == 1 and not parts[0]:
+        return []
+    pattern = "".join(
+        (_PARA if p.count("\n") >= 2 else _SOFT) if i % 2 else re.escape(p) for i, p in enumerate(parts)
+    )
+    return [m.span() for m in re.finditer(pattern, text)]
+
+
+def find_spans(text: str, old: str, prose: bool = False) -> list[tuple[int, int]]:
     """Every `(start, end)` of `text` that `old` matches, non-overlapping, in order.
 
     Exact matches first. When there are none, the same lines compared with line
@@ -50,7 +77,15 @@ def find_spans(text: str, old: str) -> list[tuple[int, int]]:
         at = text.find(old, at + len(old))
     if spans:
         return spans
+    spans = _loose_spans(text, old)
+    if not spans and prose:
+        spans = _prose_spans(text, old)
+    return spans
 
+
+def _loose_spans(text: str, old: str) -> list[tuple[int, int]]:
+    """The second tier: lines compared with line endings and trailing whitespace ignored."""
+    spans: list[tuple[int, int]] = []
     if _lf(text) != text:
         # a file with mixed endings is kept verbatim (`TextFile.newline == ""`); its
         # offsets differ from the LF view, so the loose match is not attempted
