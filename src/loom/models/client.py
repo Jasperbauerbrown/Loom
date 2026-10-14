@@ -606,9 +606,18 @@ def _bare_base64(url: str) -> str:
     return url
 
 
+# A model can emit a call with no name (mimo via OpenRouter did, 2026-10-13). The
+# dispatcher answers it as an unknown tool, but strict providers reject the replayed
+# `name: ""` with a 400 on every later turn, wedging the conversation.
+UNNAMED_TOOL = "unnamed"
+
+
 def _render_call(kind: str, call: dict[str, Any]) -> dict[str, Any]:
     rendered = dict(call)
     function = dict(rendered.get("function") or {})
+    if not function.get("name"):
+        function["name"] = UNNAMED_TOOL
+        rendered["function"] = function
     if "arguments" in function:
         arguments = function["arguments"]
         if kind == "ollama" and isinstance(arguments, str):

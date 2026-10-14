@@ -429,7 +429,10 @@ both channels to surfaces and persists them separately (§6.3). On the way *out*
 an assistant message's replayed `reasoning` (§6.3) is rendered as `message.thinking`
 for the `ollama` kind and `reasoning_content` for `openai_compatible`, and is omitted
 when empty; `tool_calls[].function.arguments` is sent as an object to Ollama and as a
-JSON string to OpenAI-compatible endpoints. One transformation, in the client.
+JSON string to OpenAI-compatible endpoints; a call persisted with an empty name (a
+malformed model output, answered as an unknown tool) goes out as `unnamed`, since strict
+providers reject `""` and the replay would 400 every later turn. One transformation, in
+the client.
 
 ### 5.5 Outcomes and retries
 Every call ends in one of: `ok`, `transient` (network, timeout, 5xx, 408/409/425/429,

@@ -386,6 +386,15 @@ def test_messages_for_maps_reasoning_and_tool_arguments():
     assert hosted[0]["tool_calls"][0]["function"]["arguments"] == '{"command":"ls"}'
 
 
+def test_messages_for_never_sends_an_empty_tool_name():
+    messages = [{"role": "assistant", "content": "", "tool_calls": [
+        {"id": "call_0", "type": "function", "function": {"name": "", "arguments": "{}"}}
+    ]}]
+    for kind in ("ollama", "openai_compatible"):
+        assert messages_for(kind, messages)[0]["tool_calls"][0]["function"]["name"] == "unnamed"
+    assert messages[0]["tool_calls"][0]["function"]["name"] == ""  # canonical list untouched
+
+
 def test_normalise_handles_the_zero_vector():
     assert normalise([0.0, 0.0]) == [0.0, 0.0]
 
