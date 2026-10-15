@@ -1676,3 +1676,9 @@ sessions do not re-litigate.
   so the check is one call. The roster itself stays out of automatic context (mutable
   state, and only needed at the moment of choosing); preset `notes` are what the choice
   reads, so they should state what each preset is for.
+- **2026-10-14** — **Threads write their plan to status before a multi-step effort.**
+  High-reasoning presets planned at length in reasoning that was gone a step later
+  (replay keeps only the tail, within the turn). `kind-thread.md` now says to put the
+  plan in `status_update` first, which is in the thread's context every turn. The replay
+  cap stays a global setting: replayed reasoning accumulates per step and is not counted
+  in occupancy, so raising it per preset would trade forgetting for context blow-up.
