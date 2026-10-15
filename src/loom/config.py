@@ -180,7 +180,7 @@ DEFAULT_SHELL_READONLY = [
     "cd",
 ]
 
-DEFAULT_DEFERRED_TOOLS = ["schedule_create", "schedule_delete", "schedule_list", "secret_set", "knowledge_links", "fs_patch", "presets_list", "item_post", "http"]
+DEFAULT_DEFERRED_TOOLS = ["schedule_create", "schedule_delete", "schedule_list", "secret_set", "knowledge_links", "fs_patch", "item_post", "http"]
 
 FIELDS: list[Field] = [
     # General

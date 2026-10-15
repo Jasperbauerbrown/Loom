@@ -86,3 +86,10 @@ def test_presets_list_prompt_describes_the_tool():
     text = prompts.load("tools/presets_list")
     assert "enabled model presets" in text
     assert "role bindings" in text
+
+def test_presets_list_is_exposed_by_default_and_spawners_are_told_when_to_use_it():
+    from loom.config import DEFAULT_DEFERRED_TOOLS
+    assert "presets_list" not in DEFAULT_DEFERRED_TOOLS
+    for name in ("kind-desk", "kind-thread", "tools/conversation_create"):
+        text = prompts.load(name)
+        assert "`presets_list`" in text and "worker" in text, name

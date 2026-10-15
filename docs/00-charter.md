@@ -1667,3 +1667,12 @@ sessions do not re-litigate.
   recursively. It ends `idle` (the existing cancel end state; `done`/`failed` stay
   reserved for the thread's own finish) with a `stopped by … : reason` system event.
   Worktrees are kept.
+- **2026-10-14** — **Preset choice gets a nudge; `presets_list` is no longer deferred.**
+  Every thread ran on the worker default: nothing said when another preset fits, and
+  reaching the roster took `tool_search` then `presets_list`. `kind-desk.md`,
+  `kind-thread.md` and `conversation_create`'s `preset` argument now say the worker preset
+  suits most threads and to check `presets_list` for a long-horizon or hard-reasoning goal
+  or bulk mechanical work. `presets_list` leaves the default `conversation.deferred_tools`
+  so the check is one call. The roster itself stays out of automatic context (mutable
+  state, and only needed at the moment of choosing); preset `notes` are what the choice
+  reads, so they should state what each preset is for.

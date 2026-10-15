@@ -988,7 +988,7 @@ Registry = native tools + MCP tools (prefixed `mcp_<server>_<tool>`) + connector
 (prefixed `<connector>_<tool>`). Each tool declares the conversation `kinds` that see it (default both);
 `conversation_finish` and `status_update` are thread-only and never reach the desk
 (2026-09-22). Tools named in `conversation.deferred_tools`
-(default: `schedule_*`, `secret_set`, `knowledge_links`, `fs_patch`, `presets_list`,
+(default: `schedule_*`, `secret_set`, `knowledge_links`, `fs_patch`,
 `item_post`, `http`; unknown names ignored; 2026-10-14) are not exposed until loaded;
 beyond that all are exposed every turn unless the count exceeds `tool_expose_max` (48), in
 which case native tools stay and the rest are reachable the same way.
