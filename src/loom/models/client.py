@@ -816,9 +816,26 @@ async def _try_ollama(app, base: str) -> list[str] | None:  # type: ignore[no-un
 
 async def test_preset(app, name: str) -> dict[str, Any]:  # type: ignore[no-untyped-def]
     """One short completion against a preset, for `POST /api/presets/{name}/test`.
-    Goes through the ordinary client so the fake client answers it in tests."""
+    Goes through the ordinary client so the fake client answers it in tests. The
+    embedding role's preset is tested with one embedding instead: an embedding model
+    has no chat endpoint."""
     from .. import prompts
 
+    if roles.role_preset(app, "embedding") == name:
+        started = time.monotonic()
+        try:
+            vectors = await app.models.embed([prompts.load("preset-test")], PRIORITY_INTERACTIVE)
+        except ModelError as exc:
+            return {"latency_ms": int((time.monotonic() - started) * 1000), "usage": {}, "content": "",
+                    "outcome": exc.outcome, "error": exc.message}
+        return {
+            "latency_ms": int((time.monotonic() - started) * 1000),
+            "usage": {},
+            "content": f"embedding with {len(vectors[0]) if vectors else 0} dimensions",
+            "outcome": "ok",
+            "error": None,
+            "model": roles.resolve(app, role="embedding").model,
+        }
     try:
         request = roles.build_request(
             app,

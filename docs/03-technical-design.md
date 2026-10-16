@@ -235,7 +235,8 @@ connectors(name TEXT PK, enabled INT, config TEXT /*json*/, status TEXT,
 
 -- knowledge index (cache, rebuildable from vault/)
 notes(path TEXT PK, type TEXT, title TEXT, aliases TEXT /*json*/, modified TEXT,
-      mtime REAL, size INT, hash TEXT, core_order INT, embedding BLOB /*float32*/)
+      mtime REAL, size INT, hash TEXT, core_order INT, embedding BLOB /*float32*/,
+      embed_model TEXT /*the model that made `embedding`*/)
 aliases(alias TEXT /*normalised*/, path TEXT)     -- index on alias
 links(src TEXT, dst TEXT)
 notes_fts  -- FTS5 over title + body
@@ -451,6 +452,14 @@ turn with a visible `system` event and status `failed`.
 `notes.embedding`. Cosine search is brute force: `math.sumprod` over `array('f')`
 vectors (Python 3.12), normalised at write time. Thousands of notes → tens of
 milliseconds. No vector database, no numpy.
+
+Each vector records its model in `notes.embed_model`. The index loads only vectors from
+the embedding role's current model and queues every other note for embedding, so
+changing the embedding preset, or that preset's model, re-embeds the vault in the
+background and never compares vectors from two models (decided 2026-10-15). The check
+runs on every `models.changed` event, before every query embedding and before
+curation's similarity pass. A preset's **Test** sends one embedding instead of a chat
+completion when that preset holds the embedding role.
 
 ## 6. The conversation primitive
 
@@ -795,7 +804,7 @@ Built from `vault/` into the `notes/aliases/links/notes_fts` tables + embeddings
 - Full rebuild: `loom reindex` and at startup when any `mtime/size` differs from
   the table or the table is empty.
 - Incremental: the watcher (§8.8) re-parses changed files; embeddings recomputed only
-  when `hash` changes, and drained by a background task so a vault write never waits on
+  when `hash` changes or the embedding model does (§5.6), and drained by a background task so a vault write never waits on
   the embedding model (the index is correct without vectors).
 - Parsing: frontmatter via PyYAML; wikilinks via regex `\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]`;
   link resolution order filename stem → title → alias, where a procedure's stem is its

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from array import array
 
 import pytest
@@ -134,6 +135,82 @@ async def test_embeddings_are_stored_and_reused_on_rebuild(app, fake):
     result = await app.index.a_rebuild()  # nothing changed → no new embedding calls
     assert len(fake.embed_calls) == calls
     assert result["embedded"] >= 1
+
+
+def _add_embed_preset(app, name: str, model: str) -> None:
+    app.db.execute(
+        "INSERT INTO presets(name, provider, model, params, enabled, created_at, updated_at) "
+        "VALUES (?, 'local-ollama', ?, '{}', 1, '', '')",
+        (name, model),
+    )
+
+
+async def _settle(app) -> None:
+    await app.index.embed_pending()
+    while app.index._draining:
+        await asyncio.sleep(0)
+
+
+async def test_vectors_record_their_model(app, fake):
+    app.vault.write("topics/a.md", "one", op="create")
+    await app.index.a_rebuild()
+    row = app.db.execute("SELECT embed_model FROM notes WHERE path='topics/a.md'").fetchone()
+    assert row["embed_model"] == "nomic-embed-text"
+    assert app.index.vectors_model == "nomic-embed-text"
+
+
+async def test_changing_the_embedding_model_reembeds_everything(app, fake):
+    small_vault(app)
+    await app.index.a_rebuild()
+    total = len(app.vault.list())
+    assert len(app.index.vectors) == total
+    _add_embed_preset(app, "other-embed", "qwen3-embedding")
+    app.db.execute("UPDATE model_roles SET preset='other-embed' WHERE role='embedding'")
+    calls = len(fake.embed_calls)
+    app.bus.emit("models.changed", {"kind": "role", "name": "embedding"})  # what the route emits
+    assert app.index.vectors_model == "qwen3-embedding"
+    await _settle(app)
+    assert len(fake.embed_calls) > calls
+    models = {r["embed_model"] for r in app.db.execute("SELECT embed_model FROM notes")}
+    assert models == {"qwen3-embedding"}
+    assert len(app.index.vectors) == total
+
+
+async def test_a_query_notices_a_model_change_without_an_event(app, fake):
+    small_vault(app)
+    await app.index.a_rebuild()
+    _add_embed_preset(app, "other-embed", "qwen3-embedding")
+    app.db.execute("UPDATE model_roles SET preset='other-embed' WHERE role='embedding'")
+    # no event: the stale vectors must not be compared with the new model's query
+    assert await app.index.embed_query("printer") is None
+    assert app.index.vectors == {} and app.index.vectors_model == "qwen3-embedding"
+    await _settle(app)
+    assert await app.index.embed_query("printer") is not None
+
+
+async def test_vectors_without_a_model_are_reembedded_once(app, fake):
+    app.vault.write("topics/a.md", "one", op="create")
+    await app.index.a_rebuild()
+    app.db.execute("UPDATE notes SET embed_model=NULL")  # rows written before 0009
+    assert app.index.load() == 0
+    await _settle(app)
+    assert app.db.execute("SELECT embed_model FROM notes WHERE path='topics/a.md'").fetchone()[0] == "nomic-embed-text"
+    calls = len(fake.embed_calls)
+    await app.index.a_rebuild()
+    assert len(fake.embed_calls) == calls
+
+
+async def test_a_drain_follows_a_model_change(app, fake):
+    """Vectors are tied to their model, so a drain that finishes after the role moved
+    on does not leak the old model's vectors into memory."""
+    app.vault.write("topics/a.md", "one", op="create")
+    app.index.rebuild()
+    model = app.index.vectors_model
+    _add_embed_preset(app, "other-embed", "qwen3-embedding")
+    app.db.execute("UPDATE model_roles SET preset='other-embed' WHERE role='embedding'")
+    await _settle(app)  # the drain notices the change before its first batch
+    assert model != app.index.vectors_model == "qwen3-embedding"
+    assert {r["embed_model"] for r in app.db.execute("SELECT embed_model FROM notes")} == {"qwen3-embedding"}
 
 
 async def test_index_works_with_embeddings_disabled(app):

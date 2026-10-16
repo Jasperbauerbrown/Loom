@@ -76,11 +76,15 @@ async def test_a_second_pass_with_no_new_events_calls_no_model(app, fake):
     events.append(app, cid, "user", "Nothing durable here.")
     fake.on("maintenance", responder(Scripted(content="nothing to record")))
     await app.maintenance.run("test")
-    before = len(fake.calls)
+
+    def consolidations() -> int:  # curation may call the model once vectors arrive
+        return sum("consolidating" in c.messages[0]["content"][:80] for c in fake.calls)
+
+    before = consolidations()
 
     report = await app.maintenance.run("test")
 
-    assert len(fake.calls) == before
+    assert consolidations() == before
     assert report["consolidated"] == []
 
 

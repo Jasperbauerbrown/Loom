@@ -443,6 +443,14 @@ async def test_test_preset_reports_outcome_through_the_client(app, fake):
     assert report["usage"]["prompt_tokens"] is not None
 
 
+async def test_test_preset_embeds_with_the_embedding_preset(app, fake):
+    from loom.models import client as model_client
+
+    report = await model_client.test_preset(app, "fake-embed")
+    assert report["outcome"] == "ok" and "dimensions" in report["content"]
+    assert fake.embed_calls and not report["error"]
+
+
 async def test_test_preset_on_an_unknown_preset_is_a_fatal_report(app):
     from loom.models import client as model_client
 

@@ -1682,3 +1682,15 @@ sessions do not re-litigate.
   plan in `status_update` first, which is in the thread's context every turn. The replay
   cap stays a global setting: replayed reasoning accumulates per step and is not counted
   in occupancy, so raising it per preset would trade forgetting for context blow-up.
+- **2026-10-15** — **Vectors carry their embedding model; a model change re-embeds.**
+  Switching the embedding role from local `nomic-embed-text` to an OpenRouter model kept
+  every stored vector (they were reused whenever a note's hash was unchanged, and
+  `reindex` kept them too). Vectors of a different size scored 0 and vectors of the same
+  size scored noise, so semantic retrieval and curation's similarity pass failed
+  silently. Migration 0009 adds `notes.embed_model`; the index loads only vectors from
+  the current model and re-embeds the rest, checking on `models.changed`, before each
+  query embedding, and before curation. The key is the model name alone: provider
+  params do not reach the embedding request, and a rename of a preset or provider does
+  not change the vectors. Vectors written before 0009 have no model and are re-embedded
+  once. The preset Test button embeds when the preset holds the embedding role (an
+  embedding model has no chat endpoint; it previously failed with a 400).

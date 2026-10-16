@@ -391,6 +391,7 @@ class Maintenance:
         index = self.app.index
         if index is not None:
             threshold = float(self.setting("knowledge.curation_similarity", 0.92))
+            index.reconcile()  # never compare vectors from two embedding models
             for path, vector in sorted(index.vectors.items()):
                 if path.startswith("core/"):
                     continue

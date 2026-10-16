@@ -10,6 +10,10 @@ Retrieval is two cheap mechanisms fused, never a gate (charter §2.4):
 - statistical: FTS5 for words, brute-force cosine for meaning (`math.sumprod` over
   `array('f')`, no numpy, no vector database — 03 §5.6).
 
+Each vector records the model that produced it (`notes.embed_model`). Only vectors from
+the embedding role's current model are loaded; the rest are re-embedded, so changing
+the embedding preset (or its model) never mixes incomparable vectors (2026-10-15).
+
 Async where a model call is unavoidable (`search`, `resolve`, `a_rebuild` embed), sync
 everywhere else so vault writes stay synchronous. `update()` refreshes rows immediately
 and queues embeddings for a background drain, so a write never waits on a model.
@@ -28,6 +32,7 @@ from pathlib import PurePosixPath
 from typing import Any, Iterable, Sequence
 
 from .. import db
+from ..models import roles
 from ..models.types import PRIORITY_MAINTENANCE, ModelError
 from . import notes
 from .vault import folder_type
@@ -69,11 +74,13 @@ class Index:
         self.app = app
         self.db = app.db
         self.vectors: dict[str, "array[float]"] = {}
+        self.vectors_model: str | None = None  # the model every loaded vector came from
         self._alias_re: re.Pattern[str] | None = None
         self._alias_targets: dict[str, list[str]] = {}
         self._pending_embed: set[str] = set()
         self._draining = False
         self._embed_warned = False
+        app.bus.listen(self._on_event)
 
     # -- helpers ----------------------------------------------------------------
     @property
@@ -97,12 +104,11 @@ class Index:
         hash is unchanged and queued for the rest."""
         started = time.perf_counter()
         previous = {
-            row["path"]: (row["hash"], row["embedding"])
-            for row in self.db.execute("SELECT path, hash, embedding FROM notes")
+            row["path"]: (row["hash"], row["embedding"], row["embed_model"])
+            for row in self.db.execute("SELECT path, hash, embedding, embed_model FROM notes")
         }
         paths = self.vault.list()
         invalid = 0
-        reused = 0
         with db.transaction(self.db):
             self.db.execute("DELETE FROM notes")
             self.db.execute("DELETE FROM aliases")
@@ -114,19 +120,15 @@ class Index:
                     continue
                 if row["type"] == "invalid":
                     invalid += 1
-                if row["embedding"] is not None:
-                    reused += 1
-                else:
-                    self._pending_embed.add(path)
             for path in paths:
                 self._resolve_links(path)
-        self._load_vectors()
+        self.load()
         self._alias_re = None
         counts = self._counts()
         counts.update(
             {
                 "invalid": invalid,
-                "embedded": reused,
+                "embedded": len(self.vectors),
                 "pending_embeddings": len(self._pending_embed),
                 "ms": int((time.perf_counter() - started) * 1000),
             }
@@ -180,8 +182,10 @@ class Index:
             return
         marks = ",".join("?" for _ in touched)
         previous = {
-            row["path"]: (row["hash"], row["embedding"])
-            for row in self.db.execute(f"SELECT path, hash, embedding FROM notes WHERE path IN ({marks})", touched)
+            row["path"]: (row["hash"], row["embedding"], row["embed_model"])
+            for row in self.db.execute(
+                f"SELECT path, hash, embedding, embed_model FROM notes WHERE path IN ({marks})", touched
+            )
         }
         changed = False
         for path in touched:
@@ -213,7 +217,7 @@ class Index:
         self.db.execute("UPDATE links SET dst=?, resolved=0 WHERE dst=? AND resolved=1", (PurePosixPath(path).stem, path))
 
     def _index_one(
-        self, path: str, *, resolve_links: bool, previous: dict[str, tuple[str, Any]] | None = None
+        self, path: str, *, resolve_links: bool, previous: dict[str, tuple[str, Any, Any]] | None = None
     ) -> dict[str, Any] | None:
         target = self.vault.resolve(path)
         try:
@@ -224,11 +228,11 @@ class Index:
             return None
         note = self.vault._note(path, raw)
         digest = _hash(raw)
-        keep = None
+        keep, keep_model = None, None
         if previous is not None:
             known = previous.get(path)
             if known is not None and known[0] == digest:
-                keep = known[1]
+                keep, keep_model = known[1], known[2]
         core_order = None
         if path.startswith("core/"):
             core_order = sorted(p for p in self.vault.list(prefix="core/")).index(path)
@@ -238,8 +242,8 @@ class Index:
         self.db.execute("DELETE FROM links WHERE src=?", (path,))
         self.db.execute("DELETE FROM notes_fts WHERE path=?", (path,))
         self.db.execute(
-            "INSERT INTO notes(path, type, title, aliases, modified, mtime, size, hash, core_order, embedding) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO notes(path, type, title, aliases, modified, mtime, size, hash, core_order, embedding, embed_model) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 path,
                 note.type,
@@ -251,6 +255,7 @@ class Index:
                 digest,
                 core_order,
                 keep,
+                keep_model,
             ),
         )
         for alias in self._alias_keys(note):
@@ -269,11 +274,12 @@ class Index:
                 self.db.execute("INSERT INTO links(src, dst, resolved) VALUES (?, ?, 0)", (path, key))
             else:
                 self.db.execute("INSERT INTO links(src, dst, resolved) VALUES (?, ?, 1)", (path, dst))
-        if keep is not None:
+        current = keep is not None and keep_model is not None and keep_model == self.vectors_model
+        if current:
             self.vectors[path] = array("f", bytes(keep))
         else:
             self.vectors.pop(path, None)
-        return {"path": path, "type": note.type, "embedding": keep}
+        return {"path": path, "type": note.type, "embedding": keep if current else None}
 
     def _alias_keys(self, note: Any) -> list[str]:
         keys = []
@@ -334,19 +340,41 @@ class Index:
         return None
 
     # -- embeddings (03 §5.6) ---------------------------------------------------
-    def _load_vectors(self) -> None:
-        self.vectors.clear()
-        for row in self.db.execute("SELECT path, embedding FROM notes WHERE embedding IS NOT NULL"):
-            vec = array("f")
-            vec.frombytes(bytes(row["embedding"]))
-            self.vectors[row["path"]] = vec
+    def embed_model(self) -> str | None:
+        """The embedding role's current model, or None when it does not resolve."""
+        try:
+            return roles.resolve(self.app, role="embedding").model
+        except ModelError:
+            return None
 
     def load(self) -> int:
-        """Load stored vectors into memory (startup when the index is not stale)."""
-        self._load_vectors()
-        for row in self.db.execute("SELECT path FROM notes WHERE embedding IS NULL"):
-            self._pending_embed.add(row["path"])
+        """Load the vectors made by the current embedding model into memory and queue
+        every other note (no vector, or one from another model) for embedding."""
+        model = self.embed_model()
+        self.vectors.clear()
+        self.vectors_model = model
+        for row in self.db.execute("SELECT path, embedding, embed_model FROM notes"):
+            if row["embedding"] is not None and model is not None and row["embed_model"] == model:
+                vec = array("f")
+                vec.frombytes(bytes(row["embedding"]))
+                self.vectors[row["path"]] = vec
+                self._pending_embed.discard(row["path"])
+            else:
+                self._pending_embed.add(row["path"])
         return len(self.vectors)
+
+    def reconcile(self) -> bool:
+        """Reload when the embedding model changed since the vectors were loaded, and
+        start re-embedding. Cheap when nothing changed; True when it reloaded."""
+        if self.embed_model() == self.vectors_model:
+            return False
+        self.load()
+        self._schedule_embeddings()
+        return True
+
+    def _on_event(self, event: dict[str, Any]) -> None:
+        if event.get("type") == "models.changed":
+            self.reconcile()
 
     def _embed_text(self, path: str) -> str | None:
         try:
@@ -362,6 +390,10 @@ class Index:
             return 0
         done = 0
         while self._pending_embed:
+            if self.embed_model() != self.vectors_model:
+                self.load()  # the model changed mid-drain: requeue what it made stale
+                continue
+            model = self.vectors_model
             batch = [self._pending_embed.pop() for _ in range(min(EMBED_BATCH, len(self._pending_embed)))]
             pairs = [(p, self._embed_text(p)) for p in batch]
             pairs = [(p, t) for p, t in pairs if t is not None]
@@ -383,8 +415,9 @@ class Index:
                 return done
             for (path, _), vector in zip(pairs, vectors):
                 vec = _normalise(vector)
-                self.vectors[path] = vec
-                self.db.execute("UPDATE notes SET embedding=? WHERE path=?", (vec.tobytes(), path))
+                self.db.execute("UPDATE notes SET embedding=?, embed_model=? WHERE path=?", (vec.tobytes(), model, path))
+                if model == self.vectors_model:
+                    self.vectors[path] = vec
                 done += 1
         self._embed_warned = False
         return done
@@ -408,7 +441,10 @@ class Index:
         self.app.spawn("vault-embed", drain())
 
     async def embed_query(self, text: str) -> "array[float]" | None:
-        if not self.embeddings_enabled() or not self.vectors:
+        if not self.embeddings_enabled():
+            return None
+        self.reconcile()
+        if not self.vectors:
             return None
         try:
             vectors = await self.app.models.embed([text], PRIORITY_MAINTENANCE)
