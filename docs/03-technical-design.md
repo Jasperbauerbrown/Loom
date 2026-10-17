@@ -568,8 +568,7 @@ judge at all (§9.5, 2026-10-12).
 ### 6.4 Budgets and brakes
 - `step_budget`: desk 25, threads 60 (settings). Threads see
   `[steps remaining: N]`; the last step has tools disabled. The desk sees no budget but
-  `[tool calls this turn: N]` (§7 slot [11]) — the count its five-call split is sized
-  in, not a brake.
+  `[tool calls this turn: N]` (§7 slot [11]) — informational usage, not a routing threshold or brake.
 - `forced_compactions_per_turn` 2; `model_error_retries` 1.
 - Tool execution timeout per tool (default 120s shell, 60s http, 300s MCP); a timed-out
   call returns an error result.
@@ -671,16 +670,16 @@ note, and a thread without one was a "task". Every thread is now that.
   (below). `depth = parent.depth + 1`;
   refused above `max_thread_depth` (default 3). Row written and `conversation.created`
   emitted **before** the first turn is scheduled. *When* to spawn is prose, not
-  mechanism (`system.md`, `kind-desk.md`; decided 2026-09-22, sized 2026-10-13): the
-  desk keeps work of about five tool calls or fewer, calls batched in one step each
-  counting; anything more — a survey, an investigation, a build, a summary across many
-  files — goes to a thread before the desk's first step, sized by the work's shape and
-  never by the request's wording ("quick", "fast"); a result that raises a new question,
-  or about five calls without the end in reach, is the sign that the desk is exploring.
-  "Keep the desk clear" or an explicit ask for a thread means spawn first. The rule is
-  prose; the one mechanism is information: the desk's trailing
-  `[tool calls this turn: N]` line (§7 slot [11], 2026-10-13), so the count is read,
-  not remembered. Nothing enforces it.
+  mechanism (`kind-desk.md`; revised 2026-10-16): keep the desk available. Inline work
+  supports active back-and-forth or finishes a brief, bounded action with less delay
+  than a handoff. For independent work, weigh handoff cost against the duration and
+  uncertainty of occupying the desk; favor threads for sustained work, investigation,
+  or waiting. Awaiting a result is not active participation. Reassess when work expands,
+  and honor explicit requests for a thread or a clear desk. After dispatching, end the
+  desk turn rather than waiting or polling. `system.md` owns shared handoff and
+  verification rules; the tool description owns arguments and lifecycle. No tool-call
+  cutoff applies. The trailing `[tool calls this turn: N]` remains informational;
+  the step budget remains a runaway brake.
 - **Pinned notes** (`conversations.pinned_notes`, json list; `conversation/pins.py` is
   the one reader and writer): the notes a conversation keeps in slot [5] every turn,
   each capped at `pinned_note_chars` (6,000) with a visible marker. Pinned by the thread

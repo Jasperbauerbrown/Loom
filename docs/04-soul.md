@@ -7,7 +7,7 @@ days of the build starting:
 
 | File | Role | Budget |
 |---|---|---|
-| `prompts/system.md` | **Soul** (identity, temperament, method) and **Operating rules** (knowledge, effort ladder, threads, tools, communication) | soul ≤ 40 lines (38 on 2026-09-22), rules ≤ 60 lines (63 on 2026-09-22: over budget; the effort-ladder change added two lines and retired two rules the tool descriptions already carry — trim again when the next rule lands) |
+| `prompts/system.md` | **Soul** (identity, temperament, method) and **Operating rules** (knowledge, handoffs, threads, tools, communication) | soul ≤ 40 lines (38 on 2026-09-22), rules ≤ 60 lines (63 on 2026-09-22: over budget; the effort-ladder change added two lines and retired two rules the tool descriptions already carry — trim again when the next rule lands) |
 | `prompts/kind-desk.md` | what the desk conversation is and how it treats threads | ≤ 12 lines |
 | `prompts/kind-thread.md` | what a thread is: goal line, pinned notes, status, endings | ≤ 12 lines |
 

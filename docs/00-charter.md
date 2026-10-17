@@ -1694,3 +1694,13 @@ sessions do not re-litigate.
   not change the vectors. Vectors written before 0009 have no model and are re-embedded
   once. The preset Test button embeds when the preset holds the embedding role (an
   embedding model has no chat endpoint; it previously failed with a 400).
+- **2026-10-16** — **Route work to preserve desk availability, using judgment rather
+  than a tool-call cutoff.** The five-call rule improved delegation but measured work
+  size instead of the cost of occupying the desk. `kind-desk.md` now weighs active
+  back-and-forth and handoff cost against independent work's duration and uncertainty;
+  waiting for a result does not count as participation. Expanding work moves to a
+  thread, and dispatch ends the desk turn without polling. The repeated cutoff and
+  file-production trigger are removed from `system.md` and `conversation_create`;
+  shared handoff mechanics remain in the system prompt. Supersedes the 2026-10-13
+  routing threshold; the existing call count is informational only. Behavioral
+  improvement still needs live-model evaluation.
