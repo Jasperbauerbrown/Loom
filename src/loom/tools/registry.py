@@ -47,7 +47,7 @@ class ToolContext:
     call_id: str
     event_id: int | None = None  # the tool_call event, once persisted
     request_text: str = ""  # the claimed user text / thread goal; classify renders it only when request_from_user
-    request_from_user: bool = False  # request_text is the user's own typed message on the desk (classify labels it so)
+    request_from_user: bool = False  # request_text is the user's own typed words: this turn's, or the request a thread was started from (classify renders only these)
     intent: str = ""  # the turn's stated intent for this step: the assistant text before the call, else this turn's last assistant text (the classifier reads it beside request_text)
     intent_carried: bool = False  # `intent` is this turn's earlier text, not this step's own preamble; the classifier labels it so (2026-09-28)
     priority: int = 0  # model-queue priority of the turn that issued the call (0 interactive)

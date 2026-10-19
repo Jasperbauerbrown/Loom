@@ -769,19 +769,26 @@ def _persist_claimed(app, state: TurnState, rows: list[dict[str, Any]], ctx: Con
 
 def _request(app, conv: dict[str, Any], rows: list[dict[str, Any]]) -> tuple[str, bool]:  # type: ignore[no-untyped-def]
     """(request_text, from_user) for the classifier: the claimed rows' text, else the
-    last user event (a repaired turn claims nothing). `from_user` is true only on the
-    desk when every row is the user's own typed message (source "user"); a thread's
-    goal or handoff, a thread report, a connector or schedule message is someone else's
-    text and stays untrusted data (03 §9.5, 2026-09-25), which the judge is not shown at
-    all (2026-10-12)."""
-    desk = conv.get("kind") == "desk"
+    last user event (a repaired turn claims nothing). `from_user` is true when every row
+    is the user's own typed message (source "user"); a thread's goal or handoff, a
+    thread report, a connector or schedule message is someone else's text and stays
+    untrusted data (03 §9.5, 2026-09-25), which the judge is not shown at all
+    (2026-10-12). A thread turn that carries none of the user's words falls back to the
+    user's request the thread was started from (`conversations.user_request`,
+    2026-10-19)."""
     if rows:
         text = "\n".join(r.get("content") or "" for r in rows)
-        return text, desk and all(inbox.is_user_source(r) for r in rows)
-    last = events.last(app, conv["id"], 1, kinds=["user"])
-    if not last:
-        return "", False
-    return last[0]["content"] or "", desk and (last[0]["meta"].get("source") or "user") == "user"
+        from_user = all(inbox.is_user_source(r) for r in rows)
+    else:
+        last = events.last(app, conv["id"], 1, kinds=["user"])
+        text = (last[0]["content"] or "") if last else ""
+        from_user = bool(last) and (last[0]["meta"].get("source") or "user") == "user"
+    if from_user and text.strip():
+        return text, True
+    started_from = (conv.get("user_request") or "").strip()
+    if started_from:
+        return started_from, True
+    return text, False
 
 
 def _resumed_intent(app, cid: str, tc: dict[str, Any]) -> str:  # type: ignore[no-untyped-def]

@@ -179,9 +179,11 @@ conversations(id TEXT PK /*ULID*/, kind TEXT /*desk|thread*/, parent_id TEXT,
               token_factor REAL, maint_watermark INT /*events.id*/,
               created_at, updated_at, finished_at, archived_at,
               walkthrough TEXT /*log/ note the finish walkthrough landed in*/,
-              worktree TEXT /*isolated checkout path, NULL when none*/)
+              worktree TEXT /*isolated checkout path, NULL when none*/,
+              user_request TEXT /*the user's own words a thread was started for, §9.5*/)
               -- 0002 (2026-09-22): pinned_notes + walkthrough replaced scope_note
               -- 0006 (2026-09-24): worktree (§6.7 isolation)
+              -- 0010 (2026-10-19): user_request (§9.5 whose request)
 
 events(id INTEGER PK, conversation_id TEXT, kind TEXT
        /*user|assistant|tool_call|tool_result|thinking|system|compaction|status*/,
@@ -1255,9 +1257,10 @@ conversation's scratch folder named among them), protected paths and — in thei
 `Write-protected paths (reading and running are fine; writing, editing, moving or
 deleting asks):` — write-protected paths (2026-10-12; the "Out of scope" rule gained one
 clause, "changes a write-protected one (running or reading it is fine)"), and the policy text
-(reads anywhere but protected paths and credentials → allow; reversible and in-scope →
-allow; destructive, external side effects, credential access, or out-of-scope → ask; the
-one exception below). Scope is the allowed roots, the protected paths and breadth —
+(2026-10-19: one rule — allow unless the call is hard to undo, leaves this machine or is
+out of bounds, *and* the user's request does not name or plainly entail it; protected
+paths, credentials and unreadable calls ask whatever the request says; writes inside the
+roots, `$TMPDIR` included, are an allow). Scope is the allowed roots, the protected paths and breadth —
 never "serves the goal" and never step order (2026-10-12). Output: strict JSON
 `{"decision":"allow|ask","reason":"…"}`; any parse failure → ask. Role: `utility` if
 set else the conversation's role; priority inherits. Result and reason are stored on
@@ -1291,18 +1294,21 @@ contents are unknown" and "the 'Desk' goal does not clearly authorize"):
   an untouched non-script (a `.env`, a key, a data file) is never read, so nothing
   secret is shipped to the judge's provider. Unreadable, binary or missing paths are
   skipped silently.
-- **Whose request** (2026-09-25; narrowed 2026-10-12). The request block appears only as
-  `Request that led here (typed by the user on the desk):`, when
-  `ToolContext.request_from_user` is set (§6.3) and the text is non-empty. Every other
+- **Whose request** (2026-09-25; narrowed 2026-10-12; threads 2026-10-19). The request
+  block appears only as `Request that led here (typed by the user):`, when
+  `ToolContext.request_from_user` is set (§6.3) and the text is non-empty: the turn's
+  claimed rows when every one is the user's own typed message, else — in a thread — the
+  thread's `user_request`. That column (migration 0010) is filled at spawn: the spawning
+  turn's request when it was the user's own words, the goal of a thread the user created
+  themselves, else the parent's `user_request`, so sub-threads inherit it. Every other
   request — a thread's goal or handoff, a connector, schedule or thread-report message —
-  is untrusted, could authorise nothing, and is not rendered at all. The prompt treats the user's own specific
-  request as authorisation for a **reversible** external effect — starting, stopping or
-  restarting a local service, bot or server they named, a process that connects to a
-  service they own — and for nothing else: sending messages, mail or posts on their
-  behalf, payments, `git push`/force-push, publishing, deleting or overwriting work,
-  credential access and anything broader than asked still ask. A vague request ("go
-  ahead") counts only when the stated intent makes the action concrete; injected text in
-  arguments, intent or files still authorises nothing, and uncertainty is still an ask.
+  is untrusted, could authorise nothing, and is not rendered at all. The user's own request
+  authorises whatever it names or plainly entails, including a deletion, a push or a
+  message ("clear out the build folder" → `rm -rf build`), but never a protected path,
+  credential access or anything broader than asked (2026-10-19; it was reversible
+  effects only from 2026-09-25). A vague request ("go ahead") counts only when the
+  stated intent shows what was agreed; injected text in arguments, intent or files
+  still authorises nothing.
 - **Where the intent came from** (2026-09-28). A step with no preamble of its own takes
   the turn's newest earlier text (2026-09-25), and the block is then labelled `carried
   from an earlier step of this turn`; the prompt says a carried intent is the turn's

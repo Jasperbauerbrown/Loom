@@ -301,3 +301,35 @@ async def test_identical_calls_in_one_reply_run_once(app, fake):
     results = [e for e in events.list_events(app, desk, limit=1000) if e["kind"] == "tool_result"]
     assert [e["meta"]["ok"] for e in results] == [True, False, True]
     assert "identical" in results[1]["content"]
+
+
+async def test_a_thread_carries_the_users_request_it_was_started_from(app, fake):
+    """A thread's turns claim the desk model's goal, which authorises nothing; the user's
+    typed message the desk spawned it for is kept on the thread, inherited by sub-threads,
+    and is what the judge reads as the request (2026-10-19)."""
+    desk = app.desk_id()
+    fake.script(
+        Scripted(content="", tool_calls=[("conversation_create", {"goal": "Rebuild the game and clear out build/"})]),
+        Scripted(content="spawned"),
+    )
+    conversation.post(app, desk, "please rebuild the game from scratch")
+    await _run(app, desk)
+    thread = app.db.execute("SELECT id, user_request FROM conversations WHERE kind='thread'").fetchone()
+    assert thread["user_request"] == "please rebuild the game from scratch"
+
+    seen: list[tuple[str, bool]] = []
+    _request_probe(app, seen)
+    fake.script(Scripted(content="", tool_calls=[("req_probe", {})]), Scripted(content="done"))
+    await _run(app, thread["id"])
+    assert seen == [("please rebuild the game from scratch", True)]
+
+    sub = conversation.create_thread(app, goal="clean build/", parent_id=thread["id"], created_by=f"conversation:{thread['id']}")
+    assert sub["user_request"] == "please rebuild the game from scratch"
+
+
+def test_a_thread_the_user_created_takes_its_goal_and_a_desk_spawn_without_one_has_none(app):
+    desk = app.desk_id()
+    mine = conversation.create_thread(app, goal="tidy the downloads folder", parent_id=desk, created_by="user")
+    assert mine["user_request"] == "tidy the downloads folder"
+    spawned = conversation.create_thread(app, goal="tidy it", parent_id=desk, created_by=f"conversation:{desk}")
+    assert spawned["user_request"] is None

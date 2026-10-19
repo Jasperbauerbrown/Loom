@@ -294,7 +294,9 @@ assembled per turn.
   models fought them).
 - **`classify`.** The model judges the specific call against a short written policy
   (prompt file), seeing the user's own desk request (when there is one), the stated intent,
-  the proposed call, the roots and protected paths, and the policy: reversible and in-scope → run; destructive, external, or out-of-scope → ask.
+  the proposed call, the roots and protected paths, and the policy: allow unless the call is
+  hard to undo, leaves the machine or is out of bounds *and* the user has not asked for it;
+  protected paths, credentials and unreadable calls always ask (2026-10-19).
   One mechanism, used only where blanket rules cannot decide (shell, raw http). One
   extra model call; sound with the bar model.
 - **Filesystem guard — the only argument rule.** *Allowed roots* (project spaces, vault,
@@ -1704,3 +1706,30 @@ sessions do not re-litigate.
   shared handoff mechanics remain in the system prompt. Supersedes the 2026-10-13
   routing threshold; the existing call count is informational only. Behavioral
   improvement still needs live-model evaluation.
+- **2026-10-19** — **The judge prompt is one rule, not three lists that disagree.**
+  The old prompt told the judge to ask on anything destructive, then let the user's
+  request cover only reversible effects, while also allowing stopping a named service
+  (which is killing a process). It allowed every write in the roots and also asked on
+  overwriting work. It said the intent never approves, then let the intent make a
+  "go ahead" concrete, and it still had "wider than one task needs" after 2026-10-12
+  had removed task scope. Because the flash-sized judge settles conflicting rules by
+  asking (2026-09-30), every one of those overlaps turned into an ask. The rule now:
+  allow, unless the call is hard to undo, leaves this machine or is out of bounds,
+  *and* the user's desk request does not name or plainly entail it. Three things ask
+  whatever the request says: protected paths, credentials and unreadable calls.
+  Behaviour changes:
+  - A user's request now covers deletions, pushes and messages it names.
+  - Overwriting inside the roots is an allow, the same as `fs_write`.
+  - Stopping a process the assistant started is an allow.
+  - Starting a server or bot is an allow without the user naming it.
+  - `$TMPDIR` is named as the scratch folder (2026-10-11 audit: about six asks called
+    it out of the roots).
+
+  Threads now get a request too. Each thread stores the user's own message it was
+  spawned for (`conversations.user_request`, migration 0010): the desk turn's typed
+  request, or the goal of a thread the user created. Sub-threads inherit it, and a
+  thread turn with none of the user's words shows it to the judge. The desk model's goal
+  and handoff are still never shown (2026-10-12). A message the user types into a thread
+  counts as their own words, the same as on the desk. A thread spawned from a schedule
+  or connector message has no request, so its hard-to-undo and external calls still ask.
+  901 → 618 words.

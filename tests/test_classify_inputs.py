@@ -257,7 +257,7 @@ def test_desk_user_request_is_labelled_as_the_users_own_words(app):
     ctx = _ctx(app, conv, request_text="please start the bot again")
     ctx.request_from_user = True
     rendered = classify.render_inputs(app, ctx, app.tools.get("shell"), {"command": "npm start"})
-    assert "Request that led here (typed by the user on the desk):" in rendered
+    assert "Request that led here (typed by the user):" in rendered
     assert "please start the bot again" in rendered
 
 

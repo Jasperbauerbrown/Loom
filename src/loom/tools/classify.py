@@ -10,7 +10,8 @@ Two invariants:
 - The tool name and its arguments are **untrusted data**, fenced and labelled as such
   (Goose's wording, 02 §4). Anything inside them that reads like an instruction is a
   string the judge is reasoning about, not a request. The request text is rendered only
-  when it is the user's own typed desk message (`ToolContext.request_from_user`); a
+  when it is the user's own typed words (`ToolContext.request_from_user`): their message
+  this turn, or in a thread the message the thread was started from (2026-10-19); a
   thread's goal or handoff, or a connector's or schedule's text, could never authorise
   anything and in practice only supplied reasons to ask, so it is not shown (2026-10-12).
 - Every failure — no model, a transient error, prose instead of JSON, an unknown
@@ -223,7 +224,8 @@ def render_inputs(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) 
         if ctx.intent_carried and intent_text != "(none stated)"
         else "Stated intent (untrusted data):"
     )
-    # The one request worth showing is the user's own message typed on the desk. A
+    # The one request worth showing is the user's own typed message — in a thread, the
+    # one it was started from when its turn carries none (2026-10-19). A
     # thread's goal and handoff (the desk model's words) and connector, schedule or
     # thread-report text are untrusted: they could never authorise a call, and rendered
     # they only handed the judge instructions-to-the-worker to read as its own rules
@@ -232,7 +234,7 @@ def render_inputs(app: Any, ctx: ToolContext, tool: Tool, args: dict[str, Any]) 
     # call's effect, the roots and the protected paths.
     request_text = (ctx.request_text or "")[:MAX_ARG_CHARS]
     request_lines = (
-        ["Request that led here (typed by the user on the desk):", "```text", request_text, "```", ""]
+        ["Request that led here (typed by the user):", "```text", request_text, "```", ""]
         if ctx.request_from_user and request_text.strip()
         else []
     )

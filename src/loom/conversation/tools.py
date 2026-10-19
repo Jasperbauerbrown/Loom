@@ -37,6 +37,7 @@ def create_thread(  # type: ignore[no-untyped-def]
     created_by: str = "user",
     isolation: str | None = None,
     isolation_root: str | None = None,
+    user_request: str | None = None,
 ) -> dict[str, Any]:
     """Persist the row, emit `conversation.created`, then post the goal (+ excerpt) to its
     inbox — the row exists before the first turn is scheduled. `notes` are vault paths
@@ -46,7 +47,12 @@ def create_thread(  # type: ignore[no-untyped-def]
     `isolation="worktree"` (03 §6.7, generalising §15.1) gives the thread its own git
     checkout of the repository holding `isolation_root` (default: its first root). The
     worktree *replaces* that root and leads the list: isolation means the thread cannot
-    reach the live checkout it branched from, and relative paths resolve inside its own."""
+    reach the live checkout it branched from, and relative paths resolve inside its own.
+
+    `user_request` is the user's own typed message the spawning turn answered; a thread
+    the user created themselves takes its goal, and a sub-thread with neither inherits
+    its parent's. The permission judge reads it as the user's request for the thread's
+    whole life (03 §9.5, 2026-10-19)."""
     goal = (goal or "").strip()
     if not goal:
         raise ThreadError("goal is required")
@@ -95,11 +101,12 @@ def create_thread(  # type: ignore[no-untyped-def]
     cid = ulid()
     now = db.now_iso()
     title = (title or "").strip() or default_title(goal)
+    user_request = (user_request or "").strip() or (goal if created_by == "user" else "") or parent.get("user_request") or None
     with db.transaction(app.db):
         app.db.execute(
-            "INSERT INTO conversations(id, kind, parent_id, title, goal, pinned_notes, roots, depth, role, preset, status, created_at, updated_at) "
-            "VALUES (?, 'thread', ?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?)",
-            (cid, parent_id, title, goal, db.dumps(pinned), db.dumps(roots), depth, role, preset, now, now),
+            "INSERT INTO conversations(id, kind, parent_id, title, goal, pinned_notes, roots, depth, role, preset, status, user_request, created_at, updated_at) "
+            "VALUES (?, 'thread', ?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?, ?)",
+            (cid, parent_id, title, goal, db.dumps(pinned), db.dumps(roots), depth, role, preset, user_request, now, now),
         )
     if source_root is not None:
         # Persist before act: the row (worktree NULL) exists before git makes a checkout,
@@ -263,6 +270,7 @@ async def _create(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
             created_by=f"conversation:{ctx.conversation_id}",
             isolation=args.get("isolation"),
             isolation_root=args.get("isolation_root"),
+            user_request=ctx.request_text if ctx.request_from_user else None,
         )
     except ThreadError as exc:
         return ToolResult.error(str(exc))
