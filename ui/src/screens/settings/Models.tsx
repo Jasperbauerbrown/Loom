@@ -1,6 +1,6 @@
 // Models tab: Providers / Presets / Roles sub-tabs (03 §13.2, brief §"Models").
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { api } from "../../lib/api";
 import { store, useStore } from "../../lib/store";
 import type { Preset, Provider, SettingsPayload } from "../../lib/types";
@@ -433,6 +433,7 @@ function PresetDialog({
   const [reasoningBudget, setReasoningBudget] = useState(initReasoning.budget);
   const [multimodal, setMultimodal] = useState(Boolean(p.multimodal));
   const [imageTokens, setImageTokens] = useState(String(p.image_tokens ?? ""));
+  const [thinkingCap, setThinkingCap] = useState(String(p.thinking_cap ?? ""));
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [probedModels, setProbedModels] = useState<string[] | null>(null);
@@ -488,6 +489,8 @@ function PresetDialog({
       reasoning,
       multimodal,
       image_tokens: num(imageTokens),
+      // 0 and empty both mean "no cap"; send neither so the row stays clean.
+      thinking_cap: num(thinkingCap) || undefined,
     };
     setSaving(true);
     const body = { name, provider, model, notes, enabled, params };
@@ -552,6 +555,11 @@ function PresetDialog({
         <FieldRow label="Enabled">
           <Toggle checked={enabled} onChange={setEnabled} />
         </FieldRow>
+      </div>
+      <PresetGroup
+        title="Sent to the provider"
+        description="Request parameters. The provider decides what it honours: some models ignore reasoning levels and budgets."
+      >
         <FieldRow label="Max tokens">
           <Input type="number" value={maxTokens} onChange={(e) => setMaxTokens(e.target.value)} />
         </FieldRow>
@@ -560,18 +568,6 @@ function PresetDialog({
         </FieldRow>
         <FieldRow label="Top P">
           <Input type="number" step="any" value={topP} onChange={(e) => setTopP(e.target.value)} />
-        </FieldRow>
-        <FieldRow label="Effective context">
-          <Input type="number" value={effectiveCtx} onChange={(e) => setEffectiveCtx(e.target.value)} />
-        </FieldRow>
-        <FieldRow label="num_ctx">
-          <Input type="number" value={numCtx} onChange={(e) => setNumCtx(e.target.value)} />
-        </FieldRow>
-        <FieldRow label="Keep alive">
-          <Input value={keepAlive} onChange={(e) => setKeepAlive(e.target.value)} placeholder="5m" />
-        </FieldRow>
-        <FieldRow label="Timeout (s)">
-          <Input type="number" value={timeoutS} onChange={(e) => setTimeoutS(e.target.value)} />
         </FieldRow>
         <FieldRow label="Repetition penalty" help="Ollama repeat_penalty / OpenRouter repetition_penalty. 1.0 is neutral; 1.05 to 1.2 discourages loops. Empty = provider default.">
           <Input type="number" step="any" value={repetitionPenalty} onChange={(e) => setRepetitionPenalty(e.target.value)} placeholder="1.0" />
@@ -611,6 +607,31 @@ function PresetDialog({
             </p>
           )}
         </FieldRow>
+        <FieldRow label="num_ctx" help="Ollama only: the context window it allocates. Empty = effective context.">
+          <Input type="number" value={numCtx} onChange={(e) => setNumCtx(e.target.value)} />
+        </FieldRow>
+        <FieldRow label="Keep alive" help="Ollama only: how long the model stays loaded after a call.">
+          <Input value={keepAlive} onChange={(e) => setKeepAlive(e.target.value)} placeholder="5m" />
+        </FieldRow>
+      </PresetGroup>
+      <PresetGroup title="Loom controls" description="Read by Loom only; never sent to the provider.">
+        <FieldRow label="Effective context" help="The window Loom budgets the prompt against (occupancy, compaction).">
+          <Input type="number" value={effectiveCtx} onChange={(e) => setEffectiveCtx(e.target.value)} />
+        </FieldRow>
+        <FieldRow
+          label="Thinking cap (Loom)"
+          help="Loom stops a call whose reasoning passes this many tokens and retries once with a nudge. Separate from Reasoning, which is sent to the provider and some models ignore. Empty = no cap."
+        >
+          <Input type="number" min={0} value={thinkingCap} onChange={(e) => setThinkingCap(e.target.value)} placeholder="no cap" />
+          {num(thinkingCap) !== undefined && num(maxTokens) !== undefined && num(thinkingCap)! > 0 && num(thinkingCap)! >= num(maxTokens)! && (
+            <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">
+              Cap is not below max tokens ({maxTokens}): the provider's limit ends the call first.
+            </p>
+          )}
+        </FieldRow>
+        <FieldRow label="Timeout (s)" help="Limit on one model response, start to finish.">
+          <Input type="number" value={timeoutS} onChange={(e) => setTimeoutS(e.target.value)} />
+        </FieldRow>
         <FieldRow
           label="Multimodal (vision input)"
           help="Send images to this model as image parts. Text-only models get a placeholder line instead."
@@ -625,12 +646,23 @@ function PresetDialog({
             <Input value={String(preset.params.token_factor_seed)} disabled readOnly />
           </FieldRow>
         )}
-      </div>
+      </PresetGroup>
       <FieldRow label="Notes">
         <Textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
       </FieldRow>
       {error && <p className="text-[12px] text-red-600 dark:text-red-400">{error}</p>}
     </Dialog>
+  );
+}
+
+/** One labelled block of the preset dialog: where a knob goes decides which block it sits in. */
+function PresetGroup({ title, description, children }: { title: string; description: string; children: ReactNode }) {
+  return (
+    <div className="mt-3 border-t border-neutral-200 pt-3 dark:border-neutral-800">
+      <h3 className="text-[12px] font-semibold uppercase tracking-wide text-neutral-500">{title}</h3>
+      <p className="mb-2 text-[11.5px] text-neutral-500">{description}</p>
+      <div className="grid grid-cols-2 gap-x-4">{children}</div>
+    </div>
   );
 }
 
