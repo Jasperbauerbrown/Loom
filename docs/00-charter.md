@@ -1749,3 +1749,9 @@ sessions do not re-litigate.
   `fs_list` calls (one per file extension) and all of them ran; `conversation.max_calls_per_step`
   (default 24, UI-visible) now refuses the whole reply. A rule treating
   `completion_tokens == max_tokens` as truncated was proposed and declined.
+- **2026-10-22** — The transcript UI hides events older than the last manual clear by
+  default (the `kind=clear` divider is the top row; backward paging stops there) with a
+  "Show full transcript" header switch (localStorage `loom_show_full_transcript`) for the
+  full history — reason: clearing context should visibly clear the view while the rows
+  stay in the database and searchable; the boundary keys on `kind=clear` only, never on
+  summary_cutoff/fold/evict.

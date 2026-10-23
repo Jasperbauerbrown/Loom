@@ -4,7 +4,7 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, imageUrl } from "../lib/api";
-import { parseToolCalls, store, useStore } from "../lib/store";
+import { lastClearId, parseToolCalls, sinceLastClear, store, useStore } from "../lib/store";
 import type { ApprovalDecision, ConvEvent, ImageRef, QueuedMessage, ToolCall } from "../lib/types";
 import { argsSummary, cls, compactionLabel, compactNumber, localTime, statusLabel, statusTitle, truncate } from "../lib/format";
 import { Badge, Button, Collapsible, JsonBlock, Spinner } from "./ui";
@@ -433,7 +433,11 @@ export function StatusLine({ status }: { status: string }) {
  *  one-line composer to start with a shorter placeholder, and no status badge by the
  *  composer — the window's own header shows the status. Behaviour is identical. */
 export function Conversation({ id, dense = false }: { id: string; dense?: boolean }) {
-  const events = useStore((s) => s.events[id] ?? EMPTY, Object.is);
+  const rawEvents = useStore((s) => s.events[id] ?? EMPTY, Object.is);
+  const showFull = useStore((s) => s.showFullTranscript, Object.is);
+  // Default view: only events at/after the last manual clear (the divider stays as the
+  // top row). "Show full transcript" (03 §13) reveals everything loaded.
+  const events = useMemo(() => (showFull ? rawEvents : sinceLastClear(rawEvents)), [rawEvents, showFull]);
   const streaming = useStore((s) => s.streaming[id], Object.is);
   const toolCalls = useStore((s) => s.toolCalls, Object.is);
   const conversation = useStore((s) => s.conversations[id], Object.is);
@@ -445,7 +449,11 @@ export function Conversation({ id, dense = false }: { id: string; dense?: boolea
         .join(","),
     Object.is,
   );
-  const historyComplete = useStore((s) => s.historyComplete[id] ?? false, Object.is);
+  const storeComplete = useStore((s) => s.historyComplete[id] ?? false, Object.is);
+  // Paging stops at the clear boundary: older pages are not fetched while the default
+  // (since-last-clear) view is active.
+  const atClearBoundary = !showFull && lastClearId(rawEvents) > 0;
+  const historyComplete = storeComplete || atClearBoundary;
   const queued = useStore((s) => s.queued[id] ?? EMPTY_QUEUED, Object.is);
   const connection = useStore((s) => s.connection, Object.is);
   // The draft lives in the store (per conversation, persisted per tab), so leaving for
@@ -497,6 +505,13 @@ export function Conversation({ id, dense = false }: { id: string; dense?: boolea
     void store.loadEvents(id, { limit: PAGE });
     void store.loadConversation(id);
   }, [id]);
+
+  // Switching "Show full transcript" on must reveal the whole history without a reload:
+  // paging may have stopped at a clear boundary, so older pages are fetched now.
+  useEffect(() => {
+    if (!id || !showFull) return;
+    if (!store.getState().historyComplete[id]) void store.loadAllEvents(id);
+  }, [id, showFull]);
 
   // Queued rows: on open and after every (re)connect, since a dropped socket may have
   // missed `inbox.posted` or the delivery that removed one.

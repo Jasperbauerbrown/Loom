@@ -73,6 +73,8 @@ export interface State {
   events: Record<string, ConvEvent[]>;
   /** true when the oldest event of a conversation has been reached */
   historyComplete: Record<string, boolean>;
+  /** false (default): only events since the last manual clear; true: the full transcript */
+  showFullTranscript: boolean;
   streaming: Record<string, StreamBuffer>;
   toolCalls: Record<string, ToolCall>;
   approvals: Record<string, Approval>;
@@ -128,6 +130,7 @@ export const initialState: State = {
   conversations: {},
   events: {},
   historyComplete: {},
+  showFullTranscript: false,
   streaming: {},
   toolCalls: {},
   approvals: {},
@@ -323,6 +326,55 @@ export function saveDrafts(drafts: Record<string, string>, storage: KeyValueStor
   } catch {
     /* quota or blocked storage: the draft still lives in memory for this page */
   }
+}
+
+// --- transcript view: since-last-clear vs full -----------------------------
+
+export const SHOW_FULL_KEY = "loom_show_full_transcript";
+
+function localStore(): KeyValueStorage | null {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage;
+  } catch {
+    return null; // access itself can throw (blocked storage)
+  }
+}
+
+/** The "Show full transcript" switch, persisted across page loads (localStorage). */
+export function loadShowFullTranscript(storage: KeyValueStorage | null = localStore()): boolean {
+  try {
+    return storage?.getItem(SHOW_FULL_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function saveShowFullTranscript(on: boolean, storage: KeyValueStorage | null = localStore()): void {
+  try {
+    storage?.setItem(SHOW_FULL_KEY, on ? "1" : "0");
+  } catch {
+    /* blocked storage: the switch still applies for this page */
+  }
+}
+
+/** Id of the newest manual "clear context" compaction event, or 0 when there is none.
+ *  Keys on `meta.kind === "clear"` ONLY: `summary_cutoff`, fold and evict compactions
+ *  are not boundaries — their events stay visible. */
+export function lastClearId(events: ConvEvent[]): number {
+  let id = 0;
+  for (const e of events) {
+    const meta = (e.meta ?? {}) as Record<string, unknown>;
+    if (e.kind === "compaction" && meta.kind === "clear" && e.id > id) id = e.id;
+  }
+  return id;
+}
+
+/** Events at or after the last clear — the clear divider itself stays as the top
+ *  visible row. With no clear, the transcript is returned unchanged. */
+export function sinceLastClear(events: ConvEvent[]): ConvEvent[] {
+  const boundary = lastClearId(events);
+  if (!boundary) return events;
+  return events.filter((e) => e.id >= boundary);
 }
 
 function countUnseen(items: Record<string, Item>): number {
@@ -650,7 +702,7 @@ export function reduce(state: State, event: BusEvent): State {
 type Listener = () => void;
 
 export class Store {
-  state: State = { ...initialState, drafts: loadDrafts() };
+  state: State = { ...initialState, drafts: loadDrafts(), showFullTranscript: loadShowFullTranscript() };
   private listeners = new Set<Listener>();
 
   subscribe = (fn: Listener) => {
@@ -750,6 +802,13 @@ export class Store {
    * default page is the *oldest*), else the page before that event id. */
   async loadEvents(id: string, opts: { before?: number; limit?: number } = {}) {
     const limit = opts.limit ?? 100;
+    // Backward paging stops at the last manual clear: never fetch a page older than the
+    // boundary while the default (since-last-clear) view is active. The page that first
+    // discovers the boundary may still cross it; nothing older is fetched after that.
+    if (opts.before !== undefined && !this.state.showFullTranscript) {
+      const boundary = lastClearId(this.state.events[id] ?? []);
+      if (boundary > 0 && opts.before <= boundary) return;
+    }
     const rows = await this.guard(() =>
       api.events(id, opts.before === undefined ? { limit, tail: true } : { before: opts.before, limit }),
     );
@@ -763,6 +822,28 @@ export class Store {
         historyComplete: { ...s.historyComplete, [id]: rows.length < limit },
       };
     });
+  }
+
+  /** Persist and apply the "Show full transcript" switch (03 §6.6 / §13). */
+  setShowFullTranscript(on: boolean) {
+    saveShowFullTranscript(on);
+    this.set((s) => (s.showFullTranscript === on ? s : { ...s, showFullTranscript: on }));
+  }
+
+  /** Page backward until the oldest event is loaded. Used when "Show full transcript"
+   *  is switched on: paging may have stopped at a clear boundary, so older pages were
+   *  never fetched. No-ops when the full history is already loaded. */
+  async loadAllEvents(id: string) {
+    if (this.state.historyComplete[id]) return;
+    for (let i = 0; i < 200; i++) {
+      const list = this.state.events[id] ?? [];
+      if (!list.length) return;
+      const oldest = list[0].id;
+      await this.loadEvents(id, { before: oldest, limit: 100 });
+      if (this.state.historyComplete[id]) return;
+      const next = this.state.events[id] ?? [];
+      if (next.length === list.length) return; // no progress: at the start or blocked
+    }
   }
 
   async loadApprovals() {

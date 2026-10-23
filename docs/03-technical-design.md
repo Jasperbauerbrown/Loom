@@ -663,7 +663,13 @@ Transcript rows are never mutated; eviction and folding are applied at read time
 **Manual clear** (decided 2026-09-21). "Clear the desk" is the same cut: `POST
 /conversations/{id}/clear` writes a `compaction` event of kind `clear`, empties the
 summary and moves `summary_cutoff` to the last event. Nothing is deleted: the transcript
-stays visible below a divider and searchable with `transcript_search`. Refused (409)
+stays in the database, searchable with `transcript_search`, and (since 2026-10-22) the
+UI shows it only from the last `kind=clear` divider onward by default — the divider is
+the top visible row, events older than it are hidden, backward paging stops at the
+boundary, and a **Show full transcript** switch in the conversation header (persisted
+in localStorage, `loom_show_full_transcript`) reveals the full history without a
+reload. The boundary keys on `kind=clear` only: `summary_cutoff`, fold and evict
+compactions are not boundaries and their events stay visible. Refused (409)
 while a turn is running or waiting for approval. Available in the UI header and as
 `loom clear [--thread ID]`. Anti-thrash and headroom math are
 exactly Hydra's; they are proven on Ollama. Since 2026-10-12 a clear also empties the
@@ -1717,7 +1723,7 @@ is the last line, not a licence: the shapes crossing the bus are one shape (§12
   also raises a toast, which fades on its own timer (or stays if configured to) and
   disappears the moment its item is seen or dismissed anywhere. Inbox rows posted
   by a background process carry a *from process* caption. Header: occupancy meter (used/limit, colour by proximity to compaction),
-  queue indicator, model role in use, all-conversation token totals (in/out, from `meta.usage`), and a distinct desk-only in/out total since the latest manual Clear context marker (all-time until the first manual clear).
+  queue indicator, model role in use, all-conversation token totals (in/out, from `meta.usage`), a distinct desk-only in/out total since the latest manual Clear context marker (all-time until the first manual clear), and a **Show full transcript** switch (§6.6: default view starts at the last clear divider; the switch shows the whole history, persisted per browser in localStorage).
 - **Threads**. List (status, goal, last update, depth tree). Thread view = same
   conversation component + a **Status/plan panel** rendering the status as an editable
   form (`GET`/`PUT /conversations/{id}/status`), the **pinned notes** (links; unpin; add

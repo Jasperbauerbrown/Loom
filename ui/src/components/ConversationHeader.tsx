@@ -6,7 +6,7 @@ import { api } from "../lib/api";
 import { store, useStore } from "../lib/store";
 import { cls, compactNumber } from "../lib/format";
 import { notePath } from "../lib/router";
-import { Badge, Button, Confirm } from "./ui";
+import { Badge, Button, Confirm, Toggle } from "./ui";
 
 function OccupancyMeter({ id }: { id: string }) {
   const occupancy = useStore((s) => s.occupancy[id], Object.is);
@@ -100,6 +100,7 @@ export function ConversationHeader({ id, children }: { id: string; children?: Re
   const roles = useStore((s) => s.roles, Object.is);
   const queue = useStore((s) => s.queue, Object.is);
   const [confirmClear, setConfirmClear] = useState(false);
+  const showFull = useStore((s) => s.showFullTranscript, Object.is);
   const busy = conversation?.status === "running" || conversation?.status === "waiting_approval";
 
   async function clearContext() {
@@ -140,6 +141,13 @@ export function ConversationHeader({ id, children }: { id: string; children?: Re
       </div>
       <div className="flex-1" />
       {children}
+      <label
+        className="flex items-center gap-1.5 text-[12px] text-neutral-600 dark:text-neutral-400"
+        title="Toggle between the transcript since the last Clear context and the full history."
+      >
+        <Toggle checked={showFull} onChange={(v) => store.setShowFullTranscript(v)} label="Show full transcript" />
+        <span>Show full transcript</span>
+      </label>
       <Button
         size="sm"
         onClick={() => setConfirmClear(true)}
