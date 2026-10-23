@@ -333,3 +333,81 @@ def test_a_thread_the_user_created_takes_its_goal_and_a_desk_spawn_without_one_h
     assert mine["user_request"] == "tidy the downloads folder"
     spawned = conversation.create_thread(app, goal="tidy it", parent_id=desk, created_by=f"conversation:{desk}")
     assert spawned["user_request"] is None
+
+
+# -- runaways and the call cap (2026-10-22) ---------------------------------------------
+
+def _thinking_cap(app, tokens: int) -> None:
+    app.db.execute("UPDATE presets SET params=json_set(params, '$.thinking_cap', ?) WHERE name='fake'", (tokens,))
+
+
+def _kinds(app, cid, kind):
+    return [e for e in events.list_events(app, cid, limit=1000) if e["kind"] == kind]
+
+
+async def test_reasoning_past_the_thinking_cap_is_stopped_and_retried_with_a_nudge(app, fake):
+    desk = app.desk_id()
+    _thinking_cap(app, 10)  # ~40 chars at token_factor 1
+    fake.script(
+        Scripted(reasoning="plan the plan again " * 50, content="never reached"),
+        Scripted(reasoning="short", content="acted"),
+    )
+    conversation.post(app, desk, "go")
+    await _run(app, desk)
+
+    turn_calls = [c for c in fake.calls if c.purpose == "turn"]
+    assert len(turn_calls) == 2
+    assert "thinking limit" not in str(turn_calls[0].messages[-1]["content"])
+    assert "thinking limit" in str(turn_calls[1].messages[-1]["content"])
+    thinking = _kinds(app, desk, "thinking")
+    assert thinking[0]["meta"].get("capped") is True and len(thinking[0]["content"]) < 200
+    assert any("thinking cap (10 tokens)" in e["content"] for e in _kinds(app, desk, "system"))
+    assert _kinds(app, desk, "assistant")[-1]["content"] == "acted"
+    assert _kinds(app, desk, "compaction") == []
+    # the nudge was one call's worth: it is not part of the transcript
+    assert all("thinking limit" not in e["content"] for e in _kinds(app, desk, "user"))
+
+
+async def test_repeated_runaways_fail_the_step_with_a_system_event(app, fake):
+    desk = app.desk_id()
+    _thinking_cap(app, 10)
+    fake.script(*[Scripted(reasoning="again and again " * 50) for _ in range(2)])
+    conversation.post(app, desk, "go")
+    await _run(app, desk)
+
+    assert len([c for c in fake.calls if c.purpose == "turn"]) == 2  # model_error_retries = 1
+    assert any("thinking cap 2 times" in e["content"] for e in _kinds(app, desk, "system"))
+    assert _kinds(app, desk, "assistant") == []
+
+
+async def test_a_runaway_outcome_is_retried_never_compacted(app, fake):
+    desk = app.desk_id()
+    fake.script(
+        Scripted(outcome="runaway", reasoning="looping", error="reasoning used the whole output budget with no reply"),
+        Scripted(content="fine"),
+    )
+    conversation.post(app, desk, "go")
+    await _run(app, desk)
+
+    assert _kinds(app, desk, "compaction") == []
+    assert [c.purpose for c in fake.calls].count("summarize") == 0
+    assert _kinds(app, desk, "assistant")[-1]["content"] == "fine"
+
+
+async def test_a_reply_over_the_call_cap_runs_none_of_its_calls(app, fake):
+    desk = app.desk_id()
+    ran: list[str] = []
+    _probe(app, "probe", "allow", ran)
+    app.settings.set(app.db, "conversation.max_calls_per_step", 2)
+    fake.script(
+        Scripted(content="", tool_calls=[("probe", {"n": i}) for i in range(3)]),
+        Scripted(content="", tool_calls=[("probe", {"n": 9})]),
+        Scripted(content="done"),
+    )
+    conversation.post(app, desk, "go")
+    await _run(app, desk)
+
+    assert len(ran) == 1  # only the follow-up single call
+    results = _kinds(app, desk, "tool_result")
+    assert [e["meta"]["ok"] for e in results] == [False, False, False, True]
+    assert "3 tool calls" in results[0]["content"] and "limit is 2" in results[0]["content"]

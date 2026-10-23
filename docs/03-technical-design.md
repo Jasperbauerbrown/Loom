@@ -166,6 +166,7 @@ presets(name TEXT PK, provider TEXT, model TEXT,
         params TEXT /*json: max_tokens, temperature, top_p, effective_ctx, num_ctx,
         keep_alive, timeout_s, reasoning (unset|off|on|low|medium|high|budget:N), repetition_penalty,
         presence_penalty, frequency_penalty, token_factor_seed,
+        thinking_cap (Loom-side reasoning-token cap, never sent; unset/0 = none),
         multimodal (bool), image_tokens (per-image prompt-token estimate)*/,
         notes TEXT, enabled INT, created_at TEXT, updated_at TEXT)
 model_roles(role TEXT PK /*desk|worker|maintenance|utility|embedding*/, preset TEXT)
@@ -401,7 +402,13 @@ Three layers, all UI-managed:
   `num_ctx`, `keep_alive`, `timeout_s`, reasoning mode, `multimodal` — the model
   accepts image input — and `image_tokens`, the per-image prompt-token estimate used
   for occupancy and compaction, default 1000) plus the machine-written
-  `token_factor_seed`. Presets are reusable: many roles and threads may point at one.
+  `token_factor_seed`. One param is Loom's own and never reaches a provider:
+  `thinking_cap`, the reasoning-token count at which the runner stops a turn's stream
+  (estimated as reasoning chars / 4 × the conversation's token factor). It exists
+  because a provider may ignore the `reasoning` budget it is sent — MiMo on OpenRouter
+  honours only on/off (2026-10-22) — so `reasoning` stays exactly what the provider
+  gets and `thinking_cap` is the bound Loom can enforce. It applies to conversation
+  turns only. Presets are reusable: many roles and threads may point at one.
   Params merge provider defaults < preset < per-call overrides, key-wise.
 - **Role**: `desk`, `worker`, `maintenance`, `utility`, `embedding` → one preset each.
   Defaults after first run: desk/worker/maintenance → the preset created from the
@@ -440,13 +447,22 @@ the client.
 ### 5.5 Outcomes and retries
 Every call ends in one of: `ok`, `transient` (network, timeout, 5xx, 408/409/425/429,
 malformed stream, empty completion), `overflow` (any 4xx whose body mentions a context
-or length limit, or `finish=length` with zero output), `fatal` (401/403, 404 model or
+or length limit, or `finish=length` with zero output and no reasoning), `runaway`
+(`finish=length` with reasoning but no content or calls — the reasoning spent the output
+budget — or a turn stream stopped by the preset's `thinking_cap`), `fatal` (401/403, 404 model or
 endpoint missing, unknown provider or preset, any other 4xx — a request we shaped wrong
 will not succeed on a retry). The overflow test runs first, because a 400 about context
 is an overflow whatever else it is. Per-provider timeouts: `timeout_s` total (default
 600) and `stream_idle_s` between chunks (default 120); both end the call as `transient`. Policy: transient → retry once with
 the same request; overflow → force-compact (§6.5) and rebuild, at most
-`forced_compactions_per_turn` (2); fatal → try `fallback_role` if set, else end the
+`forced_compactions_per_turn` (2); runaway → never compact (the prompt is not the
+problem: read as overflow it folded away a thread's plan, which the retry then re-derived,
+2026-10-21); the partial reasoning is persisted as a `thinking` event with
+`meta.capped=true`, a `system` event records the runaway, and the step is retried with
+a one-call nudge (`prompts/context/thinking-runaway.md`, appended as a harness block after
+the step line and never stored in the turn). Nudged retries count against
+`model_error_retries`; when they are spent the step fails with "reasoning ran past the
+thinking cap N times"; fatal → try `fallback_role` if set, else end the
 turn with a visible `system` event and status `failed`.
 
 ### 5.6 Embeddings
@@ -595,7 +611,10 @@ judge at all (§9.5, 2026-10-12).
   and the turn goes on so the model can resend fewer; and within one reply a call identical
   to an earlier one (same name, same canonical-JSON arguments) is not run again
   (`prompts/context/tool-duplicate-call.md`, naming the first call's id). The `tool_call` event
-  is persisted first either way and its `meta.finish_reason` is recorded. At turn end a cancelled turn writes
+  is persisted first either way and its `meta.finish_reason` is recorded. A reply with more
+  calls than `conversation.max_calls_per_step` (default 24) runs none of them either: each
+  gets `prompts/context/tool-too-many-calls.md` (the count and the cap; batch into fewer,
+  broader calls) and the turn goes on (2026-10-22, after a 473-call `fs_list` burst). At turn end a cancelled turn writes
   one `system` event — `cancelled by user; stopped: model call, shell, background
   process "x", sub-thread "y"`, `meta.stopped` = `{calls, processes, threads}` — and only
   then (persist before act) stops the background processes this turn started (ids ≥ the
@@ -1805,7 +1824,7 @@ is the last line, not a licence: the shapes crossing the bus are one shape (§12
   secret picker, default params, concurrency, enabled; probe button lists live
   models). *Presets* (CRUD: name, provider, model picked from the probe list or typed,
   every generation/window parameter with provider defaults shown as placeholders,
-  reasoning (provider default / off / on / low·medium·high effort / token budget, warned when the budget is not below max tokens), repetition/presence/frequency penalties, a *multimodal* toggle with
+  reasoning (provider default / off / on / low·medium·high effort / token budget, warned when the budget is not below max tokens), the Loom-side *thinking cap* (shown apart from the provider-sent parameters), repetition/presence/frequency penalties, a *multimodal* toggle with
   the per-image token estimate, notes;
   "test" runs one short completion; shows calibrated
   `token_factor_seed` read-only; usage count of roles/threads pointing at it; delete
@@ -1817,7 +1836,7 @@ is the last line, not a licence: the shapes crossing the bus are one shape (§12
   using, and a thread's create dialog and detail panel let the user pick one.
 - **Conversation**: step budgets (desk/thread), `compact_threshold`,
   `forced_compactions_per_turn`, `model_error_retries`, `reasoning_replay` +
-  `reasoning_replay_max_chars`, `tool_output_cap`, `pinned_note_chars`, artifact
+  `reasoning_replay_max_chars`, `max_calls_per_step`, `tool_output_cap`, `pinned_note_chars`, artifact
   retention, scratch grace after archive and live scratch idle days (2026-10-05),
   `thread_archive_days`, `max_thread_depth`.
 - **Knowledge**: `preload_budget_tokens`, `preload_max_entities`,
@@ -2055,6 +2074,8 @@ Nothing in these files references mutable state (model names, paths, rosters).
 |---|---|
 | Model transient | retry once; then visible system event, status idle (desk) / failed (thread → parent notified) |
 | Context overflow | evict → fold → rebuild, ≤2 per turn; else visible error |
+| Runaway reasoning (thinking cap, or length with reasoning only) | never compacted; system event, retry with a nudge within `model_error_retries`; else visible error |
+| Too many calls in one reply | none run; one error result each; model continues |
 | Tool exception / timeout | error tool result; model continues |
 | Malformed tool args | error tool result; never executed |
 | Crash mid-turn | on restart: unpaired tool_call → synthetic "interrupted" result; undelivered inbox redelivered |

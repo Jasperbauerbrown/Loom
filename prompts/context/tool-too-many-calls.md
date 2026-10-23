@@ -1,0 +1,1 @@
+your reply made {count} tool calls; the limit is {cap} per step, so none of them were run. Make fewer, broader calls instead: one shell command, glob or search that covers many targets beats many narrow calls.

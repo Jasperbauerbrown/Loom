@@ -31,6 +31,7 @@ PRESET_PARAM_KEYS = (
     "keep_alive",
     "timeout_s",
     "reasoning",
+    "thinking_cap",  # Loom-side: enforced by the runner on the stream, never sent
     "token_factor_seed",
     "multimodal",
     "image_tokens",

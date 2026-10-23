@@ -1,0 +1,1 @@
+Your last attempt at this step reasoned past the thinking limit without replying or calling a tool, so it was stopped and discarded. Act now with what you already know: keep your reasoning brief and reply or make the next call.

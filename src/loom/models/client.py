@@ -6,7 +6,11 @@ failure — those are *expected inputs* (charter §2.1) and come back as a termi
 
     ok         content and/or tool calls arrived
     transient  network, timeout, 5xx, 429, malformed stream, empty completion
-    overflow   context too long (4xx body says so, or finish=length with zero output)
+    overflow   context too long (4xx body says so, or finish=length with zero output
+               and no reasoning)
+    runaway    finish=length with reasoning but no content or calls: the reasoning ate
+               the output budget (the runner also reports it when a stream passes the
+               preset's Loom-side `thinking_cap`)
     fatal      auth, unknown provider/preset, model missing, other 4xx
 
 Provider kinds differ only in URL shape, auth and extras:
@@ -153,7 +157,13 @@ def _finalise(result: Result) -> Result:
     if result.outcome != "ok":
         return result
     empty = not result.content.strip() and not result.tool_calls
-    if empty and result.finish_reason == "length":
+    if empty and result.finish_reason == "length" and result.reasoning.strip():
+        # Reasoning that spent the whole output budget is a runaway, not a long prompt:
+        # read as overflow it compacted a 29k-token context and the retry re-derived the
+        # lost plan from scratch, twice in one thread (2026-10-21).
+        result.outcome = "runaway"
+        result.error = "reasoning used the whole output budget with no reply"
+    elif empty and result.finish_reason == "length":
         result.outcome = "overflow"
         result.error = "generation hit the length limit with no output"
     elif empty:

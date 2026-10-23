@@ -6,8 +6,9 @@ or more `Delta`s and then exactly one terminal `Result`. `client.chat(...)` coll
 same into one `Result` (its `content`/`reasoning` filled from the deltas).
 
 Outcomes (03 §5.5): `ok`, `transient` (network, 5xx, malformed stream, empty
-completion), `overflow` (context too long), `fatal` (auth, model missing, unknown
-provider). Retry policy lives in the runner, not here: the client reports, the runner
+completion), `overflow` (context too long), `runaway` (reasoning used the whole output
+budget or passed the preset's `thinking_cap` without acting), `fatal` (auth, model
+missing, unknown provider). Retry policy lives in the runner, not here: the client reports, the runner
 decides.
 """
 
@@ -21,7 +22,7 @@ PRIORITY_INTERACTIVE: Priority = 0
 PRIORITY_BACKGROUND: Priority = 1
 PRIORITY_MAINTENANCE: Priority = 2
 
-Outcome = Literal["ok", "transient", "overflow", "fatal"]
+Outcome = Literal["ok", "transient", "overflow", "runaway", "fatal"]
 Channel = Literal["content", "reasoning"]
 
 # Fixed per-image prompt-token estimate (03 §6.5): vision encoders spend roughly this

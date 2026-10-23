@@ -287,6 +287,38 @@ async def test_finish_length_with_no_output_is_overflow(app):
     assert result.outcome == "overflow" and result.finish_reason == "length"
 
 
+async def test_finish_length_with_only_reasoning_is_runaway_not_overflow(app):
+    """Reasoning that ate the output budget is not a long prompt: read as overflow it
+    compacted a small context and the retry re-planned from scratch (2026-10-21)."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=ndjson(
+            {"message": {"thinking": "let me think about this again "}},
+            {"done": True, "done_reason": "length"},
+        ))
+
+    client = make_client(app, handler)
+    _, result = await drain(client, request_for())
+    assert result.outcome == "runaway" and result.finish_reason == "length"
+
+
+async def test_openai_reasoning_only_length_is_runaway_and_thinking_cap_is_never_sent(app):
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, content=sse(
+            {"choices": [{"delta": {"reasoning": "hmm "}}]},
+            {"choices": [{"delta": {}, "finish_reason": "length"}]},
+            "[DONE]",
+        ))
+
+    client = make_client(app, handler, kind="openai_compatible")
+    _, result = await drain(client, request_for(provider="hosted", reasoning="low", thinking_cap=4096))
+    assert result.outcome == "runaway"
+    assert "thinking_cap" not in json.dumps(seen["body"])
+    assert seen["body"]["reasoning"] == {"effort": "low"}
+
+
 async def test_empty_completion_is_transient(app):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=ndjson({"done": True, "done_reason": "stop"}))

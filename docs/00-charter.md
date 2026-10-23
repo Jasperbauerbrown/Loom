@@ -1733,3 +1733,19 @@ sessions do not re-litigate.
   counts as their own words, the same as on the desk. A thread spawned from a schedule
   or connector message has no request, so its hard-to-undo and external calls still ask.
   901 → 618 words.
+- **2026-10-22** — **Loom-side thinking cap; runaway is not overflow; per-step call cap.**
+  Provider-sent reasoning budgets are not reliable: a probe of MiMo V2.6 Flash on
+  OpenRouter spent 1871 reasoning tokens with `reasoning` omitted, 1915 at `effort: low`,
+  2591 at `high`, 1621 at `max_tokens: 512`, and 0 at `effort: none` — only on/off is
+  honoured. On 2026-10-21 a `Worker` thread (`reasoning: low`) thought 37k–70k chars per
+  step. Presets therefore get a second, Loom-enforced number, `thinking_cap` (tokens,
+  never sent): `reasoning` stays exactly what the provider receives, and the runner stops
+  a turn's stream once its reasoning passes the cap, then retries the step with a nudge
+  (`prompts/context/thinking-runaway.md`) — the user's call over "retry with thinking
+  off", so Loom does not behave differently by thinking mode. The same night,
+  reasoning-only `finish=length` replies were read as context overflow and force-compacted
+  a ~29k-token context twice; the retry re-derived the folded plan each time. That case is
+  now the `runaway` outcome and never compacts. Separately a desk reply carried 473
+  `fs_list` calls (one per file extension) and all of them ran; `conversation.max_calls_per_step`
+  (default 24, UI-visible) now refuses the whole reply. A rule treating
+  `completion_tokens == max_tokens` as truncated was proposed and declined.

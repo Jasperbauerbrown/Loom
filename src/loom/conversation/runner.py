@@ -31,7 +31,7 @@ from ..models.types import PRIORITY_BACKGROUND, PRIORITY_INTERACTIVE, ChatReques
 from ..tools import approvals, dispatch
 from ..tools.registry import ToolContext, ToolResult
 from . import compaction, events, inbox, status
-from .context import Context, assemble, image_urls, resolve_knowledge, strip_private, tool_image_followup
+from .context import CONTEXT_CLOSE, CONTEXT_OPEN, Context, assemble, image_urls, resolve_knowledge, strip_private, tool_image_followup
 from .compaction import CompactionError
 
 log = logging.getLogger(__name__)
@@ -291,8 +291,13 @@ async def _call_model(app, state: TurnState, ctx: Context, rebuild, tools_enable
     preset = conv.get("preset")
     tried_fallback = False
     suspends = 0
+    runaways = 0
     while True:
         messages = strip_private(ctx.messages(app, steps_line))
+        if runaways:
+            # One-call nudge after a runaway: appended here, never to ctx.turn, so the
+            # retry sees it once and the transcript keeps only the system event.
+            messages.append({"role": "user", "content": f"{CONTEXT_OPEN}\n{prompts.load('context/thinking-runaway')}\n{CONTEXT_CLOSE}"})
         try:
             request = roles.build_request(
                 app, role=role, preset=preset, messages=messages, tools=ctx.tool_schemas(app, tools_enabled),
@@ -319,6 +324,21 @@ async def _call_model(app, state: TurnState, ctx: Context, rebuild, tools_enable
             log.info("model call on %s spanned a %s min suspend (%s); retrying", state.cid, minutes, result.error)
             _system(app, state.cid, f"system resumed after {minutes} min; retrying")
             continue
+        if result.outcome == "runaway":
+            # Reasoning that never reached a reply: retried with a nudge, never compacted
+            # (read as overflow it folded away the plan the retry then re-derived,
+            # 2026-10-21). The partial reasoning is kept for the transcript, not replayed.
+            if result.reasoning:
+                ev = events.append(app, state.cid, "thinking", result.reasoning, {"step": state.steps + 1, "capped": True})
+                app.bus.emit("event.appended", events.get(app, ev), state.cid)
+            runaways += 1
+            if attempts < retries:
+                attempts += 1
+                _system(app, state.cid, f"{result.error}; retrying with a nudge to act")
+                continue
+            state.failed = f"reasoning ran past the thinking cap {runaways} time{'s' if runaways != 1 else ''}: {result.error}"
+            _system(app, state.cid, state.failed)
+            return None
         if result.outcome == "transient" and attempts < retries:
             attempts += 1
             log.info("transient model error on %s, retrying (%s)", state.cid, result.error)
@@ -357,13 +377,26 @@ async def _stream(app, state: TurnState, request: ChatRequest) -> Result:  # typ
     reasoning: list[str] = []
     final: Result | None = None
     stream = app.models.stream(request, state.priority)
+    # The preset's Loom-side thinking cap (tokens, estimated as chars/4 × token_factor
+    # like compaction.estimate). Providers may ignore the `reasoning` budget they are
+    # sent — MiMo on OpenRouter honours only on/off (2026-10-22) — so this is enforced
+    # here, on the stream, and never sent.
+    cap = int(request.params.get("thinking_cap") or 0)
+    factor = float(state.conv.get("token_factor") or 1.0)
+    capped = False
 
     async def consume() -> None:
-        nonlocal final
+        nonlocal final, capped
+        chars = 0
         async for ev in stream:
             if isinstance(ev, Delta):
                 (content if ev.channel == "content" else reasoning).append(ev.text)
                 app.bus.emit("message.delta", {"channel": ev.channel, "text": ev.text}, cid)
+                if ev.channel == "reasoning" and cap > 0:
+                    chars += len(ev.text)
+                    if chars / 4 * factor > cap:
+                        capped = True
+                        return  # the finally below closes the HTTP stream
             else:
                 final = ev
 
@@ -382,6 +415,11 @@ async def _stream(app, state: TurnState, request: ChatRequest) -> Result:  # typ
                 pass
     if state.cancelled:
         return Result(outcome="ok", content="".join(content), reasoning="".join(reasoning), finish_reason="cancelled")
+    if capped:
+        return Result(
+            outcome="runaway", content="".join(content), reasoning="".join(reasoning), finish_reason="thinking_cap",
+            error=f"reasoning passed the thinking cap ({cap} tokens)",
+        )
     if final is None:
         return Result(outcome="transient", error="stream ended without a result")
     if not final.content:
@@ -433,16 +471,23 @@ async def _dispatch_calls(app, state: TurnState, ctx: Context, event_id: int, ca
     """Run the calls of one step. Returns True if the turn must pause for approval.
     A reply cut off at the output-token limit (`finish_reason == "length"`) is truncated
     or degenerate: none of its calls run. Within a reply, a call byte-identical to an
-    earlier one does not run again. Both get a failed result per call id (2026-10-14)."""
+    earlier one does not run again. Both get a failed result per call id (2026-10-14).
+    A reply with more calls than `conversation.max_calls_per_step` runs none of them
+    either (a 473-call fs_list burst, 2026-10-21)."""
     cid = state.cid
     for c in calls:
         app.bus.emit("tool.call", {"call_id": c.id, "name": c.name, "args": c.arguments, "event_id": event_id}, cid)
     intent, carried = _intent(app, state, text)
     ctxs = {c.id: _tool_ctx(app, state, c.id, event_id, intent=intent, intent_carried=carried) for c in calls}
     outcomes: dict[str, Any] = {}
+    max_calls = int(app.settings.get("conversation.max_calls_per_step"))
     if finish_reason == "length":
         for c in calls:
             outcomes[c.id] = ToolResult.error(prompts.load("context/tool-reply-truncated"))
+    elif len(calls) > max_calls:
+        refusal = prompts.load("context/tool-too-many-calls").replace("{count}", str(len(calls))).replace("{cap}", str(max_calls))
+        for c in calls:
+            outcomes[c.id] = ToolResult.error(refusal)
     else:
         first: dict[str, str] = {}
         for c in calls:
