@@ -14,7 +14,7 @@ from typing import Any
 from .. import db, items, prompts
 from ..ids import ulid
 from ..tools.registry import Tool, ToolContext, ToolResult
-from . import compaction, events, pins, status, stop
+from . import compaction, events, pins, status, stopping
 
 log = logging.getLogger(__name__)
 
@@ -307,9 +307,9 @@ async def _stop(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     other = app.conversation(target)
     if other is None:
         return ToolResult.error(f"conversation {target} not found")
-    if not stop.is_descendant(app, ctx.conversation_id, target):
+    if not stopping.is_descendant(app, ctx.conversation_id, target):
         return ToolResult.error(f"conversation {target} is not one of your threads; you can only stop threads you spawned, or their sub-threads")
-    stopped = stop.stop(app, target, actor=f"conversation {ctx.conversation_id}", reason=args.get("reason") or "")
+    stopped = stopping.stop(app, target, actor=f"conversation {ctx.conversation_id}", reason=args.get("reason") or "")
     if not stopped:
         return ToolResult(f"nothing to stop: {target} is {other['status']} with no work in flight")
     names = ", ".join(f"{s['id']} (\"{s['title']}\", was {s['was']})" for s in stopped)

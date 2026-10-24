@@ -9,7 +9,7 @@ Each item names its source. "Audit" means `reference/tool-parity-audit.md` §3.
 ## Known gaps from the 2026-10-05 batch (Jasper, 2026-10-05)
 - **Cancel across an approval pause.** "This turn" is one `run_turn` call: background
   processes started before an approval pause are not stopped by a cancel after the
-  resume (sub-threads are, via `conversation/stop.py`'s cascade, 2026-10-14). Model calls outside the step loop (turn-start knowledge resolution,
+  resume (sub-threads are, via `conversation/stopping.py`'s cascade, 2026-10-14). Model calls outside the step loop (turn-start knowledge resolution,
   the thread status safety net) are not raced; they are short.
 
 ## Completed 2026-10-12
