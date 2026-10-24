@@ -145,3 +145,58 @@ async def test_mutations_emit_their_ws_event(client):
     finally:
         app.bus._listeners.clear()
         await client.patch("/api/connectors/example_echo", json={"enabled": True})
+
+
+# ---------------------------------------------------------------------------------
+# cancel endpoint (regression, 2026-10-23)
+# ---------------------------------------------------------------------------------
+async def test_cancel_endpoint_stops_a_running_turn(client, fake):
+    """`POST /conversations/{id}/cancel` must go through the real stop codepath.
+
+    Regression: the router imported `stop` from the package namespace, where the
+    no-op shutdown hook `async def stop(app)` (`conversation/__init__.py`) shadows
+    the stop submodule (then `conversation/stop.py`), so `stop.stop(...)` raised
+    `AttributeError` and every Cancel click answered 500 (since 374bac3, 2026-10-14).
+    """
+    import asyncio
+    import time
+
+    from loom import conversation
+    from loom.conversation import events
+    from loom.models.fake import Scripted
+
+    app = client.loom
+    desk = app.desk_id()
+    fake.script(Scripted(content="never streamed", delay_s=30))
+    conversation.post(app, desk, "talk")
+    task = app.tasks[f"turn:{desk}"]
+
+    async def until(pred, timeout: float = 10.0) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if pred():
+                return
+            await asyncio.sleep(0.02)
+        raise AssertionError("condition not met in time")
+
+    try:
+        await until(lambda: fake.calls)  # the model call is in flight
+        r = await client.post(f"/api/conversations/{desk}/cancel")
+        assert r.status_code == 200, r.text
+        payload = r.json()
+        assert payload["cancelling"] is True
+        assert payload["stopped"] == [desk]
+
+        await asyncio.wait_for(task, 5)  # the turn ends promptly, not after delay_s
+        assistant = events.list_events(app, desk, kinds=["assistant"], limit=100)
+        assert assistant and assistant[-1]["meta"]["cancelled"] is True
+        assert assistant[-1]["meta"]["finish_reason"] == "cancelled"
+        assert app.conversation(desk)["status"] == "idle"
+        assert desk not in app.cancel_flags  # the signal never leaks into the next turn
+    finally:
+        if not task.done():  # a failed cancel must not leave a 30s turn behind
+            app.cancel_flags.add(desk)
+            try:
+                await asyncio.wait_for(task, 5)
+            except Exception:
+                task.cancel()

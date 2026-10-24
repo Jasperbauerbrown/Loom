@@ -12,8 +12,9 @@ from pydantic import BaseModel, Field
 from ... import conversation as conv_pkg
 from ... import db
 from ...artifacts import IMAGE_MIMES, sniff_image
-from ...conversation import events, inbox, pins, status, stop, worktree
+from ...conversation import events, inbox, pins, status, worktree
 from ...conversation.context import occupancy
+from ...conversation.stopping import stop as stop_conversation
 from ..deps import get_app
 
 router = APIRouter()
@@ -290,7 +291,10 @@ async def cancel(conversation_id: str, app=Depends(get_app)) -> dict[str, Any]:
     row = _row(app, conversation_id)
     # One codepath with the `conversation_stop` tool. The desk's cancel keeps its old
     # reach (its own turn's work; the runner stops that), not every thread it ever spawned.
-    stopped = stop.stop(app, conversation_id, actor="user", cascade=row["kind"] != "desk")
+    # Imported from the module, not the package: the package attribute `stop` is the
+    # no-op shutdown hook (`conversation/__init__.py`), which shadowed this call and
+    # made every Cancel click answer 500 (since 374bac3, fixed 2026-10-23).
+    stopped = stop_conversation(app, conversation_id, actor="user", cascade=row["kind"] != "desk")
     return {"cancelling": bool(stopped), "status": row["status"], "stopped": [s["id"] for s in stopped]}
 
 
