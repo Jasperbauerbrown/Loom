@@ -567,6 +567,12 @@ export function Conversation({ id, dense = false }: { id: string; dense?: boolea
   const pendingCalls = useMemo(() => new Set(pendingCallKey ? pendingCallKey.split(",") : []), [pendingCallKey]);
   const status = conversation?.status ?? "idle";
   const running = status === "running";
+  // Cancel POST in flight: the button disables and says "cancelling…" so a second
+  // click cannot race the first (2026-10-23).
+  const [cancelling, setCancelling] = useState(false);
+  useEffect(() => {
+    if (!running) setCancelling(false);
+  }, [running]);
 
   const canSend = (draft.trim().length > 0 || readyImages.length > 0) && !uploading && !sending;
 
@@ -636,8 +642,18 @@ export function Conversation({ id, dense = false }: { id: string; dense?: boolea
           ) : null}
           <div className="flex-1" />
           {running ? (
-            <Button size="sm" variant="danger" onClick={() => void store.guard(() => api.cancel(id))}>
-              Cancel
+            <Button
+              size="sm"
+              variant="danger"
+              disabled={cancelling}
+              onClick={() => {
+                setCancelling(true);
+                void store
+                  .guard(() => api.cancel(id))
+                  .finally(() => setCancelling(false));
+              }}
+            >
+              {cancelling ? "cancelling…" : "Cancel"}
             </Button>
           ) : null}
         </div>
