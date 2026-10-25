@@ -145,6 +145,7 @@ INSTALL_ORDER: list[str] = [
     "loom.triggers",
     "loom.connectors",
     "loom.promote",
+    "loom.voice",
 ]
 
 
@@ -234,7 +235,12 @@ class _NoModels:
 
         raise ModelError("fatal", "no model client")
 
-    async def list_models(self, provider: str) -> list[str]:
+    async def transcribe(self, audio: bytes, mime: str, *, preset: str | None = None, priority: int = 0):  # type: ignore[no-untyped-def]
+        from .models.types import Transcription
+
+        return Transcription(outcome="fatal", error="no model client")
+
+    async def list_models(self, provider: str, role: str | None = None) -> list[str]:
         return []
 
     def queue_state(self) -> dict[str, Any]:

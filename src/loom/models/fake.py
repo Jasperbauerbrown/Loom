@@ -15,6 +15,10 @@ naming the unmatched purpose (so a test fails loudly rather than hanging).
 Every request is recorded in `calls` for assertions. Deltas are emitted word by word so
 streaming codepaths are exercised. `embed` is deterministic (hash-bucketed) so cosine
 search is testable without a model.
+
+Transcriptions are scripted on their own queue (`fake.transcript("hello")`, or a
+`ScriptedTranscription` for a failure) and recorded in `transcribe_calls`; an unscripted
+call fails loudly like an unscripted chat.
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ from .types import (
     Result,
     StreamEvent,
     ToolCall,
+    Transcription,
     Usage,
     collect,
 )
@@ -75,6 +80,14 @@ class Scripted:
         )
 
 
+@dataclass
+class ScriptedTranscription:
+    text: str = ""
+    outcome: Outcome = "ok"
+    error: str | None = None
+    delay_s: float = 0.0
+
+
 class FakeModelClient:
     def __init__(self, embedding_dim: int = 64, embeddings_available: bool = True):
         self.queue: list[Scripted] = []
@@ -87,6 +100,9 @@ class FakeModelClient:
         self.models: dict[str, list[str]] = {"local-ollama": ["fake-model", "nomic-embed-text"]}
         self._n = 0
         self.embed_calls: list[list[str]] = []
+        self.transcriptions: list[ScriptedTranscription] = []
+        self.transcribe_calls: list[dict[str, Any]] = []
+        self.default_transcription: Callable[[bytes], ScriptedTranscription] | None = None
 
     # -- scripting --------------------------------------------------------------
     def script(self, *responses: Scripted) -> "FakeModelClient":
@@ -102,6 +118,10 @@ class FakeModelClient:
 
     def tool(self, name: str, args: dict[str, Any], content: str = "", **kw: Any) -> "FakeModelClient":
         return self.script(Scripted(content=content, tool_calls=[(name, args)], **kw))
+
+    def transcript(self, *responses: "str | ScriptedTranscription") -> "FakeModelClient":
+        self.transcriptions.extend(r if isinstance(r, ScriptedTranscription) else ScriptedTranscription(text=r) for r in responses)
+        return self
 
     def _pick(self, request: ChatRequest) -> Scripted:
         if request.purpose in self.responders:
@@ -142,7 +162,20 @@ class FakeModelClient:
         self.embed_calls.append(list(texts))
         return [_fake_vector(t, self.embedding_dim) for t in texts]
 
-    async def list_models(self, provider: str) -> list[str]:
+    async def transcribe(
+        self, audio: bytes, mime: str, *, preset: str | None = None, priority: Priority = PRIORITY_INTERACTIVE
+    ) -> Transcription:
+        self.transcribe_calls.append({"audio": bytes(audio), "mime": mime, "preset": preset, "priority": priority})
+        if not self.transcriptions and self.default_transcription is not None:
+            self.transcriptions.append(self.default_transcription(bytes(audio)))
+        if not self.transcriptions:
+            raise AssertionError(f"FakeModelClient: no scripted transcription (call #{len(self.transcribe_calls)})")
+        scripted = self.transcriptions.pop(0)
+        if scripted.delay_s:
+            await asyncio.sleep(scripted.delay_s)
+        return Transcription(text=scripted.text, outcome=scripted.outcome, error=scripted.error, model="fake-whisper")
+
+    async def list_models(self, provider: str, role: str | None = None) -> list[str]:
         if provider not in self.models:
             raise ModelError("fatal", f"unknown provider {provider!r}")
         return list(self.models[provider])

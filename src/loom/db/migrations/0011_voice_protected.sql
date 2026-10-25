@@ -1,0 +1,7 @@
+-- 0011: the voice listener's files become protected paths (2026-10-24). The listener
+-- (`src/loom/voice/listener.py` + `win32.py`) holds the microphone and a global hotkey;
+-- a change to what it records, or when, is the person's call, so touching either file
+-- asks (mode `all`) and a promotion whose diff includes them needs acknowledging.
+-- Nothing changes in the schema: the rows name the development checkout, which SQL
+-- cannot know, so bootstrap seeds them — once, on the start that applies this migration
+-- (`bootstrap.ensure(app, applied)`), and a row the person deleted stays deleted.

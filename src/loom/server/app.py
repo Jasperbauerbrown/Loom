@@ -171,11 +171,12 @@ def _mount_ui(api: FastAPI) -> None:
 # serve
 # ---------------------------------------------------------------------------------
 def configure_fake(app: App) -> None:
-    """`--fake`: a provider, a preset and the three roles pointing at the fake client,
+    """`--fake`: a provider, a preset and the three roles pointing at the fake client
+    (plus a `fake-whisper` preset on the transcription role),
     whose default responder echoes the last user message. Lets the UI be developed with
     no Ollama running, using exactly the client the tests use."""
     from .. import db
-    from ..models.fake import FakeModelClient, Scripted
+    from ..models.fake import FakeModelClient, Scripted, ScriptedTranscription
 
     now = db.now_iso()
     with db.transaction(app.db):
@@ -191,6 +192,15 @@ def configure_fake(app: App) -> None:
         )
         for role in ("desk", "worker", "maintenance"):
             app.db.execute("UPDATE model_roles SET preset='fake' WHERE role=? AND preset IS NULL", (role,))
+        app.db.execute(
+            "INSERT OR IGNORE INTO presets(name, provider, model, params, enabled, created_at, updated_at) "
+            "VALUES ('fake-whisper', 'fake', 'fake-whisper', '{}', 1, ?, ?)",
+            (now, now),
+        )
+        app.db.execute(
+            "INSERT INTO model_roles(role, preset) VALUES ('transcription', 'fake-whisper') "
+            "ON CONFLICT(role) DO UPDATE SET preset=excluded.preset WHERE model_roles.preset IS NULL"
+        )
     client = app.models
     if isinstance(client, FakeModelClient):
         client.models["fake"] = ["fake-model", "nomic-embed-text"]  # so probe/list work too
@@ -204,6 +214,8 @@ def configure_fake(app: App) -> None:
             return Scripted(content=f"(fake) {last}")
 
         client.default = echo
+        # Voice clips (03 §5.7) answer with their length, so the mic button is testable.
+        client.default_transcription = lambda audio: ScriptedTranscription(text=f"(fake transcript of {len(audio)} bytes)")
 
 
 def serve(

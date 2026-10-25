@@ -406,6 +406,14 @@ def cmd_rollback(args: argparse.Namespace) -> int:
         api.close()
 
 
+def cmd_listen(args: argparse.Namespace) -> int:
+    """The voice listener (03 §5.7): global hotkey + microphone → the desk. Normally the
+    backend starts and supervises it; running it by hand is for a backend elsewhere."""
+    from .voice.listener import main as listen_main
+
+    return listen_main(base_url(args), token_for(args), home_path(getattr(args, "home", None)))
+
+
 def _table(rows: Iterable[dict[str, Any]], columns: tuple[str, ...]) -> None:
     rows = list(rows)
     if not rows:
@@ -491,6 +499,12 @@ def build_parser() -> argparse.ArgumentParser:
     promote.set_defaults(func=cmd_promote)
 
     sub.add_parser("rollback", help="roll back to the previous release").set_defaults(func=cmd_rollback)
+
+    listen = sub.add_parser("listen", help="run the voice listener (the backend normally starts it)")
+    # SUPPRESS: given after `listen` they win; otherwise the global --url/--token stand.
+    listen.add_argument("--url", default=argparse.SUPPRESS, help="backend base URL (default $LOOM_URL or http://127.0.0.1:<port>)")
+    listen.add_argument("--token", default=argparse.SUPPRESS, help="bearer token (default $LOOM_TOKEN)")
+    listen.set_defaults(func=cmd_listen)
     return parser
 
 

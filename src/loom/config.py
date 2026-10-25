@@ -92,7 +92,7 @@ class Field:
     default: Any
     label: str
     help: str = ""
-    ui: str = "text"  # text | number | toggle | select | list | path | time | secret
+    ui: str = "text"  # text | number | toggle | select | list | path | time | secret | hotkey
     min: float | None = None
     max: float | None = None
     choices: tuple[str, ...] = ()
@@ -168,6 +168,7 @@ GROUPS: dict[str, str] = {
     "tools": "Tools",
     "triggers": "Triggers",
     "system": "System",
+    "voice": "Voice",
 }
 
 DEFAULT_SHELL_READONLY = [
@@ -265,6 +266,17 @@ FIELDS: list[Field] = [
     Field("system.promotion_test_timeout_s", "int", 1800, "Promotion test-suite timeout (s)", "The supervisor runs the full suite inside the new release before the swap; a run slower than this fails the promotion.", "number", min=60, max=7200),
     Field("system.snapshot_retention", "int", 10, "Snapshots kept", "", "number", min=1, max=100),
     Field("system.uv_path", "str", "", "uv executable", "Override for the uv the supervisor runs during a promotion (a path to uv.exe, or a python that has uv installed, as `python -m uv`). Empty = search PATH, the venv, the user-site Scripts folder and every installed Python.", "text"),
+    # Voice (03 §5.7): the listener's hotkey and capture, and what a clip does
+    Field("voice.enabled", "bool", False, "Voice input", "Runs the listener: hold the hotkey from any app, speak, release. Audio is sent to the provider of the transcription role (Settings › Models); pick a local one to keep it on this machine.", "toggle"),
+    Field("voice.hotkey", "str", "ctrl+alt+space", "Hotkey", "Modifiers (ctrl, alt, shift, win) then one key, joined with +.", "hotkey"),
+    Field("voice.mode", "enum", "hold", "Hotkey mode", "Hold: record while the key is down. Toggle: press to start, press again to stop.", "select", choices=("hold", "toggle")),
+    Field("voice.action", "enum", "send", "Hotkey clip goes to", "Send posts the transcript to the desk; draft puts it in the desk composer for you to edit. The composer's mic button always drafts.", "select", choices=("send", "draft")),
+    Field("voice.input_device", "str", "", "Microphone", "Input device name; empty = the system default.", "text"),
+    Field("voice.max_seconds", "int", 120, "Longest clip (s)", "Recording stops here.", "number", min=5, max=600),
+    Field("voice.min_ms", "int", 300, "Shortest clip (ms)", "Shorter clips are dropped as accidental presses.", "number", min=0, max=5000),
+    Field("voice.silence_gate", "bool", True, "Drop silent clips", "A clip that never rises above room noise is not sent: transcription models invent words for silence.", "toggle"),
+    Field("voice.sounds", "bool", True, "Sounds", "Short tones when recording starts, stops or fails.", "toggle"),
+    Field("voice.audio_retention_days", "int", 30, "Keep audio (days)", "Stored voice clips older than this are deleted. Transcripts stay.", "number", min=1, max=3650),
 ]
 
 FIELD_MAP: dict[str, Field] = {f.key: f for f in FIELDS}

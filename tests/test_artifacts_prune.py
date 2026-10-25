@@ -74,7 +74,7 @@ def test_archived_past_grace_keeps_only_spills_logs_and_images(app):
 
     stats = app.artifacts.prune()
 
-    assert stats == {"artifacts": 0, "files": 3, "bytes": 175, "failed": 0}
+    assert stats == {"artifacts": 0, "files": 3, "bytes": 175, "failed": 0, "audio": 0}
     assert sorted(p.name for p in folder.iterdir()) == sorted(
         [Path(spill["path"]).name, f"{image['id']}.png", log.name]
     )
@@ -136,7 +136,7 @@ def test_live_scratch_untouched_for_idle_days_goes_spills_and_images_stay(app):
 
     stats = app.artifacts.prune()
 
-    assert stats == {"artifacts": 0, "files": 2, "bytes": 50, "failed": 0}
+    assert stats == {"artifacts": 0, "files": 2, "bytes": 50, "failed": 0, "audio": 0}
     assert Path(spill["path"]).exists()
     assert (folder / f"{image['id']}.png").exists()
     assert not old.exists() and not old.parent.exists()  # emptied directories go

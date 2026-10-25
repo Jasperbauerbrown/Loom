@@ -117,7 +117,7 @@ def test_prune_archived_removes_old_archived_artifacts_only(app):
 
 
 def test_prune_with_nothing_to_do_reports_zeroes(app):
-    assert app.artifacts.prune() == {"artifacts": 0, "files": 0, "bytes": 0, "failed": 0}
+    assert app.artifacts.prune() == {"artifacts": 0, "files": 0, "bytes": 0, "failed": 0, "audio": 0}
 
 
 # -- paged tools are never spilled (2026-09-22) ------------------------------------------

@@ -15,7 +15,8 @@ failure — those are *expected inputs* (charter §2.1) and come back as a termi
 
 Provider kinds differ only in URL shape, auth and extras:
     ollama              POST /api/chat (NDJSON), /api/embed, GET /api/tags
-    openai_compatible   POST /v1/chat/completions (SSE), /v1/embeddings, GET /v1/models
+    openai_compatible   POST /v1/chat/completions (SSE), /v1/embeddings, GET /v1/models,
+                        POST /v1/audio/transcriptions (multipart; 03 §5.7)
 
 Reasoning arrives either as a dedicated field (`message.thinking`,
 `delta.reasoning`/`delta.reasoning_content`) or inline as `<think>…</think>` in the
@@ -48,6 +49,7 @@ from .types import (
     Result,
     StreamEvent,
     ToolCall,
+    Transcription,
     Usage,
     collect,
 )
@@ -67,6 +69,15 @@ OVERFLOW_HINTS = (
     "prompt is too large",
 )
 DEFAULT_OLLAMA_HOSTS = ("http://127.0.0.1:11434",)
+TRANSCRIPTION_OLLAMA = (
+    "ollama has no transcription endpoint — use an openai_compatible provider "
+    "(a local whisper server or a hosted API)"
+)
+# The multipart filename's extension: some servers pick a decoder by it, not by type.
+AUDIO_FILE_EXT = {
+    "audio/wav": ".wav", "audio/mpeg": ".mp3", "audio/ogg": ".ogg",
+    "audio/webm": ".webm", "audio/mp4": ".m4a", "audio/flac": ".flac",
+}
 
 
 # ---------------------------------------------------------------------------------
@@ -289,12 +300,53 @@ class Client:
             vectors = await self._embed_call(provider, params, resolved.model, list(texts))
         return [normalise(v) for v in vectors]
 
-    async def list_models(self, provider: str) -> list[str]:
+    async def transcribe(
+        self, audio: bytes, mime: str, *, preset: str | None = None, priority: Priority = PRIORITY_INTERACTIVE
+    ) -> Transcription:
+        """Speech to text (03 §5.7): `POST /v1/audio/transcriptions`, multipart, through
+        the transcription role's provider slot in the queue. Every failure — no model,
+        an Ollama provider, HTTP, network, a malformed body — is an outcome on the
+        returned `Transcription`, classified like a chat call's."""
+        started = time.monotonic()
+
+        def failed(outcome: Outcome, error: str, model: str = "") -> Transcription:
+            return Transcription(outcome=outcome, error=error, model=model,
+                                 latency_ms=int((time.monotonic() - started) * 1000))
+
+        try:
+            resolved = roles.resolve(self.app, role="transcription", preset=preset)
+        except ModelError as exc:
+            return failed(exc.outcome, exc.message)
+        if resolved.kind == "ollama":
+            return failed("fatal", TRANSCRIPTION_OLLAMA, resolved.model)
+        if resolved.kind != "openai_compatible":
+            return failed("fatal", f"unknown provider kind {resolved.kind!r}", resolved.model)
+        params = dict(resolved.params)
+        info = {"purpose": "transcribe", "preset": resolved.preset["name"], "model": resolved.model}
+        async with self.queue.slot(
+            resolved.provider_name, int(priority), info, concurrency=int(params.get("concurrency") or 1)
+        ):
+            try:
+                text = await self._transcribe_call(resolved.provider, params, resolved.model, audio, mime)
+            except ModelError as exc:
+                return failed(exc.outcome, exc.message, resolved.model)
+            except (httpx.HTTPError, OSError) as exc:
+                return failed("transient", f"transcription call failed: {type(exc).__name__}: {exc}", resolved.model)
+            except (asyncio.TimeoutError, TimeoutError):
+                return failed("transient", "transcription call timed out", resolved.model)
+        return Transcription(text=text, model=resolved.model, latency_ms=int((time.monotonic() - started) * 1000))
+
+    async def list_models(self, provider: str, role: str | None = None) -> list[str]:
         row = self.provider(provider)
         params = roles.provider_params(row)
         url, key = self._endpoint(row, "/api/tags" if row["kind"] == "ollama" else "/v1/models")
+        query: dict[str, str] = {}
+        if role == "transcription" and row["kind"] == "openai_compatible":
+            # OpenRouter filters its catalogue this way; an endpoint that does not know
+            # the parameter ignores it and lists everything, which is still usable.
+            query["output_modalities"] = "transcription"
         try:
-            response = await self.http().get(url, headers=self._headers(row), timeout=_short(params))
+            response = await self.http().get(url, params=query or None, headers=self._headers(row), timeout=_short(params))
         except (httpx.HTTPError, OSError) as exc:
             raise ModelError("transient", f"{provider}: {type(exc).__name__}: {exc}") from exc
         if response.status_code >= 400:
@@ -564,6 +616,30 @@ class Client:
             raise ModelError("transient", f"embedding count mismatch: asked {len(texts)}, got {len(vectors)}")
         return [[float(x) for x in vec] for vec in vectors]
 
+    async def _transcribe_call(
+        self, provider: dict[str, Any], params: dict[str, Any], model: str, audio: bytes, mime: str
+    ) -> str:
+        url, _ = self._endpoint(provider, "/v1/audio/transcriptions")
+        data: dict[str, str] = {"model": model, "response_format": "json"}
+        for key in ("language", "prompt"):
+            if params.get(key) not in (None, ""):
+                data[key] = str(params[key])
+        if params.get("temperature") is not None:
+            data["temperature"] = str(float(params["temperature"]))
+        files = {"file": (f"audio{AUDIO_FILE_EXT.get(mime, '.wav')}", bytes(audio), mime)}
+        timeout = float(params.get("timeout_s") or roles.DEFAULT_TIMEOUT_S)
+        response = await self.http().post(url, data=data, files=files, headers=self._headers(provider), timeout=timeout)
+        if response.status_code >= 400:
+            outcome, message = classify_http(response.status_code, response.text, url=url)
+            raise ModelError(outcome, message)
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ModelError("transient", f"malformed transcription response: {_first_line(response.text, 200)}") from exc
+        if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
+            raise ModelError("transient", "malformed transcription response: no `text` field")
+        return payload["text"].strip()
+
 
 # ---------------------------------------------------------------------------------
 # helpers
@@ -828,9 +904,20 @@ async def test_preset(app, name: str) -> dict[str, Any]:  # type: ignore[no-unty
     """One short completion against a preset, for `POST /api/presets/{name}/test`.
     Goes through the ordinary client so the fake client answers it in tests. The
     embedding role's preset is tested with one embedding instead: an embedding model
-    has no chat endpoint."""
+    has no chat endpoint. The transcription role's preset likewise gets one second of
+    generated silence through `transcribe` (03 §5.7)."""
     from .. import prompts
 
+    if roles.role_preset(app, "transcription") == name:
+        from ..voice.store import silence_wav
+
+        got = await app.models.transcribe(silence_wav(1.0), "audio/wav", preset=name, priority=PRIORITY_INTERACTIVE)
+        content = ""
+        if got.ok:
+            content = (f"transcribed 1 s of silence as {got.text!r}" if got.text
+                       else "transcription endpoint answered (empty transcript for 1 s of silence)")
+        return {"latency_ms": got.latency_ms, "usage": {}, "content": content,
+                "outcome": got.outcome, "error": got.error, "model": got.model}
     if roles.role_preset(app, "embedding") == name:
         started = time.monotonic()
         try:

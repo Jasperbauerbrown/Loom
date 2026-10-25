@@ -31,7 +31,7 @@ from ..models.types import PRIORITY_BACKGROUND, PRIORITY_INTERACTIVE, ChatReques
 from ..tools import approvals, dispatch
 from ..tools.registry import ToolContext, ToolResult
 from . import compaction, events, inbox, status
-from .context import CONTEXT_CLOSE, CONTEXT_OPEN, Context, assemble, image_urls, resolve_knowledge, strip_private, tool_image_followup
+from .context import CONTEXT_CLOSE, CONTEXT_OPEN, Context, assemble, image_urls, resolve_knowledge, strip_private, tool_image_followup, user_text
 from .compaction import CompactionError
 
 log = logging.getLogger(__name__)
@@ -801,11 +801,13 @@ def _persist_claimed(app, state: TurnState, rows: list[dict[str, Any]], ctx: Con
         images = (r.get("meta") or {}).get("images") or []
         if images:
             meta["images"] = images
+        if (r.get("meta") or {}).get("voice"):
+            meta["voice"] = r["meta"]["voice"]  # 03 §5.7: {audio_id, preset, source}
         ev = events.append(app, state.cid, "user", text, meta)
         row = events.get(app, ev)
         app.bus.emit("event.appended", row, state.cid)
         if ctx is not None:
-            msg: dict[str, Any] = {"role": "user", "content": text}
+            msg: dict[str, Any] = {"role": "user", "content": user_text(text, meta)}
             urls = image_urls(app, state.cid, images) if images else []
             if urls:
                 msg["images"] = urls

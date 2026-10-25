@@ -71,7 +71,7 @@ def test_migration_0008_keeps_existing_rows_protected_for_everything(tmp_path):
                 conn.execute(statement)
             conn.execute(f"PRAGMA user_version={number}")
     conn.execute("INSERT INTO protected_paths(path) VALUES ('C:/old/secrets.json')")
-    assert db.migrate(conn) == [8]
+    assert db.migrate(conn)[0] == 8  # later migrations follow it
     assert dict(conn.execute("SELECT * FROM protected_paths").fetchone()) == {"path": "C:/old/secrets.json", "mode": "all"}
     conn.close()
 

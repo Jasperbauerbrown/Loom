@@ -5,7 +5,8 @@
     request  = roles.build_request(app, role="desk", messages=[...], tools=[...])
 
 Layering, key-wise: provider.params < preset.params < per-call overrides. A preset
-override always wins over a role. `utility` falls back to `desk` when unset. A missing
+override always wins over a role. `utility` falls back to `desk` when unset (no other role
+falls back; `transcription` least of all, since a chat model cannot hear). A missing
 role preset is a `ModelError("fatal", ...)` naming the settings URL — never a silent
 default, because guessing a model is worse than saying so.
 """
@@ -18,7 +19,7 @@ from typing import Any
 from .. import db
 from .types import DEFAULT_IMAGE_TOKENS, ChatRequest, ModelError, image_tokens, is_multimodal  # noqa: F401  (re-exported)
 
-ROLES = ("desk", "worker", "maintenance", "utility", "embedding")
+ROLES = ("desk", "worker", "maintenance", "utility", "embedding", "transcription")
 
 # Params the merge understands. Anything else a user puts on a provider or preset row is
 # carried through untouched: the transport decides what it can use.
@@ -38,6 +39,8 @@ PRESET_PARAM_KEYS = (
     "repetition_penalty",
     "presence_penalty",
     "frequency_penalty",
+    "language",  # transcription (03 §5.7): ISO-639-1 hint
+    "prompt",  # transcription: vocabulary / spelling hint
 )
 PROVIDER_PARAM_KEYS = ("timeout_s", "concurrency", "stream_idle_s")
 

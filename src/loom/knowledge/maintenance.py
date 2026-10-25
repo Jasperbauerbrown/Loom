@@ -12,8 +12,8 @@ same order, whatever started it:
    `knowledge.curation_similarity`) and dangling links become candidates; the model
    merges, cross-links or leaves them alone.
 3. **Housekeeping** — archive idle finished threads, prune archived conversations'
-   artifacts past retention, commit external (Obsidian) vault edits, and a safety-net
-   `maintenance: <date>` commit.
+   artifacts past retention (and voice clips past theirs), commit external (Obsidian)
+   vault edits, and a safety-net `maintenance: <date>` commit.
 
 Every model tool call goes through the one dispatcher, so maintenance obeys exactly the
 same permissions as a turn. There is no turn to pause, though, so an approval is handled
@@ -131,6 +131,7 @@ def new_report(reason: str) -> dict[str, Any]:
         "pruned_files": 0,                        # every file the artifacts prune removed
         "pruned_bytes": 0,
         "prune_failures": 0,                      # entries it could not remove (locked, perms)
+        "pruned_audio": 0,                        # voice clips past voice.audio_retention_days
         "committed": None,                        # sha of the safety-net commit
         "external_commit": None,                  # sha of the "user: edit ..." commit
         "errors": [],
@@ -500,6 +501,7 @@ class Maintenance:
                 report["pruned_files"] = pruned["files"]
                 report["pruned_bytes"] = pruned["bytes"]
                 report["prune_failures"] = pruned["failed"]
+                report["pruned_audio"] = pruned.get("audio", 0)
                 if pruned["files"]:
                     self._progress("housekeep", f"pruned {pruned['files']} artifact file(s), {_mb(pruned['bytes'])}")
             except Exception as exc:

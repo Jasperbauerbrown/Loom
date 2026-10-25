@@ -78,6 +78,16 @@ def tool_image_followup(app, conversation_id: str, call_id: str, refs: list[Any]
     return {"role": "user", "content": note, "images": urls}
 
 
+def user_text(content: str, meta: dict[str, Any] | None) -> str:
+    """A user message's model-facing text. A voice message (`meta.voice`, 03 §5.7) is
+    prefixed with `prompts/context/voice-message.md` so the model reads mis-hearings
+    charitably; the transcript stores the text unprefixed. Replay and the runner's
+    in-turn append both render through here."""
+    if isinstance((meta or {}).get("voice"), dict):
+        return prompts.load("context/voice-message") + "\n" + content
+    return content
+
+
 def image_tokens_for(app, conv: dict[str, Any]) -> int:  # type: ignore[no-untyped-def]
     """The per-image prompt-token estimate of the conversation's preset."""
     from ..models import roles
@@ -408,7 +418,7 @@ def messages_from_events(  # type: ignore[no-untyped-def]
             continue
         flush()
         if kind == "user":
-            msg: dict[str, Any] = {"role": "user", "content": e["content"], "_event_id": e["id"]}
+            msg: dict[str, Any] = {"role": "user", "content": user_text(e["content"], e["meta"]), "_event_id": e["id"]}
             urls = image_urls(app, conversation_id, e["meta"].get("images"))
             if urls:
                 msg["images"] = urls

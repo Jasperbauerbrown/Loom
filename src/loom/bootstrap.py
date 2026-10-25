@@ -15,6 +15,7 @@ from pathlib import Path
 from . import db
 from .config import detect_timezone
 from .ids import ulid
+from .models.roles import ROLES
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +62,12 @@ DEFAULT_PATH_POLICIES: dict[str, str] = {
 }
 
 
+# The listener holds the microphone and a global hotkey (03 §5.7): a change to what it
+# records or when is the person's call. Migration 0011 seeds these on an existing install.
+VOICE_PROTECTED = ("src/loom/voice/listener.py", "src/loom/voice/win32.py")
+VOICE_PROTECTED_MIGRATION = 11
+
+
 def default_protected_paths(repo_root: Path | None, home: Path) -> list[str]:
     paths = [
         "supervisor/",
@@ -69,6 +76,7 @@ def default_protected_paths(repo_root: Path | None, home: Path) -> list[str]:
         "src/loom/tools/shell_prefilter.py",
         "src/loom/promote.py",
         "src/loom/secrets.py",
+        *VOICE_PROTECTED,
         str(home / "secrets.json"),
         str(home / "supervisor.token"),
     ]
@@ -79,6 +87,10 @@ def default_protected_paths(repo_root: Path | None, home: Path) -> list[str]:
 
 # Migration 0008 gave protected paths a mode; these rows are seeded with `writes`.
 WRITES_PROTECTED_MIGRATION = 8
+
+
+def default_voice_protected_paths(repo_root: Path | None) -> list[str]:
+    return [_norm(str(repo_root / p) if repo_root is not None else p) for p in VOICE_PROTECTED]
 
 
 def default_write_protected_paths(vault: Path) -> list[str]:
@@ -133,8 +145,8 @@ def ensure(app, applied: list[int] | None = None) -> None:  # type: ignore[no-un
                 "VALUES (?, 'desk', 'Desk', 'desk', 'idle', ?, ?)",
                 (ulid(), now, now),
             )
-        # Roles rows exist even when unset so the UI can render five dropdowns.
-        for role in ("desk", "worker", "maintenance", "utility", "embedding"):
+        # Roles rows exist even when unset so the UI can render one dropdown per role.
+        for role in ROLES:
             conn.execute("INSERT OR IGNORE INTO model_roles(role, preset) VALUES (?, NULL)", (role,))
         # Tool policies: insert defaults for known tools without overriding user edits.
         for tool, mode in {**DEFAULT_TOOL_POLICIES, **DEFAULT_PATH_POLICIES}.items():
@@ -152,10 +164,14 @@ def ensure(app, applied: list[int] | None = None) -> None:  # type: ignore[no-un
                     (_norm(str(p)), now),
                 )
         # Protected paths: seeded on a fresh install. The write-protected defaults also
-        # arrive with migration 0008 on an existing install — once, on that start.
+        # arrive with migration 0008, and the voice listener's files with 0011, on an
+        # existing install — once, on that start.
         fresh = conn.execute("SELECT COUNT(*) FROM protected_paths").fetchone()[0] == 0
         if fresh:
             for p in default_protected_paths(checkout_root(), app.home):
+                conn.execute("INSERT OR IGNORE INTO protected_paths(path) VALUES (?)", (p,))
+        elif VOICE_PROTECTED_MIGRATION in (applied or []):
+            for p in default_voice_protected_paths(checkout_root()):
                 conn.execute("INSERT OR IGNORE INTO protected_paths(path) VALUES (?)", (p,))
         if fresh or WRITES_PROTECTED_MIGRATION in (applied or []):
             for p in default_write_protected_paths(app.vault_dir):

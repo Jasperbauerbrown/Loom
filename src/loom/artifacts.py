@@ -15,6 +15,11 @@ Images (2026-09-21) live beside the spills as `artifacts/<conversation>/img_<uli
 with no table row: the transcript keeps only `{"id", "mime"}` refs on event meta, data
 URLs are built at context-assembly time, and every chars/4 estimate stays blind to
 base64. Write-before-reference: the file lands before any event points at it.
+
+Voice clips (2026-10-24, `voice/store.py`) are stored the same way as
+`artifacts/<conversation>/audio_<ulid>.<ext>`. The walker keeps them like images, and a
+fourth rule deletes them after `voice.audio_retention_days` in every folder, archived
+or not.
 """
 
 from __future__ import annotations
@@ -40,6 +45,7 @@ IMAGE_MIMES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp",
 _EXT_TO_MIME = {ext: mime for mime, ext in IMAGE_MIMES.items()}
 # `img_` + a 26-char Crockford ULID: the strict shape doubles as the traversal guard.
 IMAGE_ID_RE = re.compile(r"^img_[0-9A-HJKMNP-TV-Z]{26}$")
+AUDIO_PREFIX = "audio_"  # voice clips (voice/store.py); kept like images until their own retention
 
 
 def sniff_image(data: bytes) -> str | None:
@@ -289,19 +295,22 @@ class Store:
         return chunk
 
     # -- maintenance ------------------------------------------------------------
-    # Three rules, one walker (2026-10-05). Spills and process logs (referenced by rows)
+    # Three rules, one walker (2026-10-05), plus the audio rule (2026-10-24). Spills and process logs (referenced by rows)
     # and `img_*` (referenced by event meta) are a conversation's real artifacts;
     # everything else in its folder is scratch nothing reads back (TMPDIR, downloads,
     # browser profiles).
     #   archived past `artifact_retention_days`     -> the whole folder and its spill rows;
     #   archived past `scratch_archived_grace_days` -> everything but the real artifacts;
-    #   live (the desk included), `scratch_idle_days` > 0 -> scratch with an older mtime.
+    #   live (the desk included), `scratch_idle_days` > 0 -> scratch with an older mtime;
+    #   every folder not purged                     -> top-level `audio_*` older than
+    #                                                  `voice.audio_retention_days`.
     # SQLite stays on the calling thread (`_plan`); only the file walk (`_sweep`) may
     # run in a worker thread (`aprune`).
     def prune(self) -> dict[str, int]:
-        """Run the three rules synchronously. Returns `{"artifacts", "files", "bytes",
-        "failed"}`: spill rows dropped plus images deleted (the historical count), every
-        file removed, their bytes, and entries that could not be removed."""
+        """Run the rules synchronously. Returns `{"artifacts", "files", "bytes", "failed",
+        "audio"}`: spill rows dropped plus images deleted (the historical count), every
+        file removed, their bytes, entries that could not be removed, and voice clips
+        deleted by their retention (also counted in `files`/`bytes`)."""
         return self._sweep(self._plan())
 
     async def aprune(self) -> dict[str, int]:
@@ -314,6 +323,7 @@ class Store:
         retention = int(settings.get("conversation.artifact_retention_days"))
         grace = int(settings.get("conversation.scratch_archived_grace_days"))
         idle = int(settings.get("conversation.scratch_idle_days"))
+        audio_days = int(settings.get("voice.audio_retention_days"))
         now = _dt.datetime.now(_dt.timezone.utc)
         purge_cut = _iso(now - _dt.timedelta(days=retention))
         grace_cut = _iso(now - _dt.timedelta(days=grace))
@@ -350,12 +360,13 @@ class Store:
             "modes": modes,
             "keep": keep,
             "idle_cutoff": (now - _dt.timedelta(days=idle)).timestamp() if idle > 0 else None,
+            "audio_cutoff": (now - _dt.timedelta(days=audio_days)).timestamp(),
             "rows_dropped": rows_dropped,
         }
 
     @staticmethod
     def _sweep(plan: dict[str, Any]) -> dict[str, int]:
-        stats = {"artifacts": int(plan["rows_dropped"]), "files": 0, "bytes": 0, "failed": 0}
+        stats = {"artifacts": int(plan["rows_dropped"]), "files": 0, "bytes": 0, "failed": 0, "audio": 0}
         try:
             folders = [e for e in os.scandir(plan["root"]) if not _is_link(e) and e.is_dir(follow_symlinks=False)]
         except OSError as exc:
@@ -371,7 +382,9 @@ class Store:
                 _walk(folder, stats, keep=frozenset(), keep_images=False, cutoff=None, top=True)
                 if not _remove(os.rmdir, folder):
                     stats["failed"] += 1
-            elif mode == "scratch":
+                continue
+            _prune_audio(folder, stats, plan["audio_cutoff"])
+            if mode == "scratch":
                 _walk(folder, stats, keep=keep, keep_images=True, cutoff=None, top=True)
             elif mode == "idle" and plan["idle_cutoff"] is not None:
                 _walk(folder, stats, keep=keep, keep_images=True, cutoff=plan["idle_cutoff"], top=True)
@@ -443,6 +456,31 @@ def _remove(fn: Any, path: str | Path) -> bool:
         return False
 
 
+def _prune_audio(folder: Path, stats: dict[str, int], cutoff: float) -> None:
+    """Delete the folder's top-level voice clips whose mtime is older than `cutoff`."""
+    try:
+        entries = [e for e in os.scandir(folder) if e.name.startswith(AUDIO_PREFIX)]
+    except OSError:
+        stats["failed"] += 1
+        return
+    for entry in entries:
+        try:
+            if _is_link(entry) or not entry.is_file(follow_symlinks=False):
+                continue
+            st = entry.stat(follow_symlinks=False)
+        except OSError:
+            stats["failed"] += 1
+            continue
+        if st.st_mtime >= cutoff:
+            continue
+        if _remove(os.unlink, entry.path):
+            stats["files"] += 1
+            stats["bytes"] += st.st_size
+            stats["audio"] += 1
+        else:
+            stats["failed"] += 1
+
+
 def _walk(
     path: Path,
     stats: dict[str, int],
@@ -465,7 +503,7 @@ def _walk(
         return False
     remaining = 0
     for entry in entries:
-        if top and (entry.name in keep or (keep_images and entry.name.startswith("img_"))):
+        if top and (entry.name in keep or (keep_images and entry.name.startswith(("img_", AUDIO_PREFIX)))):
             remaining += 1
             continue
         try:

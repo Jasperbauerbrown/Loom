@@ -220,7 +220,7 @@ async def test_preset_rename_moves_every_reference_with_it(client):
 
 async def test_roles_listing_and_assignment(client):
     rows = (await client.get("/api/model-roles")).json()
-    assert [r["role"] for r in rows] == ["desk", "worker", "maintenance", "utility", "embedding"]
+    assert [r["role"] for r in rows] == ["desk", "worker", "maintenance", "utility", "embedding", "transcription"]
 
     seen: list[dict] = []
     client.loom.bus.listen(lambda e: seen.append(e) if e["type"] == "models.changed" else None)

@@ -16,4 +16,5 @@ ROUTERS: list[str] = [
     "loom.server.routers.integrations",
     "loom.server.routers.schedules",
     "loom.server.routers.promote",
+    "loom.server.routers.voice",
 ]

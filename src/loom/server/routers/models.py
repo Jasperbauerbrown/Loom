@@ -133,10 +133,12 @@ async def delete_provider(name: str, app: App = Depends(get_app)) -> dict[str, A
 
 
 @router.post("/providers/{name}/probe")
-async def probe_provider(name: str, app: App = Depends(get_app)) -> dict[str, Any]:
+async def probe_provider(name: str, role: str | None = None, app: App = Depends(get_app)) -> dict[str, Any]:
+    """`?role=transcription` lists the provider's transcription models where it can say
+    (OpenRouter's `output_modalities` filter), the same switch as `GET /models`."""
     _require(app, "providers", "name", name, "provider")
     try:
-        models = await app.models.list_models(name)
+        models = await app.models.list_models(name, role=role)
     except ModelError as exc:
         return {"ok": False, "models": [], "error": exc.message, "outcome": exc.outcome}
     return {"ok": True, "models": models, "error": "", "outcome": "ok"}
@@ -261,12 +263,13 @@ async def set_role(role: str, body: RoleIn, app: App = Depends(get_app)) -> dict
     app.db.execute("INSERT INTO model_roles(role, preset) VALUES (?, ?) "
                    "ON CONFLICT(role) DO UPDATE SET preset=excluded.preset", (role, preset))
     app.bus.emit("models.changed", {"kind": "role", "name": role})
-    if role == "desk" and app.has_model("desk"):
-        # Same predicate `_post_choose_a_model` used to post it: once it no longer
-        # holds, the "Choose a model" item is answered.
+    if app.has_model(role):
+        # Same predicate that posted it: once it no longer holds, the role's setup item
+        # ("Choose a model" for the desk under source `setup`, "Choose a transcription
+        # model" under `setup:transcription`, 03 §5.7) is answered.
         from ... import items
 
-        for item in items.by_source(app, "setup"):
+        for item in items.by_source(app, "setup" if role == "desk" else f"setup:{role}"):
             if item["dismissed_at"] is None:
                 items.dismiss(app, item["id"])
     return {"role": role, "preset": preset}
@@ -276,14 +279,16 @@ async def set_role(role: str, body: RoleIn, app: App = Depends(get_app)) -> dict
 # live model list
 # ---------------------------------------------------------------------------------
 @router.get("/models")
-async def models(provider: str | None = None, app: App = Depends(get_app)) -> dict[str, Any]:
+async def models(provider: str | None = None, role: str | None = None, app: App = Depends(get_app)) -> dict[str, Any]:
+    """`role=transcription` asks providers that can filter (OpenRouter) for their
+    speech-to-text models only (03 §5.7); other roles list everything."""
     names = [provider] if provider else [r["name"] for r in app.db.execute("SELECT name FROM providers WHERE enabled=1 ORDER BY name")]
     out: list[dict[str, Any]] = []
     for name in names:
         if app.db.execute("SELECT 1 FROM providers WHERE name=?", (name,)).fetchone() is None:
             raise HTTPException(status_code=404, detail=f"unknown provider {name!r}")
         try:
-            out.append({"provider": name, "models": await app.models.list_models(name), "error": None})
+            out.append({"provider": name, "models": await app.models.list_models(name, role=role), "error": None})
         except ModelError as exc:
             out.append({"provider": name, "models": [], "error": exc.message})
     return {"providers": out}

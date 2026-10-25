@@ -133,6 +133,22 @@ class Result:
 StreamEvent = Delta | Result
 
 
+@dataclass
+class Transcription:
+    """One speech-to-text call through the `transcription` role (03 §5.7). Like a
+    `Result`, it never comes back as an exception: `outcome` says what happened."""
+
+    text: str = ""
+    outcome: Outcome = "ok"
+    error: str | None = None
+    model: str = ""
+    latency_ms: int = 0
+
+    @property
+    def ok(self) -> bool:
+        return self.outcome == "ok"
+
+
 @runtime_checkable
 class ModelClient(Protocol):
     """The one interface every model consumer uses. Implemented by `models.client.Client`
@@ -147,8 +163,17 @@ class ModelClient(Protocol):
         embedding preset is configured. Vectors are L2-normalised."""
         ...
 
-    async def list_models(self, provider: str) -> list[str]:
-        """Probe a provider for its live model list (GET /models?provider=)."""
+    async def transcribe(
+        self, audio: bytes, mime: str, *, preset: str | None = None, priority: Priority = PRIORITY_INTERACTIVE
+    ) -> "Transcription":
+        """Speech to text through the transcription role (or `preset`). Never raises
+        for a provider failure; the outcome is on the returned `Transcription`."""
+        ...
+
+    async def list_models(self, provider: str, role: str | None = None) -> list[str]:
+        """Probe a provider for its live model list (GET /models?provider=&role=);
+        `role="transcription"` asks for speech-to-text models where the provider can
+        filter (OpenRouter's `output_modalities`)."""
         ...
 
     def queue_state(self) -> dict[str, Any]:
