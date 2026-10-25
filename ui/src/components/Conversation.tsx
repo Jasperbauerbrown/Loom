@@ -3,14 +3,15 @@
 // one component, no special cases (charter §2.1).
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { api, imageUrl } from "../lib/api";
+import { api, audioUrl, imageUrl } from "../lib/api";
 import { lastClearId, parseToolCalls, sinceLastClear, store, useStore } from "../lib/store";
 import type { ApprovalDecision, ConvEvent, ImageRef, QueuedMessage, ToolCall } from "../lib/types";
 import { argsSummary, cls, compactionLabel, compactNumber, localTime, statusLabel, statusTitle, truncate } from "../lib/format";
 import { Badge, Button, Collapsible, JsonBlock, Spinner } from "./ui";
 import { Markdown } from "./Markdown";
 import { ArtifactDrawer } from "./ArtifactDrawer";
-import { IconPaperclip } from "./Icons";
+import { IconMic, IconPaperclip } from "./Icons";
+import { MicButton } from "./MicButton";
 import { allowLabels } from "../lib/approvalLabels";
 
 const PAGE = 100;
@@ -61,6 +62,63 @@ function ImageStrip({
           </a>
         );
       })}
+    </div>
+  );
+}
+
+/** `meta.voice` of a dictated message or a failed clip (03 §5.7); null when absent. */
+function voiceMeta(meta: Record<string, unknown> | undefined): { audio_id?: string; failed?: boolean; action?: string; source?: string } | null {
+  const raw = meta?.voice;
+  return raw && typeof raw === "object" ? (raw as Record<string, any>) : null;
+}
+
+/** The stored clip under a dictated message: a native player, loaded on demand. */
+function VoiceClip({ conversationId, audioId, className }: { conversationId: string; audioId: string; className?: string }) {
+  return (
+    <audio
+      controls
+      preload="none"
+      src={audioUrl(conversationId, audioId)}
+      className={cls("h-8 w-full max-w-[280px]", className)}
+      aria-label="Voice recording"
+    />
+  );
+}
+
+/** A clip whose transcription failed: the system line plus Retry, which re-transcribes
+ *  the stored audio with the clip's original action (send posts, draft fills the draft). */
+function VoiceFailure({ event, voice }: { event: ConvEvent; voice: { audio_id?: string; action?: string } }) {
+  const [busy, setBusy] = useState(false);
+  // A successful retry says so here (this page only: the failure row itself is history).
+  const [done, setDone] = useState(false);
+  const action = voice.action === "draft" ? "draft" : "send";
+  const retry = async () => {
+    if (!voice.audio_id) return;
+    setBusy(true);
+    const res = await store.guard(() => api.retryAudio(event.conversation_id, voice.audio_id!, action));
+    setBusy(false);
+    if (!res) return;
+    if (res.dropped || !res.text.trim()) {
+      store.toast("info", "Nothing heard", "The clip had no speech to transcribe.");
+      return;
+    }
+    setDone(true);
+    if (action === "draft") store.applyVoiceDraft(event.conversation_id, res.audio_id, res.text);
+  };
+  return (
+    <div className="my-2 rounded-md border border-neutral-200 bg-neutral-50 px-2.5 py-1.5 text-[12px] text-neutral-600 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400">
+      <div className="flex flex-wrap items-center gap-2">
+        <IconMic className="h-3.5 w-3.5 shrink-0" />
+        <span className="min-w-0 flex-1">{event.content}</span>
+        {done ? (
+          <Badge tone="green">{action === "draft" ? "retried · in the draft" : "retried · sent"}</Badge>
+        ) : voice.audio_id ? (
+          <Button size="sm" disabled={busy} onClick={() => void retry()} title={`Transcribe the stored clip again (${action})`}>
+            {busy ? <Spinner /> : null} Retry
+          </Button>
+        ) : null}
+      </div>
+      {voice.audio_id ? <VoiceClip conversationId={event.conversation_id} audioId={voice.audio_id} className="mt-1.5" /> : null}
     </div>
   );
 }
@@ -231,13 +289,14 @@ function sourceLabel(source: string, meta: Record<string, unknown>): string {
 function queuedCaption(row: QueuedMessage, status: string): string {
   const source = row.source || "user";
   const origin = sourceLabel(source, (row.meta ?? {}) as Record<string, unknown>);
+  const voice = voiceMeta(row.meta as Record<string, unknown>) ? "voice" : "";
   const when =
     status === "running"
       ? "delivered at the next step"
       : status === "waiting_approval"
         ? "delivered when the approval is answered"
         : "";
-  return [origin, "queued", when].filter(Boolean).join(" · ");
+  return [origin, voice, "queued", when].filter(Boolean).join(" · ");
 }
 
 /** A message that is posted but not yet in the transcript: it looks like the user
@@ -286,12 +345,19 @@ function EventView({
       const source = typeof meta.source === "string" ? meta.source : "user";
       const foreign = source !== "user";
       const images = imageRefs(meta);
+      const voice = voiceMeta(meta);
       return (
         <div className="my-3 flex justify-end">
           <div className="min-w-0 max-w-[80%]">
-            {foreign ? (
-              <div className="mb-0.5 text-right text-[10.5px] tracking-wide text-neutral-500 uppercase">
-                {sourceLabel(source, meta)}
+            {foreign || voice ? (
+              <div className="mb-0.5 flex items-center justify-end gap-1 text-[10.5px] tracking-wide text-neutral-500 uppercase">
+                {voice ? (
+                  <span className="flex items-center gap-0.5" title="Dictated: the text is a transcription">
+                    <IconMic className="h-3 w-3" /> voice
+                  </span>
+                ) : null}
+                {foreign && voice ? <span>·</span> : null}
+                {foreign ? sourceLabel(source, meta) : null}
               </div>
             ) : null}
             <div
@@ -316,6 +382,11 @@ function EventView({
                 }
               />
             </div>
+            {voice?.audio_id ? (
+              <div className="mt-1 flex justify-end">
+                <VoiceClip conversationId={event.conversation_id} audioId={voice.audio_id} />
+              </div>
+            ) : null}
           </div>
         </div>
       );
@@ -396,12 +467,15 @@ function EventView({
         </div>
       );
     case "system":
-    default:
+    default: {
+      const voice = voiceMeta(meta);
+      if (event.kind === "system" && voice?.failed) return <VoiceFailure event={event} voice={voice} />;
       return (
         <div className="my-2 rounded-md border border-neutral-200 bg-neutral-50 px-2.5 py-1.5 text-[12px] text-neutral-600 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400">
           {event.content}
         </div>
       );
+    }
   }
 }
 
@@ -716,6 +790,15 @@ export function Conversation({ id, dense = false }: { id: string; dense?: boolea
           >
             <IconPaperclip />
           </Button>
+          <MicButton
+            conversationId={id}
+            onText={() => {
+              const el = composer.current;
+              if (!el) return;
+              el.focus();
+              requestAnimationFrame(() => el.setSelectionRange(el.value.length, el.value.length));
+            }}
+          />
           <textarea
             ref={composer}
             value={draft}

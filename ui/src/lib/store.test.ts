@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DRAFTS_KEY, initialState, loadDrafts, reduce, saveDrafts, type KeyValueStorage, type State } from "./store";
+import { appendDraftText, applyVoiceDraft, DRAFTS_KEY, initialState, loadDrafts, reduce, saveDrafts, type KeyValueStorage, type State } from "./store";
 import type { BusEvent } from "./types";
 
 const CID = "01J000000000000000000DESK";
@@ -486,5 +486,68 @@ describe("background processes", () => {
   it("ignores a process event without an id", () => {
     const state = feed([ev("process.failed", { status: "failed" })]);
     expect(state).toBe(initialState);
+  });
+});
+
+describe("voice events", () => {
+  const listener = {
+    enabled: true,
+    running: true,
+    pid: 7,
+    state: "idle",
+    hotkey: "ctrl+alt+space",
+    mode: "hold",
+    error: null,
+    devices: [] as string[],
+    device: "",
+    updated_at: null,
+  };
+
+  it("voice.draft appends a transcript to that conversation's draft on a new line", () => {
+    const start = { ...initialState, drafts: { [CID]: "Note:" } };
+    const state = feed([ev("voice.draft", { conversation_id: CID, audio_id: "A1", text: " buy milk " })], start);
+    expect(state.drafts[CID]).toBe("Note:\nbuy milk");
+  });
+
+  it("starts an empty draft, and joins after trailing whitespace without a newline", () => {
+    expect(feed([ev("voice.draft", { audio_id: "A1", text: "hello" })]).drafts[CID]).toBe("hello");
+    const start = { ...initialState, drafts: { [CID]: "a " } };
+    expect(feed([ev("voice.draft", { audio_id: "A2", text: "b" })], start).drafts[CID]).toBe("a b");
+  });
+
+  it("applies one clip once, whichever of the reply and the event comes first", () => {
+    const once = applyVoiceDraft(initialState, CID, "A1", "hi");
+    const twice = feed([ev("voice.draft", { audio_id: "A1", text: "hi" })], once);
+    expect(twice).toBe(once);
+    expect(twice.drafts[CID]).toBe("hi");
+  });
+
+  it("ignores empty text and events with no conversation", () => {
+    expect(feed([ev("voice.draft", { audio_id: "A1", text: "  " })])).toBe(initialState);
+    expect(feed([ev("voice.draft", { audio_id: "A1", text: "x" }, null)])).toBe(initialState);
+  });
+
+  it("bounds the applied-id list", () => {
+    let state = initialState;
+    for (let i = 0; i < 60; i++) state = applyVoiceDraft(state, CID, `A${i}`, "x");
+    expect(state.voiceApplied).toHaveLength(50);
+    expect(state.voiceApplied[49]).toBe("A59");
+  });
+
+  it("appendDraftText leaves the draft alone for empty text", () => {
+    expect(appendDraftText("abc", "")).toBe("abc");
+  });
+
+  it("voice.status replaces the listener's fields and keeps running/pid", () => {
+    const start = { ...initialState, voiceStatus: listener };
+    const report = { ...listener, state: "recording", devices: ["Mic"], device: "Mic", updated_at: "t" } as Record<string, unknown>;
+    delete report.running;
+    delete report.pid;
+    const state = feed([ev("voice.status", report, null)], start);
+    expect(state.voiceStatus).toMatchObject({ state: "recording", running: true, pid: 7, devices: ["Mic"] });
+  });
+
+  it("ignores a malformed voice.status", () => {
+    expect(feed([ev("voice.status", { nope: 1 }, null)])).toBe(initialState);
   });
 });

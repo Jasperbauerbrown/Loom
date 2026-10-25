@@ -3,7 +3,7 @@
 
 import type { SettingsField } from "../../lib/types";
 
-export type ControlKind = "text" | "number" | "toggle" | "select" | "list" | "path" | "time" | "secret";
+export type ControlKind = "text" | "number" | "toggle" | "select" | "list" | "path" | "time" | "secret" | "hotkey";
 
 /** One control per field. `field.ui` is already authoritative; this just gives it a name
  * and a safe fallback for any value the backend might one day add. */
@@ -17,6 +17,7 @@ export function controlKind(field: SettingsField): ControlKind {
     case "path":
     case "time":
     case "secret":
+    case "hotkey":
       return field.ui;
     default:
       return "text";

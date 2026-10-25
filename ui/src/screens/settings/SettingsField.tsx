@@ -9,6 +9,7 @@ import { fieldValue, toInputValue, validate } from "../../lib/validate";
 import type { SettingsField as SettingsFieldSchema } from "../../lib/types";
 import { FieldRow, Input, Select, Textarea, Toggle } from "../../components/ui";
 import { controlKind } from "./controls";
+import { HotkeyInput } from "./HotkeyInput";
 
 export function SettingsFieldControl({
   field,
@@ -151,6 +152,19 @@ export function SettingsFieldControl({
           onChange={(e) => setText(e.target.value)}
           onBlur={() => void commit(text)}
           onKeyDown={onKeyDown}
+        />
+      );
+      break;
+    case "hotkey":
+      control = (
+        <HotkeyInput
+          value={text}
+          disabled={saving}
+          onCommit={(next) => {
+            setText(next);
+            void commit(next);
+          }}
+          onError={setError}
         />
       );
       break;

@@ -289,7 +289,7 @@ export interface SettingsField {
   default: unknown;
   label: string;
   help: string;
-  ui: "text" | "number" | "toggle" | "select" | "list" | "path" | "time" | "secret";
+  ui: "text" | "number" | "toggle" | "select" | "list" | "path" | "time" | "secret" | "hotkey";
   min: number | null;
   max: number | null;
   choices: string[];
@@ -484,6 +484,30 @@ export interface SecretsInfo {
 }
 
 /** WS envelope (03 §12.2). */
+/** `GET /voice/status` (03 §5.7): the listener's last report plus the backend's view of
+ *  the child process. `voice.status` bus events carry the same shape minus running/pid. */
+export interface VoiceStatus {
+  enabled: boolean;
+  running?: boolean;
+  pid?: number | null;
+  /** disabled | stopped | starting | idle | recording | transcribing | error | unsupported */
+  state: string;
+  hotkey: string;
+  mode: string;
+  error: string | null;
+  devices: string[];
+  device: string;
+  updated_at: string | null;
+}
+
+/** `POST /conversations/{id}/audio` and `…/retry` replies. */
+export interface AudioResult {
+  audio_id: string;
+  text: string;
+  inbox_id?: string;
+  dropped?: boolean;
+}
+
 export interface BusEvent {
   type: string;
   ts: string;

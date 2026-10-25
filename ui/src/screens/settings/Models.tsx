@@ -25,6 +25,7 @@ import { cls } from "../../lib/format";
 import { copyName, formatReasoning, parseReasoning, type ReasoningMode } from "../../lib/presets";
 import { navigate } from "../../lib/router";
 import { ScalarFields } from "./SettingsField";
+import { ROLE_HELP, roleRows } from "../../lib/roles";
 
 type SubTab = "providers" | "presets" | "roles";
 const SUB_TABS: SubTab[] = ["providers", "presets", "roles"];
@@ -437,6 +438,8 @@ function PresetDialog({
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [probedModels, setProbedModels] = useState<string[] | null>(null);
+  // Which list a probe asks for: chat models, or the provider's transcription models.
+  const [probeRole, setProbeRole] = useState<"" | "transcription">("");
   const [probeError, setProbeError] = useState<string | null>(null);
   const [probing, setProbing] = useState(false);
 
@@ -444,7 +447,7 @@ function PresetDialog({
     if (!provider) return;
     setProbing(true);
     setProbeError(null);
-    const res = await store.guard(() => api.probeProvider(provider));
+    const res = await store.guard(() => api.probeProvider(provider, probeRole || undefined));
     setProbing(false);
     if (!res) return;
     if (res.error) {
@@ -547,6 +550,15 @@ function PresetDialog({
             ) : (
               <Input value={model} onChange={(e) => setModel(e.target.value)} placeholder="model name" />
             )}
+            <Select
+              value={probeRole}
+              onChange={(e) => setProbeRole(e.target.value as "" | "transcription")}
+              title="Which models the probe lists"
+              className="w-36 shrink-0"
+            >
+              <option value="">chat</option>
+              <option value="transcription">transcription</option>
+            </Select>
             <Button size="sm" onClick={probe} disabled={probing}>
               {probing ? "…" : "Probe"}
             </Button>
@@ -668,8 +680,6 @@ function PresetGroup({ title, description, children }: { title: string; descript
 
 // -- Roles ------------------------------------------------------------------
 
-const ROLE_NAMES = ["desk", "worker", "maintenance", "utility", "embedding"];
-
 function RolesPanel({
   roles,
   presets,
@@ -693,8 +703,8 @@ function RolesPanel({
   return (
     <Card className="p-3">
       <div className="divide-y divide-neutral-100 dark:divide-neutral-800/70">
-        {ROLE_NAMES.map((role) => (
-          <FieldRow key={role} label={role}>
+        {roleRows(roles).map((role) => (
+          <FieldRow key={role} label={role} help={ROLE_HELP[role]}>
             <Select value={byRole.get(role) ?? ""} onChange={(e) => void setRole(role, e.target.value)}>
               <option value="">(none)</option>
               {presets.map((p) => (

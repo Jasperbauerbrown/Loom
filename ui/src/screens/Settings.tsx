@@ -15,6 +15,7 @@ import { PermissionsTab } from "./settings/Permissions";
 import { IntegrationsTab } from "./settings/Integrations";
 import { TriggersTab } from "./settings/Triggers";
 import { SystemTab } from "./settings/System";
+import { VoiceTab } from "./settings/Voice";
 import { ScalarFields } from "./settings/SettingsField";
 
 // Server-declared scalar groups (03 §13.2 / config.py GROUPS), in display order, with
@@ -27,6 +28,7 @@ const TAB_ORDER = [
   "knowledge",
   "permissions",
   "tools",
+  "voice",
   "integrations",
   "triggers",
   "system",
@@ -118,6 +120,8 @@ function SettingsTabBody({ group, sub, settings }: { group: string; sub: string;
       return <IntegrationsTab />;
     case "triggers":
       return <TriggersTab settings={settings} />;
+    case "voice":
+      return <VoiceTab settings={settings} />;
     case "system":
       return <SystemTab settings={settings} />;
     default: {

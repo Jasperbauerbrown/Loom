@@ -40,6 +40,7 @@ import type {
   ToolPolicy,
   VaultTreeNode,
   VersionInfo,
+  VoiceStatus,
 } from "./types";
 
 export type ConnectionState = "connecting" | "open" | "closed";
@@ -86,6 +87,11 @@ export interface State {
   queued: Record<string, QueuedMessage[]>;
   /** composer text per conversation; survives navigation (and reloads via sessionStorage) */
   drafts: Record<string, string>;
+  /** audio ids whose transcript already landed in a draft, newest last (bounded): the
+   *  composer's own reply and the `voice.draft` event for the same clip apply once */
+  voiceApplied: string[];
+  /** the voice listener's last status (GET /voice/status, then `voice.status` events) */
+  voiceStatus: VoiceStatus | null;
 
   settings: SettingsPayload | null;
   settingsStale: boolean;
@@ -139,6 +145,8 @@ export const initialState: State = {
   usage: {},
   queued: {},
   drafts: {},
+  voiceApplied: [],
+  voiceStatus: null,
   settings: null,
   settingsStale: false,
   providers: [],
@@ -381,6 +389,31 @@ function countUnseen(items: Record<string, Item>): number {
   let n = 0;
   for (const it of Object.values(items)) if (!it.seen_at && !it.dismissed_at) n++;
   return n;
+}
+
+// --- voice ----------------------------------------------------------------
+
+const VOICE_APPLIED_MAX = 50;
+
+/** A transcript appended to a draft: on its own line after existing text, so dictation
+ *  never glues onto the last word typed. */
+export function appendDraftText(draft: string, text: string): string {
+  const clean = text.trim();
+  if (!clean) return draft;
+  if (!draft) return clean;
+  return /\s$/.test(draft) ? draft + clean : `${draft}
+${clean}`;
+}
+
+/** Apply one clip's transcript to a conversation's draft, once per audio id. The
+ *  composer's POST reply and the `voice.draft` bus event both carry it; whichever arrives
+ *  first wins and the other is a no-op. */
+export function applyVoiceDraft(state: State, conversationId: string, audioId: string, text: string): State {
+  if (!conversationId || !text.trim()) return state;
+  if (audioId && state.voiceApplied.includes(audioId)) return state;
+  const drafts = { ...state.drafts, [conversationId]: appendDraftText(state.drafts[conversationId] ?? "", text) };
+  const voiceApplied = audioId ? [...state.voiceApplied, audioId].slice(-VOICE_APPLIED_MAX) : state.voiceApplied;
+  return { ...state, drafts, voiceApplied };
 }
 
 // --- the reducer -----------------------------------------------------------
@@ -685,6 +718,17 @@ export function reduce(state: State, event: BusEvent): State {
       return { ...state, schedules };
     }
 
+    case "voice.draft": {
+      if (!cid || typeof data.text !== "string") return state;
+      return applyVoiceDraft(state, cid, typeof data.audio_id === "string" ? data.audio_id : "", data.text);
+    }
+
+    case "voice.status": {
+      // The listener's report lacks the backend's running/pid: keep the last known ones.
+      if (!data || typeof data.state !== "string") return state;
+      return { ...state, voiceStatus: { ...(state.voiceStatus ?? {}), ...data } as VoiceStatus };
+    }
+
     case "schedule.deleted": {
       const row = data as Schedule;
       if (!row || !row.id) return state;
@@ -722,8 +766,22 @@ export class Store {
   }
 
   dispatch = (event: BusEvent) => {
+    const drafts = this.state.drafts;
     this.set((s) => reduce(s, event));
+    if (this.state.drafts !== drafts) saveDrafts(this.state.drafts); // `voice.draft`
   };
+
+  /** The composer's own transcript (same once-per-clip rule as `voice.draft`). */
+  applyVoiceDraft(conversationId: string, audioId: string, text: string) {
+    const drafts = this.state.drafts;
+    this.set((s) => applyVoiceDraft(s, conversationId, audioId, text));
+    if (this.state.drafts !== drafts) saveDrafts(this.state.drafts);
+  }
+
+  async loadVoiceStatus() {
+    const status = await this.guardOptional(() => api.voiceStatus());
+    if (status) this.set((s) => ({ ...s, voiceStatus: status }));
+  }
 
   // -- toasts ---------------------------------------------------------------
   toast(kind: Toast["kind"], title: string, body?: string) {
@@ -1010,6 +1068,8 @@ export class Store {
       this.loadItems(),
       this.loadProcesses(),
       this.loadSystem(),
+      // only once something showed it: the Voice tab loads it on demand
+      this.state.voiceStatus ? this.loadVoiceStatus() : Promise.resolve(),
     ]);
   }
 }

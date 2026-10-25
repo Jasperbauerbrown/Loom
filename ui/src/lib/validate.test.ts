@@ -84,6 +84,7 @@ describe("controlKind", () => {
     { field: field({ key: "example.folder", type: "str", ui: "path" }), kind: "path" },
     { field: field({ key: "knowledge.maintenance_nightly_at", type: "str", ui: "time" }), kind: "time" },
     { field: field({ key: "general.lan_token", type: "str", ui: "secret" }), kind: "secret" },
+    { field: field({ key: "voice.hotkey", type: "str", ui: "hotkey" }), kind: "hotkey" },
   ];
 
   it("maps each fixture field to exactly one control kind", () => {

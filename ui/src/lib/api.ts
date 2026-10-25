@@ -44,6 +44,8 @@ import type {
   VaultSearchHit,
   VaultTreeNode,
   VersionInfo,
+  VoiceStatus,
+  AudioResult,
 } from "./types";
 
 export class ApiError extends Error {
@@ -68,6 +70,12 @@ export function token(): string | null {
 export function imageUrl(conversationId: string, imageId: string): string {
   const t = token();
   return `/api/conversations/${conversationId}/images/${imageId}${t ? `?token=${encodeURIComponent(t)}` : ""}`;
+}
+
+/** The GET url of a stored voice clip, for `<audio src>` (token in the query, as above). */
+export function audioUrl(conversationId: string, audioId: string): string {
+  const t = token();
+  return `/api/conversations/${conversationId}/audio/${encodeURIComponent(audioId)}${t ? `?token=${encodeURIComponent(t)}` : ""}`;
 }
 
 const tokenListeners = new Set<() => void>();
@@ -189,6 +197,39 @@ async function request<T>(
   return parsed as T;
 }
 
+/** POST a raw body (03 §12.1: no multipart, no extra dependency); same error shape as
+ *  `request`. Used by image and audio uploads. */
+async function rawPost<T>(
+  path: string,
+  body: Blob,
+  headers: Record<string, string>,
+  params?: Record<string, unknown>,
+): Promise<T> {
+  let res: Response;
+  try {
+    res = await authedFetch(`/api${path}${qs(params)}`, { method: "POST", headers, body });
+  } catch (e) {
+    throw new ApiError(0, `network error: ${(e as Error).message}`);
+  }
+  const text = await res.text();
+  let parsed: any = undefined;
+  try {
+    parsed = text ? JSON.parse(text) : undefined;
+  } catch {
+    parsed = text;
+  }
+  if (!res.ok) {
+    const detail =
+      parsed && typeof parsed === "object" && "detail" in parsed
+        ? String(parsed.detail)
+        : typeof parsed === "string" && parsed
+          ? parsed
+          : `${res.status} ${res.statusText}`;
+    throw new ApiError(res.status, detail);
+  }
+  return parsed as T;
+}
+
 const get = <T,>(p: string, params?: Record<string, unknown>) => request<T>("GET", p, undefined, params);
 const post = <T,>(p: string, body?: unknown, params?: Record<string, unknown>) =>
   request<T>("POST", p, body ?? {}, params);
@@ -230,35 +271,20 @@ export const api = {
     post<unknown>(`/conversations/${id}/messages`, images && images.length ? { content, images } : { content }),
   /** Raw-body upload (03 §12.1: no multipart, no extra dependency). The reply names the
    *  stored image; `sendMessage` then carries the id. 415 non-image, 413 over the cap. */
-  uploadImage: async (id: string, file: File): Promise<{ id: string; mime: string; bytes: number }> => {
-    const headers: Record<string, string> = {
+  uploadImage: (id: string, file: File) =>
+    rawPost<{ id: string; mime: string; bytes: number }>(`/conversations/${id}/images`, file, {
       "Content-Type": file.type || "application/octet-stream",
       "X-Filename": encodeURIComponent(file.name || "image"),
-    };
-    let res: Response;
-    try {
-      res = await authedFetch(`/api/conversations/${id}/images`, { method: "POST", headers, body: file });
-    } catch (e) {
-      throw new ApiError(0, `network error: ${(e as Error).message}`);
-    }
-    const text = await res.text();
-    let parsed: any = undefined;
-    try {
-      parsed = text ? JSON.parse(text) : undefined;
-    } catch {
-      parsed = text;
-    }
-    if (!res.ok) {
-      const detail =
-        parsed && typeof parsed === "object" && "detail" in parsed
-          ? String(parsed.detail)
-          : typeof parsed === "string" && parsed
-            ? parsed
-            : `${res.status} ${res.statusText}`;
-      throw new ApiError(res.status, detail);
-    }
-    return parsed as { id: string; mime: string; bytes: number };
-  },
+    }),
+  /** A voice clip (WAV, raw body like images): stored, then transcribed by the
+   *  transcription role. `draft` returns the text (and emits `voice.draft`); `send` posts
+   *  it as a user message (202). 409 no transcription model, 502 transcription failed. */
+  uploadAudio: (id: string, wav: Blob, action: "send" | "draft", source: "composer" | "hotkey" = "composer") =>
+    rawPost<AudioResult>(`/conversations/${id}/audio`, wav, { "Content-Type": "audio/wav" }, { action, source }),
+  /** Re-transcribe a stored clip (the Retry on a failed voice message); same outcomes. */
+  retryAudio: (id: string, audioId: string, action: "send" | "draft") =>
+    post<AudioResult>(`/conversations/${id}/audio/${encodeURIComponent(audioId)}/retry`, undefined, { action }),
+  voiceStatus: () => get<VoiceStatus>("/voice/status"),
   /** Inbox rows not yet in the transcript: what the next step boundary will deliver. */
   inbox: (id: string) => get<QueuedMessage[]>(`/conversations/${id}/inbox`),
   cancel: (id: string) => post<unknown>(`/conversations/${id}/cancel`),
@@ -365,9 +391,9 @@ export const api = {
   updateProvider: (name: string, body: Partial<Provider>) =>
     patch<Provider>(`/providers/${encodeURIComponent(name)}`, body),
   deleteProvider: (name: string) => del<unknown>(`/providers/${encodeURIComponent(name)}`),
-  probeProvider: (name: string) =>
+  probeProvider: (name: string, role?: string) =>
     post<{ ok?: boolean; models: string[]; error?: string }>(
-      `/providers/${encodeURIComponent(name)}/probe`,
+      `/providers/${encodeURIComponent(name)}/probe${role ? `?role=${encodeURIComponent(role)}` : ""}`,
     ),
   presets: () => get<Preset[]>("/presets"),
   createPreset: (body: Partial<Preset>) => post<Preset>("/presets", body),
