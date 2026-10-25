@@ -1755,3 +1755,89 @@ sessions do not re-litigate.
   full history — reason: clearing context should visibly clear the view while the rows
   stay in the database and searchable; the boundary keys on `kind=clear` only, never on
   summary_cutoff/fold/evict.
+- **2026-10-24** — **Voice input: transcription is a model role; clips are artifacts;
+  every clip has one codepath.** Speech-to-text goes through a sixth role,
+  `transcription`, and the OpenAI-compatible `POST /v1/audio/transcriptions`. OpenAI,
+  Groq, OpenRouter and local whisper servers all speak it, so one transport covers hosted
+  and local, and httpx's `files=` builds the multipart without a new dependency. The role
+  has no fallback, because a chat model cannot hear. An Ollama provider is refused as
+  `fatal` without a request, because Ollama has no such endpoint. Clips are stored before
+  they are transcribed (persist before act), as `artifacts/<conv>/audio_<ulid>.<ext>` with
+  no row, the same way images are stored, so a failed transcription can be retried from
+  the bytes. The cap is a fixed 25 MB (OpenAI's limit) and not a setting: Loom's own clips
+  are about 32 KB/s, so no one needs to tune it. Hotkey, composer and Retry clips take one
+  path: store → transcribe → send, draft, drop on an empty transcript, or fail. Every
+  failure, including having no transcription model, has one behaviour: a `system` event
+  with `meta.voice.failed` that the transcript renders with Retry, plus `voice.failed`.
+  The missing model is told apart only by its 409 status and the de-duplicated "Choose a
+  transcription model" setup item. Assigning the role dismisses that item through the
+  same rule the desk's "Choose a model" item now uses (source `setup:<role>`). A draft
+  both returns the text and emits `voice.draft`, so other tabs and hotkey clips get it
+  too; the UI store applies each `audio_id` at most once (`applyVoiceDraft`), whichever
+  copy arrives first — no special case for "my own clip".
+- **2026-10-24** — **Voice messages are marked for the model, not in the transcript.** A
+  user message with `meta.voice` reaches the model prefixed with
+  `prompts/context/voice-message.md` (it was dictated; read likely mis-hearings
+  charitably). The stored text stays exactly what the person said. One helper
+  (`context.user_text`) renders replay and in-turn messages, so the two cannot disagree.
+- **2026-10-24** — **Audio has its own retention.** Clips are deleted after
+  `voice.audio_retention_days` (default 30, UI-visible) by a fourth rule in the artifacts
+  walker that housekeeping already runs. The rule ignores the conversation's archive
+  state, since the desk, where hotkey clips land, is never archived. Until then the
+  walker keeps clips the way it keeps images, including from the idle-scratch sweep,
+  which would otherwise delete a desk clip after `scratch_idle_days`. Transcripts are
+  never deleted by this rule.
+- **2026-10-24** — **The voice listener is its own process, supervised by the backend.**
+  The global hotkey and the microphone live in `loom listen`, a child the backend starts
+  when `voice.enabled` is on, inside a kill-on-close Job Object so it cannot outlive the
+  backend. Reason: a hotkey needs a Win32 message loop on its own thread and capture
+  needs winmm buffers; keeping both out of the asyncio backend means a fault there costs
+  a listener restart (1 s → 60 s backoff), never a backend one, and never touches
+  `/api/system/health`. Any `voice.*` change restarts it, so every voice setting takes
+  effect without an app restart. The token goes in the child's environment, never on
+  argv. Exit 0 means "do not restart": not Windows (`unsupported`), another listener
+  holds the `Local\loom-voice-listener` mutex (the promotion probe runs on a copy of the
+  live DB with voice on), or an invalid hotkey string — the supervisor then waits for a
+  settings change; a taken hotkey exits 3 and is retried with backoff, since the other
+  application may release it. It is never started under `--fake` or in tests: a `--fake`
+  serve is recognised by its `FakeModelClient`, already the one thing only `--fake` and
+  the tests construct, so no flag was added to `serve`. Rejected: an in-backend thread
+  (one ctypes crash takes the server down) and a separate user-installed tray app (a
+  second thing to set up, against Simplicity).
+- **2026-10-24** — **The listener's decisions live in pure Python; the Win32 layer has
+  none; both are protected.** `listener.py` is a state machine over injected hotkey,
+  audio, backend, cue and clock parts and is fully tested with fakes; `win32.py` (ctypes
+  over user32/winmm/kernel32 + winsound) only registers, captures and plays and is
+  exercised by hand. No test, smoke run or agent ever registers a hotkey, opens the
+  microphone or plays a sound on the dev machine. Both files are protected paths (mode
+  `all`): they decide what the microphone records and when, so a change to them is the
+  person's call and a promotion touching them needs acknowledging. Seeded on a fresh
+  install and once by migration 0011 on an existing one (the 0008 mechanism).
+- **2026-10-24** — **Hotkey clips are spooled before upload; only "cannot connect" keeps
+  one.** A clip passing the min-length and silence gates is written to
+  `APP_HOME/voice-spool/` first and uploaded oldest-first. Any answer from the backend —
+  success, nothing heard, transcription failed (the backend has the audio and offers
+  Retry), no model, even a read timeout — settles it: retrying an answered clip could
+  post the same words twice. Silence is detected with an RMS gate (loudest 30 ms frame
+  under 300/32767 ≈ −40 dBFS) because transcription models invent text for silence; the
+  threshold is a constant, not a setting (only `voice.silence_gate` on/off is exposed) —
+  scope cut visibly; revisit if a quiet microphone trips it.
+- **2026-10-24** — **Composer mic is click/click, always drafts, and records Web Audio
+  into Loom's own WAV.** One click starts and one click stops (no hold-to-talk), with × or
+  Esc to cancel: holding a mouse button for a whole sentence is fragile, and the hotkey
+  already covers hold-to-talk. The transcript is appended to the draft and never sent by
+  itself, so the person reads dictation before it goes; `voice.action` governs hotkey
+  clips only. MediaRecorder is not used because its container and codec vary by browser
+  (webm/opus, ogg, mp4); the browser taps PCM with an AudioWorklet (ScriptProcessor
+  fallback) and `ui/src/lib/wav.ts` resamples it to 16 kHz mono PCM16 WAV, the same bytes
+  the listener produces — no dependency, and the encoder is pure and unit-tested.
+- **2026-10-24** — **Model roles render from the API.** Settings › Models › Roles lists the
+  roles `GET /model-roles` returns (every entry of `roles.ROLES`, which bootstrap now
+  seeds a row for), instead of a hardcoded list of five. A role added on the backend
+  (transcription today) can never be missing from the UI; the UI only adds ordering and
+  help text.
+- **2026-10-24** — **The hotkey field writes the listener's grammar.** The capture control
+  accepts exactly the keys `loom/voice/listener.py` `parse_hotkey` accepts, so a captured
+  hotkey always parses. Punctuation keys are not offered because the listener has no VK
+  for them. If the listener's key table grows, `ui/src/lib/hotkey.ts` `NAMED` grows with
+  it.

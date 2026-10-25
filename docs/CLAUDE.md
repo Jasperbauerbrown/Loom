@@ -58,6 +58,7 @@ python -m uv run loom reindex              # rebuild vault indexes from markdown
 python -m uv run loom send "text"          # CLI client; blocks until the turn ends
 python -m uv run loom send --thread ID "text"
 python -m uv run loom status               # health + model queue
+python -m uv run loom listen [--url URL]   # the voice listener; normally started by the backend when voice is on
 
 npm --prefix ui install
 npm --prefix ui run build                  # tsc -b && vite build → ui-dist/ (committed)

@@ -106,10 +106,18 @@ loom/
   binding and a bearer token are settings.
 - Startup order: migrate DB → load settings → init secrets → reconcile background processes (§9.6) → init model client → load
   vault index (rebuild if stale) → start watcher → load connectors → connect MCP servers
-  → start scheduler → resume interrupted conversations (§6.3 step 0) → serve.
+  → start scheduler → resume interrupted conversations (§6.3 step 0) → start the voice
+  listener (`loom.voice`, last in `INSTALL_ORDER`; §5.7) → serve.
 - Shutdown: stop accepting turns, let in-flight tool calls finish (bounded 10s),
   persist, exit. Persist-before-act (§4) makes abrupt kills safe. Background processes
   are left running on purpose (§9.6).
+- The backend owns one more child: the voice listener (§5.7). `loom.voice` starts
+  `sys.executable -m loom listen --url http://<bind>:<port>` when `voice.enabled` is on
+  and the serve is not `--fake`, inside a kill-on-close Job Object
+  (`processes.create_job(kill_on_close=True)`), so — unlike a background process (§9.6)
+  — it never outlives the backend. It is restarted with a 1 s → 60 s backoff when it dies
+  with a non-zero code, replaced on any `voice.*` (or `general.lan_token`) settings
+  change, and stopped first on shutdown. It never feeds `/api/system/health`.
 
 ### 3.3 First run (decided)
 Simplicity ethos: from install to a working desk in under a minute, one required
@@ -129,7 +137,7 @@ choice. There is no setup screen and no wizard — nothing gates the app (decide
    an answer — Loom does not ask again until the person asks for it back.
 4. Settings › Models is the whole of configuration, first run and after: Providers
    (including an OpenRouter base URL + a key from the secrets store), Presets, and the
-   five roles. Timezone, like everything else, is an ordinary setting under General.
+   roles. Timezone, like everything else, is an ordinary setting under General.
 5. Before a model is set every surface says the same thing rather than blocking: the
    terminal prints "no model configured — choose one at <url>/settings/models", `loom
    send` and `POST /conversations/{id}/messages` return 409 "no model configured — open
@@ -150,6 +158,8 @@ choice. There is no setup screen and no wizard — nothing gates the app (decide
   current  previous           # release pointers (`previous` is what rollback returns to)
   snapshots/<ts>/state.db     # pre-promotion snapshots
   logs/backend.log            # rotating
+  logs/voice-listener.log     # the supervised voice listener's output (§5.7)
+  voice-spool/                # hotkey clips waiting for an unreachable backend, oldest first (§5.7)
   supervisor.token
 ```
 
@@ -229,6 +239,7 @@ processes(id TEXT PK /*ULID*/, conversation_id TEXT, title TEXT, command TEXT, c
 tool_policies(tool TEXT PK, mode TEXT /*allow|ask|classify*/, updated_at TEXT)
 roots(path TEXT PK, added_at TEXT, added_by TEXT)
 protected_paths(path TEXT PK, mode TEXT /*all|writes*/ DEFAULT 'all')   -- mode: 0008 (2026-10-12), §9.3
+-- 0011 voice_protected (2026-10-24): no schema change; its arrival seeds the voice listener's protected rows (§15.3)
 
 mcp_servers(id TEXT PK, name TEXT, transport TEXT /*stdio|http*/, command TEXT,
             args TEXT, url TEXT, env TEXT /*json, values may be {{secret:X}}*/,
@@ -351,6 +362,10 @@ is the traversal guard. Transcript rows carry only refs, `meta.images = [{id, mi
 context-assembly time and live in memory only, so no chars/4 estimate and no FTS row ever
 sees base64. Cap: `conversation.image_max_mb` (default 10), enforced at upload, in the
 tools and in the store. Pruning sweeps `img_*` in the same folders as the spills.
+**Voice clips** (2026-10-24) live beside the images as `artifacts/<conv>/audio_<ulid>.<ext>`,
+with no row. The walker keeps them like images. A fourth rule deletes them after
+`voice.audio_retention_days` in every non-purged folder (§5.7). `Store.prune` now
+returns `{artifacts, files, bytes, failed, audio}`.
 
 ### 4.5 Secrets
 `secrets.py` exposes `get(name) / set(name, value) / delete / list_names`. Backend:
@@ -410,15 +425,19 @@ Three layers, all UI-managed:
   gets and `thinking_cap` is the bound Loom can enforce. It applies to conversation
   turns only. Presets are reusable: many roles and threads may point at one.
   Params merge provider defaults < preset < per-call overrides, key-wise.
-- **Role**: `desk`, `worker`, `maintenance`, `utility`, `embedding` → one preset each.
-  Defaults after first run: desk/worker/maintenance → the preset created from the
-  chosen bar model; utility → unset (falls back to desk); embedding → a preset on
-  `nomic-embed-text` if present.
+- **Role**: `desk`, `worker`, `maintenance`, `utility`, `embedding`, `transcription` →
+  one preset each. Defaults after first run: desk/worker/maintenance → the preset created
+  from the chosen bar model; utility → unset (falls back to desk); embedding → a preset on
+  `nomic-embed-text` if present; transcription → unset; it never falls back (a chat
+  model cannot hear; §5.7). Bootstrap seeds a `model_roles` row for every name in
+  `roles.ROLES`.
 A conversation resolves its model as `conversation.preset` (explicit override) else
 `model_roles[conversation.role]`. Threads may be created with a `preset` override
 ("build this on the Mac mini 27b"). Changing a role's preset takes effect on the next
 model call; no restart. `GET /models?provider=` probes a provider's live model list so
-the preset form offers real names.
+the preset form offers real names; `?role=transcription` (also on `POST
+/providers/{name}/probe`) asks for its transcription models where the provider can say
+(§5.7).
 
 ### 5.3 Priority queue and preemption
 All model calls pass through one asyncio queue keyed by provider. Priority: `0`
@@ -478,6 +497,153 @@ background and never compares vectors from two models (decided 2026-10-15). The 
 runs on every `models.changed` event, before every query embedding and before
 curation's similarity pass. A preset's **Test** sends one embedding instead of a chat
 completion when that preset holds the embedding role.
+
+### 5.7 Voice (2026-10-24)
+Speech in, text out: a global hotkey (the listener) or the composer's mic (§13.1)
+records a clip, the backend stores and transcribes it, and the transcript is sent or
+drafted like typed text. Code: `loom/voice/` (`store.py`, `listener.py`, `win32.py`,
+`supervise.py`) and `server/routers/voice.py`.
+
+**Transcription.** `transcribe(audio, mime, *, preset=None, priority=interactive) ->
+Transcription{text, outcome, error, model, latency_ms}` goes through the `transcription`
+role (or an explicit preset). The role never falls back to another role. Resolution
+failures are the usual `fatal` outcome naming the settings URL. The call is the
+OpenAI-compatible `POST /v1/audio/transcriptions` that OpenAI, Groq, OpenRouter and local
+whisper servers all speak. It is multipart through httpx `files=`, so there is no new
+dependency. The fields are `file` (named `audio.<ext>` because some servers pick a
+decoder by extension), `model`, `response_format=json`, and the preset params `language`,
+`prompt` (a vocabulary hint) and `temperature` when they are set. The total timeout is
+the preset's `timeout_s`. A provider of kind `ollama` is answered `fatal` without a
+request ("ollama has no transcription endpoint — use an openai_compatible provider (a
+local whisper server or a hosted API)"). Like `embed`, the call takes the provider's
+queue slot (`purpose: transcribe`). Like a chat call, it never raises. HTTP statuses go
+through `classify_http`. Network errors, timeouts and a body without a string `text` are
+`transient`. The text comes back stripped. A preset's **Test** sends 1 s of generated
+16 kHz silence through `transcribe` when that preset holds the transcription role. `GET
+/models?provider=&role=transcription` and `POST /providers/{name}/probe?role=transcription`
+add `output_modalities=transcription` to an OpenAI-compatible provider's `/v1/models`
+call. OpenRouter filters its catalogue that way, and an endpoint that does not know the
+parameter lists everything.
+
+**Clips.** Loom produces WAV PCM16 mono 16 kHz from both the listener and the browser. The
+audio endpoints sniff RIFF/WAVE, Ogg, FLAC, WebM, MP4 and MP3, then fall back to the
+Content-Type (aliases like `audio/x-wav` are folded). Any of those types is stored and
+passed through untouched. The cap is a fixed 25 MB, OpenAI's upload limit and the tightest
+of the hosted endpoints; 120 s of 16 kHz PCM16 is about 3.8 MB. Clips are stored before
+anything transcribes them, as `artifacts/<conv>/audio_<ulid>.<ext>` with no table row. The
+bare 26-character ULID is the clip id, and its strict shape is the traversal guard
+(`voice/store.py`).
+
+**Delivery.** Every clip goes through one codepath, whether it is new, a retry, from the
+hotkey or from the composer: store → transcribe → deliver.
+- `action=send` posts the transcript with `conversation.post(…, source="user",
+  meta={"voice": {audio_id, preset, source}})`. The runner copies `meta.voice` onto the
+  `user` event.
+- `action=draft` emits bus `voice.draft {conversation_id, audio_id, text}`, and the
+  surface puts the text in that conversation's composer.
+- An empty transcript is dropped and nothing is posted.
+- A failure appends a `system` event, "voice message could not be transcribed: <error>",
+  with `meta.voice = {audio_id, failed: true, action}`. The transcript shows it with a
+  Retry button. The bus also gets `voice.failed`. Having no transcription model is the
+  same failure. It answers 409 instead of 502 and also posts one de-duplicated setup item,
+  "Choose a transcription model" (source `setup:transcription`). Assigning any preset to
+  the role dismisses that item. The models router dismisses a role's setup item through
+  one rule: source `setup` for the desk, `setup:<role>` for the others.
+
+**Model-visible marker.** When a user message carries `meta.voice`, its model-facing text
+is prefixed with `prompts/context/voice-message.md`: the message was dictated, so the model
+should read likely mis-hearings charitably. The transcript stores the text unprefixed.
+Replay (`messages_from_events`) and the runner's in-turn append both render through
+`context.user_text`.
+
+**The listener** (`listener.py`, `win32.py`). A global hotkey and the microphone belong
+to a small Loom-owned process, `loom listen` (§14), not to the backend: the backend stays
+a plain asyncio server, and a crash in the ctypes layer costs a listener restart, not a
+backend restart. `listener.py` holds every decision as a state machine over five injected
+parts — `HotkeySource`, `AudioSource`, `Backend` (REST), `Cues`, `Clock` — so it is
+unit-tested with fakes; `win32.py` is the only code that touches Windows and makes no
+decisions. Both are protected paths (§15.3).
+- **Hotkey.** `RegisterHotKey(NULL, id, mods | MOD_NOREPEAT, vk)` on a thread with its
+  own `GetMessageW` loop (hotkeys are per-thread). `voice.hotkey` is parsed by
+  `listener.parse_hotkey`: `+`-joined, lowercase, modifiers `ctrl alt shift win`
+  (aliases control/super/meta/cmd/option), then exactly one key — `a`–`z`, `0`–`9`,
+  `f1`–`f24`, `numpad0`–`numpad9`, `space enter tab backspace insert delete home end
+  pageup pagedown up down left right pause scrolllock printscreen` (aliases return, del,
+  ins, pgup, pgdn). Rejected with a message: no key, two keys, a repeated modifier, an
+  unknown name, `esc` (it cancels), and a key that types something (a character, space,
+  enter, tab, backspace) with no modifier. The UI's capture field (`ui/src/lib/hotkey.ts`)
+  produces the same grammar.
+- **Hold / toggle.** Hold: recording runs while the main key is down — release is seen
+  by polling `GetAsyncKeyState(vk)` every 20 ms. Toggle: a second press stops. Esc is
+  registered (no modifiers) only while recording and cancels: the audio is discarded.
+  `voice.max_seconds` stops and sends.
+- **Capture.** winmm `waveInOpen` (`WAVE_MAPPER`, or the `voice.input_device` index from
+  `waveInGetDevCapsW` names; a name that is not found falls back to the default and says
+  so in the status) at 16 kHz mono PCM16, a ring of 8 × 100 ms buffers polled for
+  `WHDR_DONE` (no callback thread). The clip is encoded with stdlib `wave`.
+- **Drops.** A clip shorter than `voice.min_ms` (an accidental tap; an empty clip always)
+  or, with `voice.silence_gate`, one whose loudest 30 ms frame has RMS below
+  `SILENCE_RMS` = 300 of 32767 (about −40 dBFS; computed with `array` + `math`), is
+  dropped with the cancel cue and never leaves the machine.
+- **Spool and upload.** A kept clip is written to
+  `APP_HOME/voice-spool/<epoch ms>-<seq>-<action>.wav` first (persist before act; the
+  action is fixed at capture time), then an uploader thread drains the spool
+  oldest-first: `GET /conversations?kind=desk`, then `POST
+  /conversations/{desk}/audio?action=<voice.action>&source=hotkey` with the WAV body.
+  Only "cannot connect" keeps a clip spooled (retried on each new clip, on any successful
+  contact, and every 30 s while clips wait — including on the next start). Any HTTP
+  answer settles it: success, `dropped`, 502 (the backend has the audio and offers
+  Retry), 409 (no transcription model), even a read timeout (the backend has the clip;
+  resending would post the words twice). Failures play the error cue and set the status
+  error.
+- **Cues.** Rising two-note tone = start, falling = stop, one low note = cancel/drop,
+  two low notes = error; generated in memory (`listener.cue_wav`) and played with
+  `winsound.PlaySound(SND_MEMORY)` on a worker thread (`SND_MEMORY` cannot be
+  `SND_ASYNC`). `voice.sounds` off silences all of them.
+- **Start-up and exit codes.** Settings come from `GET /settings` (retried once a second
+  for 60 s, since the backend spawns the listener before uvicorn accepts connections;
+  then exit 4). Non-Windows: status `unsupported`, exit 0. A second listener (the named
+  mutex `Local\loom-voice-listener` is held — e.g. the promotion probe's backend, which
+  runs on a copy of the live DB with voice on) reports "another Loom listener owns the
+  hotkey" and exits 0 without registering anything. An invalid hotkey string: status
+  `error`, exit 0 (only a settings change can fix it). Hotkey taken by another
+  application: status error "hotkey ctrl+alt+space is taken by another application",
+  exit 3 (the supervisor's backoff retries; the other app may let go).
+
+**Supervision** (`supervise.Supervisor`, attached as `app.extras["voice_listener"]`).
+Spawned only when `voice.enabled`, the backend is not shutting down, and the serve is not
+`--fake` — a `--fake` serve is recognised by its model client being the
+`FakeModelClient`, which is also the test harness's client, so no test starts a real
+listener. Argv carries only `--url` (the bound host, `0.0.0.0`/`::` → `127.0.0.1`, IPv6
+bracketed; the bound port); `LOOM_HOME` and, when `general.lan_token` is set,
+`LOOM_TOKEN` go in the environment, never on the command line. Output is appended to
+`APP_HOME/logs/voice-listener.log` (truncated at a spawn past 1 MB); Windows spawns with
+`CREATE_NO_WINDOW`. Exit 0 waits for the next settings change; any other exit (or a spawn
+that raises) restarts after 1, 2, 4 … 60 s, reset once a child ran a minute. A
+`settings.changed` event naming any `voice.*` key or `general.lan_token` replaces the
+running child at once (or stops it when voice is now off). The spawn is a seam
+(`Supervisor(app, spawn=…)`).
+
+**Status.** The listener POSTs `/voice/status` `{enabled, state, hotkey, mode, error,
+devices, device, updated_at}` at start-up, on every state change and on every error.
+Its states: `idle` (armed), `recording`, `transcribing` (an upload in flight — recording
+again is still possible), `error` (could not arm), `unsupported`, `stopped`. Non-fatal
+problems ("no microphone", "microphone 'X' not found; using the system default", the
+last delivery failure) ride in `error` while the state stays `idle`; a delivered clip
+clears it. A failed status post is logged and never stops the work. The backend keeps
+the report in memory only (a restart starts a new listener that reports again) and emits
+`voice.status` with the merged payload. `GET /voice/status` overlays the last report on
+the voice settings and the supervised child's `{running, pid}`
+(`voice.listener_state(app)`). `state` is `disabled` while `voice.enabled` is off and
+`stopped` before any report. A report without `error` clears the last error.
+
+**Retention.** The artifacts walker keeps top-level `audio_*` files the way it keeps
+`img_*`. A fourth rule deletes them once their mtime is older than
+`voice.audio_retention_days` (default 30) in every folder that is not purged, live or
+archived, inside the grace period or not; the desk is never archived. An archived
+conversation purged after `artifact_retention_days` takes its clips with the rest of the
+folder. Housekeeping reports the count as `pruned_audio`, and the clips are also counted
+in `pruned_files` and `pruned_bytes`.
 
 ## 6. The conversation primitive
 
@@ -928,7 +1094,9 @@ dangling target and the lines that link to it. `rethink` is allowed here, with a
 **3. Housekeeping.** Archive `done`/`failed` threads whose `updated_at` is older than
 `thread_archive_days`; prune artifacts and scratch (§4.4: archived folders past
 `scratch_archived_grace_days` and `artifact_retention_days`, live scratch past
-`scratch_idle_days`), counting files and bytes; commit external vault edits (§8.8); then a
+`scratch_idle_days`), counting files and bytes; delete voice clips older than
+`voice.audio_retention_days` in the same walk, whatever the conversation's state
+(`report.pruned_audio`, §5.7); commit external vault edits (§8.8); then a
 safety-net `maintenance: <YYYY-MM-DD>` commit, normally a no-op because the knowledge
 tools commit per write.
 
@@ -1603,6 +1771,14 @@ GET  /conversations/{id}/events?after&before&limit&kinds&tail   (tail=1 → the 
 POST /conversations/{id}/messages {content, images?: [image_id]}  → 202 {inbox_id}; 400 empty (no text and no images) or unknown image id; 409 when no model is configured
 POST /conversations/{id}/images  (raw image bytes; Content-Type image/*) → {id, mime, bytes}; 415 not an image, 413 over image_max_mb
 GET  /conversations/{id}/images/{image_id} → the bytes, immutable cache headers; 404 on miss or a malformed id
+POST /conversations/{id}/audio?action=send|draft&source=hotkey|composer  (raw audio bytes; WAV PCM16 mono 16 kHz is what Loom sends; defaults action=draft, source=composer; §5.7)
+     → send: 202 {audio_id, text, inbox_id}   draft: 200 {audio_id, text} + bus voice.draft   empty transcript: 200 {audio_id, text: "", dropped: true}
+     → transcription failed: 502 {detail, audio_id} + system event (meta.voice.failed) + bus voice.failed;  no transcription model: 409 {detail, audio_id} (same event, plus the setup item)
+     → 400 empty body / bad action or source, 404 conversation, 409 action=send with no model for the conversation's role (nothing stored), 413 over 25 MB, 415 not audio
+POST /conversations/{id}/audio/{audio_id}/retry?action=send|draft   re-transcribe the stored clip; same outcomes (meta.voice.source = "retry"); 404 when the clip is gone
+GET  /conversations/{id}/audio/{audio_id} → the clip, immutable cache headers; 404 on miss or a malformed id
+GET  /voice/status → {enabled, running, pid, state, hotkey, mode, error, devices: [str], device, updated_at}
+POST /voice/status {state, hotkey?, mode?, error?, devices?, device?, …}  (the listener's report; kept in memory; → the GET shape, bus voice.status)
 POST /conversations/{id}/cancel         POST /conversations/{id}/archive (→ {…, worktree_message} when a checkout was released)     POST /conversations/{id}/clear (409 while running)
 GET  /conversations/{id}/occupancy      GET  /conversations/{id}/artifacts     GET /artifacts/{id}?offset&limit
 GET  /conversations/{id}/usage → {prompt_tokens, completion_tokens, steps, steps_with_usage, turns: [{user_event_id, started_at, prompt_tokens, completion_tokens, steps}]}
@@ -1618,10 +1794,11 @@ POST /vault/revert {commit, path?}      GET  /vault/graph?center&depth   GET /va
 GET  /vault/procedures                  POST /vault/procedures/{name}/approve
 GET  /conversations/graph → {nodes: [{id, kind, title, goal, status, parent_id}], edges: [{src, dst, kind: spawned|pinned|walkthrough}]}  (registered before /conversations/{id}; the Graph screen's conversations layer)
 GET  /settings  PATCH /settings {key: value}          (values + schema + groups; all-or-nothing validation)
-GET/POST /providers  GET/PATCH/DELETE /providers/{name}   POST /providers/{name}/probe
+GET/POST /providers  GET/PATCH/DELETE /providers/{name}   POST /providers/{name}/probe?role
 GET/POST /presets    GET/PATCH/DELETE /presets/{name}     POST /presets/{name}/test
      (PATCH with a different `name` renames: roles and conversations are repointed in the same transaction)
-GET  /model-roles    PUT /model-roles/{role} {preset}     GET /models?provider → {providers: [{provider, models, error}]}
+GET  /model-roles    PUT /model-roles/{role} {preset}     GET /models?provider&role → {providers: [{provider, models, error}]}
+     (`role=transcription` on /models and on probe filters to transcription models where the provider can, §5.7; /model-roles lists every entry of `roles.ROLES`)
 GET  /tool-policies  PUT/DELETE /tool-policies/{tool}     (tool may be a path-class key `<tool>:<prefix>`)
 GET/POST /roots  DELETE /roots?path      GET/POST /protected-paths {path, mode?}  DELETE /protected-paths?path → 202 + approval
 PUT  /protected-paths {path, mode}       (writes→all: 200 with the row; all→writes: 202 + approval, like a removal)
@@ -1678,6 +1855,9 @@ system.queue                        data: {depth, running}
 maintenance.progress                data: {stage: start|consolidate|curate|housekeep|done,
                                            message}
 promote.progress                    data: {stage, ok, message}
+voice.draft                         data: {conversation_id, audio_id, text}  (conversation-scoped)
+voice.failed                        data: {conversation_id, audio_id, action, error, event_id}
+voice.status                        data: the GET /voice/status payload
 ```
 Surfaces render what they understand and ignore the rest (charter §5.2).
 
@@ -1717,7 +1897,34 @@ is the last line, not a licence: the shapes crossing the bus are one shape (§12
   per conversation (sessionStorage) and survives navigating away and back. Images attach
   by paperclip, paste or drop; each uploads at once (`POST …/images`) and shows as a
   thumbnail chip until sent; user bubbles, queued cards and tool rows with images show a
-  thumbnail strip served from `GET …/images/{id}` (click opens the full image). Right rail:
+  thumbnail strip served from `GET …/images/{id}` (click opens the full image).
+  Voice (2026-10-24, §5.7): a **mic button** sits beside the paperclip. Click to record,
+  click again to stop (click/click, not hold). While recording it shows a pulsing dot and
+  an m:ss timer, plus a × cancel; Esc cancels too, and the clip stops by itself at
+  `voice.max_seconds`. Capture is Web Audio: an AudioWorklet (inlined from a Blob URL, so
+  no extra built asset), or a ScriptProcessor where worklets are missing or fail to load,
+  collecting mono float chunks at the context's native rate. On stop, `ui/src/lib/wav.ts`
+  (pure, unit-tested) resamples to 16 kHz with a box-filter average, converts to PCM16 and
+  writes a 44-byte-header WAV; MediaRecorder is not used because its codecs vary by
+  browser. The clip is POSTed as a raw body to `…/audio?action=draft&source=composer`,
+  the button shows a spinner while it is transcribed, and the text is **appended to the
+  draft** — on a new line unless the draft already ends in whitespace — and never sent by
+  itself. Every API error, 409 (no transcription model) and 502 (transcription failed)
+  included, is the usual error toast with the backend's own detail; an empty transcript
+  (`dropped`) gives a "Nothing heard" info toast; microphone errors (permission denied, no
+  device, device busy) are toasts in plain words. On a non-secure origin (plain-http LAN
+  access) browsers expose no microphone, so the button is disabled and its tooltip says
+  why. A `voice.draft` bus event (a hotkey clip with `voice.action = draft`, or any
+  draft-action clip) appends to that conversation's draft by the same rule. Each
+  `audio_id` is applied once (`applyVoiceDraft`, remembering the last 50 ids), so the
+  composer's own reply and the event for the same clip never double the text. A user
+  message with `meta.voice` shows a mic **voice** caption above the bubble and an inline
+  `<audio controls preload="none">` player under it, served from `GET …/audio/{id}` with
+  the token in the query string like images; queued cards say "voice · queued". A
+  `system` event with `meta.voice.failed` renders as the failure line, the clip's player
+  and a **Retry** button (`POST …/audio/{id}/retry?action=<the clip's original action>`);
+  after a successful retry the button becomes a "retried" badge for that page view only.
+  The failure row is history and is not edited. Right rail:
   **Now board** (items grouped: needs you / threads / queued / processes — each
   running process with Stop and a log drawer), each item actionable. An interrupt item
   also raises a toast, which fades on its own timer (or stays if configured to) and
@@ -1837,7 +2044,14 @@ is the last line, not a licence: the shapes crossing the bus are one shape (§12
   blocked while referenced; the name is editable and a rename moves every role and
   conversation with it; *Duplicate* opens the add dialog seeded from an existing
   preset — every field but the name and the token factor seed — for the "similar but
-  tweaked" case, 2026-09-28). *Roles* (five dropdowns → preset; `fallback_role`;
+  tweaked" case, 2026-09-28); the preset dialog's probe has a chat/transcription selector
+  beside it (`?role=transcription`, §5.7). *Roles* (one dropdown → preset per role the
+  backend lists — `GET /model-roles` returns every entry of `roles.ROLES` — known roles in
+  a fixed order with a help line each: desk, worker, maintenance, utility, embedding,
+  transcription; any role the backend adds after them, with no help. The transcription
+  help says it needs an openai_compatible provider serving `/audio/transcriptions`, lists
+  the preset params used (language, prompt, temperature, timeout_s), says audio goes to
+  that provider, and says there is no fallback; `fallback_role`;
   `background_max_tokens`). Every conversation's header shows which preset it is
   using, and a thread's create dialog and detail panel let the user pick one.
 - **Conversation**: step budgets (desk/thread), `compact_threshold`,
@@ -1857,6 +2071,26 @@ is the last line, not a licence: the shapes crossing the bus are one shape (§12
   Settings shell renders any declared group it has no dedicated tab for straight from
   the schema, so a group of scalars costs one line in `TAB_ORDER` (which fixes where it
   sits) and nothing else.
+- **Voice** (2026-10-24, §5.7): voice input on/off, hotkey, hotkey mode (hold/toggle),
+  what a hotkey clip does (send/draft), microphone (`voice.input_device`), longest and
+  shortest clip, silence gate, sounds and audio retention days, rendered from the schema.
+  The hotkey uses the `hotkey` UI hint, a key-capture field: click it, press the
+  combination, Esc cancels. It reads `KeyboardEvent.code`, so keyboard layout and Shift
+  never change the key's name, and writes the listener's grammar (modifiers in the order
+  ctrl, alt, shift, win, then a-z, 0-9, f1–f24, numpad0–9 or one of the listener's
+  `NAMED_KEYS`); it refuses a bare key that types something (one character, space, enter,
+  tab, backspace), as the listener does. A **Type** button swaps in a text input for
+  combinations the browser swallows before the page sees them (Ctrl+W, Win+L). Below the
+  fields a **Listener** card from `GET /voice/status`, kept live by `voice.status` and
+  refetched whenever settings change (`running` and `pid` only come from the endpoint),
+  shows a state badge (off, stopped, starting, idle, recording, transcribing,
+  unsupported, not running, or red with the error as its title), the hotkey and mode, the
+  device in use, the pid, the last report time and the error line, and lists the input
+  devices the listener reported, *System default* first, each with a **Use** button that
+  sets `voice.input_device`. A chosen device not among the reported ones gets an amber
+  note that the listener falls back to the default. The composer's browser mic always
+  uses the browser's default device: `voice.input_device` is a waveIn name for the
+  listener.
 - **Integrations**: MCP servers (CRUD, test connection, refresh tools, env with secret
   picker), connectors (enable, config form, reload, status), secrets (names only:
   add/replace/delete; values write-only).
@@ -1870,8 +2104,16 @@ is the last line, not a licence: the shapes crossing the bus are one shape (§12
 `loom serve [--port] [--no-supervisor]`, `send [--thread ID|--new "goal"] "text"`
 (streams and blocks until the turn ends; exit code reflects status), `threads [--all]`,
 `approvals [--allow ID|--deny ID]`, `items`, `status`, `reindex`, `vault search|read`,
-`schedules`, `promote REF [--acknowledge-protected]` (a promotion whose diff touches protected paths is refused with the file list until the flag is given), `rollback`. All commands are thin REST clients; the CLI
-holds no logic of its own.
+`schedules`, `promote REF [--acknowledge-protected]` (a promotion whose diff touches protected paths is refused with the file list until the flag is given), `rollback`, `listen [--url URL] [--token TOKEN]`. All commands are thin REST clients; the CLI
+holds no logic of its own (`listen` is the one long-running client: its logic lives in
+`loom/voice/listener.py`).
+
+`loom listen` runs the voice listener (§5.7) against a backend; the backend normally
+starts and supervises it, so running it by hand is for a backend on another machine or
+for debugging. `--url`/`--token` may be given before or after `listen` and follow the
+usual `$LOOM_URL`/`$LOOM_TOKEN` fallbacks; the spool lives under `--home`/`$LOOM_HOME`.
+Exit codes: 0 stopped, unsupported, another listener, or invalid hotkey; 3 hotkey taken;
+4 backend unreachable at start-up.
 
 `send` follows a turn by polling `GET /conversations/{id}/events?after=` every 0.5s and
 printing what is new, rather than opening the WebSocket: no stdlib WebSocket client
@@ -2028,14 +2270,16 @@ commit is verified. When the new head is already the live commit, it says so and
 ### 15.3 Protected paths (default rows)
 `supervisor/`, `src/loom/tools/permissions.py`, `src/loom/tools/fs_guard.py`,
 `src/loom/tools/shell_prefilter.py`, `src/loom/promote.py`,
-`src/loom/secrets.py`, `APP_HOME/secrets.json`, `APP_HOME/supervisor.token` (mode `all`),
+`src/loom/secrets.py`, `src/loom/voice/listener.py`, `src/loom/voice/win32.py`,
+`APP_HOME/secrets.json`, `APP_HOME/supervisor.token` (mode `all`),
 and `<vault>/procedures/*/scripts` (mode `writes`, §9.3). Repo rows name the development
 checkout (`bootstrap.checkout_root()`: a release runs from a worktree of the supervisor's
 mirror, whose origin is the checkout), and `promote_plan` checks each changed path under
 both the release it runs from and that checkout. Bootstrap seeds them on a fresh
 install; the `writes` row also arrives once on an existing install, on the start that
-applies migration 0008 (`bootstrap.ensure(app, applied)`), so a row the person deleted
-stays deleted. Editable in Settings (each row has an "Everything / Writes only" select);
+applies migration 0008, and the two voice-listener rows on the start that applies
+migration 0011 (a schema no-op that only marks the moment; `bootstrap.ensure(app,
+applied)`), so a row the person deleted stays deleted. Editable in Settings (each row has an "Everything / Writes only" select);
 removing an entry, or narrowing one from `all` to `writes`, is itself an `ask`. Mechanically:
 `DELETE /api/protected-paths?path=` deletes nothing — it creates an approval on the desk
 for the pseudo-tool `protected_paths_remove` and answers `202` with the pending row.
@@ -2069,6 +2313,8 @@ prompts/summarize.md         compaction fold
 prompts/maintenance-consolidate.md  / maintenance-curate.md
 prompts/status-safety-net.md
 prompts/preset-test.md       the one short completion `POST /presets/{name}/test` sends
+prompts/context/*.md         harness blocks, nudges and markers (e.g. voice-message.md, the prefix
+                             on a dictated user message's model-facing text, §5.7)
 prompts/templates/*.md       new note templates (device, project, connector, procedure SKILL.md,
                              procedure-self-modification and procedure-self-review: the
                              built-in procedures, §4.3)
@@ -2122,6 +2368,8 @@ Not used, deliberately: SQLAlchemy/alembic (hand SQL), LiteLLM/openai SDK (one H
 shape), LanceDB/numpy (brute-force cosine), APScheduler/croniter (80-line parser),
 watchfiles (polling), GitPython (git CLI), cryptography (see §4.5), pywin32 (the Job
 Objects of §9.6 are reached through `ctypes`).
+Voice (§5.7) adds no dependency: stdlib `wave`, `winsound` and `ctypes` (winmm, user32)
+in the listener, and httpx multipart (`files=`) for transcription.
 UI: `react`, `react-dom`, `vite`, `typescript`, `tailwindcss`, one Markdown renderer
 (`marked` or `react-markdown`), dev `vitest`. No state library, no component library.
 
@@ -2150,6 +2398,9 @@ UI: `react`, `react-dom`, `vite`, `typescript`, `tailwindcss`, one Markdown rend
    snapshots, rollback, System UI progress, auto-rollback in supervisor.
    *Built 2026-09-20 except the System screen's promote panel, which belongs to the UI
    package and is specified in §13.1; everything it needs is served.*
+
+Voice input (§5.7) was added 2026-10-24, after phase 8: the transcription role, clip
+storage and delivery, the supervised listener, and the composer mic and Voice settings.
 
 ## 21. Implementation questions (decided 2026-09-20; see charter decision log)
 - Ollama: native `/api/chat` for the `ollama` provider kind; no probe.
