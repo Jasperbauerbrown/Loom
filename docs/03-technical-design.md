@@ -926,15 +926,15 @@ note, and a thread without one was a "task". Every thread is now that.
   by construction, so nothing needs refusing.
 - **Isolation** (`isolation="worktree"`, 2026-09-24; `conversation/worktree.py`): the
   thread gets its own `git worktree` checkout of the repository holding `isolation_root`
-  (one of its `roots`; the first root by default), under `APP_HOME/worktrees/<thread>` on
+  (added to its `roots` if absent; the first root by default), under `APP_HOME/worktrees/<thread>` on
   branch `loom/<thread>`, recorded in `conversations.worktree`. The checkout **replaces**
   that root and leads the list, so relative paths resolve inside it and the live checkout
   is simply not among the paths the thread may touch — isolation from the tree it was
   branched from and from every sibling, by construction rather than by refusal. The
   harness block names the path and the branch (§7 slot [6]) and the branch is how the
   work comes back. Failure classes are defined refusals, never a silent downgrade: not a
-  repository, a repository with no commit, no root at all, an `isolation_root` that is
-  not one of the roots, or git refusing. Ordering: the row is written first (persist
+  repository, a repository with no commit, no root at all, or git refusing. Every
+  `conversation_create` refusal names the argument keys it received. Ordering: the row is written first (persist
   before act), the checkout second, the `worktree`/`roots` update third; a failed
   `worktree add` deletes the row it just wrote — nothing has been emitted or posted, so
   nothing has seen it — and refuses the spawn. This is the general mechanism §15.1's

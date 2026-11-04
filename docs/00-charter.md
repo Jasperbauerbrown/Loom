@@ -1841,3 +1841,9 @@ sessions do not re-litigate.
   hotkey always parses. Punctuation keys are not offered because the listener has no VK
   for them. If the listener's key table grows, `ui/src/lib/hotkey.ts` `NAMED` grows with
   it.
+- **2026-11-03** — **`isolation_root` is enough to name the repository.** It joins the
+  thread's `roots` if absent instead of refusing the spawn; the worktree replaces that root
+  either way, so requiring it twice guarded nothing. The desk hit the old refusal ~60 times
+  across three sessions, re-sending byte-identical calls it believed included `roots`. Every
+  `conversation_create` refusal now lists the argument keys received, so a model's belief
+  about what it sent meets the record.

@@ -97,6 +97,45 @@ def test_isolation_root_picks_the_repository(app, tmp_path):
     assert not any(worktree.same_path(r, repo) for r in row["roots"])
 
 
+def test_isolation_root_alone_names_the_repository(app, tmp_path):
+    # 2026-11-03: the desk sent isolation + isolation_root without roots ~60 times; the
+    # repository it names joins the roots instead of refusing the spawn.
+    repo = _repo(tmp_path)
+    row = conversation.create_thread(
+        app, goal="Change the build.", isolation="worktree", isolation_root=repo, created_by="user",
+    )
+    assert row["roots"] == [row["worktree"]]
+    plain = tmp_path / "notes"
+    plain.mkdir()
+    row = conversation.create_thread(
+        app, goal="Change the build.", roots=[str(plain)], isolation="worktree",
+        isolation_root=repo, created_by="user",
+    )
+    assert row["roots"] == [row["worktree"], str(plain).replace("\\", "/")]
+
+
+def test_a_parent_of_the_repository_still_refuses(app, tmp_path):
+    _repo(tmp_path / "projects")
+    before = _threads(app)
+    with pytest.raises(conversation.ThreadError, match="not inside a git repository"):
+        conversation.create_thread(
+            app, goal="Change it.", isolation="worktree", isolation_root=str(tmp_path / "projects"), created_by="user",
+        )
+    assert _threads(app) == before
+
+
+async def test_a_refusal_names_the_arguments_received(app, tmp_path):
+    from types import SimpleNamespace
+
+    from loom.conversation.tools import _create
+
+    ctx = SimpleNamespace(app=app, conversation_id=app.desk_id(), request_text="", request_from_user=False)
+    result = await _create(ctx, {"goal": "Change it.", "isolation": "worktree"})
+    assert not result.ok
+    assert "worktree isolation needs a root" in result.content
+    assert "arguments received: goal, isolation" in result.content
+
+
 def test_a_root_that_is_not_a_repository_refuses_and_leaves_nothing(app, tmp_path):
     plain = tmp_path / "plain"
     plain.mkdir()
@@ -124,11 +163,6 @@ def test_isolation_arguments_are_validated(app, tmp_path):
         conversation.create_thread(app, goal="Change it.", roots=[repo], isolation="container", created_by="user")
     with pytest.raises(conversation.ThreadError, match="worktree isolation needs a root"):
         conversation.create_thread(app, goal="Change it.", isolation="worktree", created_by="user")
-    with pytest.raises(conversation.ThreadError, match="is not one of this thread's roots"):
-        conversation.create_thread(
-            app, goal="Change it.", roots=[repo], isolation="worktree",
-            isolation_root=str(tmp_path / "elsewhere"), created_by="user",
-        )
     assert _threads(app) == 0
     # isolation=None / "none" is today's behaviour: no checkout, roots untouched
     plain = conversation.create_thread(app, goal="Read it.", roots=[repo], created_by="user")

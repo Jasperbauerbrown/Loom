@@ -83,12 +83,11 @@ def create_thread(  # type: ignore[no-untyped-def]
     source_root: str | None = None
     if isolation == "worktree":
         if isolation_root:
+            # Naming the repository is enough: it joins the roots if absent, and the
+            # worktree replaces it below either way (2026-11-03).
             source_root = _norm(isolation_root)
             if not any(_worktree.same_path(source_root, r) for r in roots):
-                raise ThreadError(
-                    f"isolation_root {source_root} is not one of this thread's roots "
-                    f"({', '.join(roots) if roots else 'none'}); pass the repository in roots too"
-                )
+                roots.append(source_root)
         elif roots:
             source_root = roots[0]
         else:
@@ -273,7 +272,9 @@ async def _create(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
             user_request=ctx.request_text if ctx.request_from_user else None,
         )
     except ThreadError as exc:
-        return ToolResult.error(str(exc))
+        # Name the arguments that arrived: a model that believes it sent one it did not
+        # sees the gap here instead of re-sending the same call (2026-11-03).
+        return ToolResult.error(f"{exc} (arguments received: {', '.join(sorted(args)) or 'none'})")
     pinned = pins.get(row)
     isolated = ""
     if row.get("worktree"):
@@ -442,8 +443,8 @@ def tools() -> list[Tool]:
                 "preset": {"type": "string"},
                 "title": {"type": "string"},
                 "notes": {"type": "array", "items": {"type": "string"}, "description": "vault paths to pin into the thread's context every turn (the notes you checked before spawning); a missing note refuses the spawn"},
-                "isolation": {"type": "string", "enum": ["none", "worktree"], "description": "\"worktree\" gives the thread its own git checkout of the repository it works in, on branch loom/<thread id>; it cannot touch the live checkout; requires `roots` to include the repository — a call with isolation but no roots fails"},
-                "isolation_root": {"type": "string", "description": "which of `roots` the worktree is made from; must be one of `roots`, defaults to the first root"},
+                "isolation": {"type": "string", "enum": ["none", "worktree"], "description": "\"worktree\" gives the thread its own git checkout of the repository it works in, on branch loom/<thread id>; it cannot touch the live checkout"},
+                "isolation_root": {"type": "string", "description": "the repository the worktree is made from; added to `roots` if absent; defaults to the first root"},
             }, ["goal"]),
             _create,
         ),
