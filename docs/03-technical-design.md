@@ -1884,6 +1884,8 @@ the Tailwind colour variables the components already use (`neutral-*` surfaces, 
 accent, `white`), so no component knows palettes exist (a palette may add a dark-only block, `:root.dark[data-palette=…]`, still only variables — nord uses one to order its Polar Night stops); the last applied pair is
 remembered in `localStorage` so a reload does not flash the default look.
 
+The nav collapses to an icon rail (a header button; badges become dots, the conversation picker hides). The choice is remembered per browser in `localStorage` — a view preference, not a setting — and, unset, defaults to collapsed below 768px wide.
+
 The browser-tab favicon is a compact Loom mark on a rounded accent tile. Its SVG data URL is recolored from the computed `--color-sky-600` whenever appearance is applied, so theme/palette changes update it without a reload; `/favicon.svg` is the static default before the app starts.
 
 A render error is an expected input, not the end of the session: one `ErrorBoundary`

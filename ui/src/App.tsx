@@ -1,12 +1,13 @@
 // App shell: nav, routing, theme and the WS lifecycle.
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { deskId, store, useStore } from "./lib/store";
 import { WsClient } from "./lib/ws";
 import { href, navigate, useRoute } from "./lib/router";
 import { cls } from "./lib/format";
 import { api } from "./lib/api";
 import { setFaviconAccent } from "./lib/favicon";
+import { recallNavCollapsed, rememberNavCollapsed } from "./lib/navCollapse";
 import { Toasts } from "./components/Toasts";
 import { TokenDialog } from "./components/TokenDialog";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -16,6 +17,7 @@ import {
   IconGraph,
   IconOverview,
   IconSettings,
+  IconSidebar,
   IconSystem,
   IconThreads,
   IconVault,
@@ -103,13 +105,32 @@ function NavLink({
   label,
   active,
   badge,
+  collapsed,
 }: {
   to: string;
   icon: React.ReactNode;
   label: string;
   active: boolean;
   badge?: number;
+  collapsed: boolean;
 }) {
+  if (collapsed)
+    return (
+      <a
+        href={href(to)}
+        title={badge ? `${label} (${badge})` : label}
+        aria-label={label}
+        className={cls(
+          "relative flex items-center justify-center rounded-md py-2 transition-colors",
+          active
+            ? "bg-neutral-200 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100"
+            : "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800/60",
+        )}
+      >
+        {icon}
+        {badge ? <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-amber-500" /> : null}
+      </a>
+    );
   return (
     <a
       href={href(to)}
@@ -157,14 +178,14 @@ function ConversationPicker() {
   );
 }
 
-function ConnectionDot() {
+function ConnectionDot({ compact }: { compact?: boolean }) {
   const connection = useStore((s) => s.connection, Object.is);
   const tone =
     connection === "open" ? "bg-emerald-500" : connection === "connecting" ? "bg-amber-500" : "bg-red-500";
   return (
     <span className="flex items-center gap-1.5 text-[11.5px] text-neutral-500" title={`Connection: ${connection}`}>
       <span className={cls("h-2 w-2 rounded-full", tone)} />
-      {connection === "open" ? "live" : connection}
+      {compact ? null : connection === "open" ? "live" : connection}
     </span>
   );
 }
@@ -177,6 +198,11 @@ export default function App() {
   const settingsStale = useStore((s) => s.settingsStale, Object.is);
   const modelsStale = useStore((s) => s.modelsStale, Object.is);
   const desk = useStore(deskId, Object.is);
+  const [collapsed, setCollapsed] = useState(() => recallNavCollapsed(window.innerWidth));
+  const toggleNav = () => {
+    rememberNavCollapsed(!collapsed);
+    setCollapsed(!collapsed);
+  };
   useTheme();
 
   // Boot: first loads, socket. Nothing gates the app — a missing model is an ordinary
@@ -200,36 +226,59 @@ export default function App() {
 
   return (
     <div className="flex h-full">
-      <nav className="flex w-52 shrink-0 flex-col gap-1 border-r border-neutral-200 bg-neutral-50 p-2.5 dark:border-neutral-800 dark:bg-neutral-900">
-        <div className="mb-2 flex items-center justify-between px-1">
-          <a href={href("/")} className="text-[15px] font-semibold tracking-tight">
-            Loom
-          </a>
-          <ConnectionDot />
+      <nav
+        className={cls(
+          "flex shrink-0 flex-col gap-1 overflow-y-auto border-r border-neutral-200 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900",
+          collapsed ? "w-12 p-1.5" : "w-52 p-2.5",
+        )}
+      >
+        <div className={cls("mb-2 flex items-center", collapsed ? "justify-center" : "justify-between gap-2 px-1")}>
+          {collapsed ? null : (
+            <a href={href("/")} className="flex-1 text-[15px] font-semibold tracking-tight">
+              Loom
+            </a>
+          )}
+          {collapsed ? null : <ConnectionDot />}
+          <button
+            type="button"
+            onClick={toggleNav}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-expanded={!collapsed}
+            className="rounded-md p-1.5 text-neutral-500 hover:bg-neutral-200 hover:text-neutral-800 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+          >
+            <IconSidebar />
+          </button>
         </div>
-        <NavLink
+        <NavLink collapsed={collapsed}
           to="/"
           icon={<IconDesk />}
           label="Desk"
           active={route.name === "desk" || (route.name === "conversation" && route.param === desk)}
           badge={unseen || undefined}
         />
-        <NavLink to="/threads" icon={<IconThreads />} label="Threads" active={route.name === "threads" || (route.name === "conversation" && route.param !== desk)} />
-        <NavLink to="/overview" icon={<IconOverview />} label="Overview" active={route.name === "overview"} />
-        <NavLink to="/vault" icon={<IconVault />} label="Vault" active={route.name === "vault"} />
-        <NavLink to="/graph" icon={<IconGraph />} label="Graph" active={route.name === "graph"} />
-        <NavLink
+        <NavLink collapsed={collapsed} to="/threads" icon={<IconThreads />} label="Threads" active={route.name === "threads" || (route.name === "conversation" && route.param !== desk)} />
+        <NavLink collapsed={collapsed} to="/overview" icon={<IconOverview />} label="Overview" active={route.name === "overview"} />
+        <NavLink collapsed={collapsed} to="/vault" icon={<IconVault />} label="Vault" active={route.name === "vault"} />
+        <NavLink collapsed={collapsed} to="/graph" icon={<IconGraph />} label="Graph" active={route.name === "graph"} />
+        <NavLink collapsed={collapsed}
           to="/approvals"
           icon={<IconApprovals />}
           label="Approvals"
           active={route.name === "approvals"}
           badge={pending || undefined}
         />
-        <NavLink to="/settings/general" icon={<IconSettings />} label="Settings" active={route.name === "settings"} />
-        <NavLink to="/system" icon={<IconSystem />} label="System" active={route.name === "system"} />
-        <div className="mt-auto px-1 pt-2">
-          <ConversationPicker />
-        </div>
+        <NavLink collapsed={collapsed} to="/settings/general" icon={<IconSettings />} label="Settings" active={route.name === "settings"} />
+        <NavLink collapsed={collapsed} to="/system" icon={<IconSystem />} label="System" active={route.name === "system"} />
+        {collapsed ? (
+          <div className="mt-auto flex justify-center pb-1 pt-2">
+            <ConnectionDot compact />
+          </div>
+        ) : (
+          <div className="mt-auto px-1 pt-2">
+            <ConversationPicker />
+          </div>
+        )}
       </nav>
 
       <main className="flex min-w-0 flex-1 flex-col">

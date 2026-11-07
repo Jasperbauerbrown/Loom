@@ -56,6 +56,13 @@ export const IconSystem = ({ className }: P) => (
   </svg>
 );
 
+export const IconSidebar = ({ className }: P) => (
+  <svg {...base(className)}>
+    <rect x="2" y="2.5" width="12" height="11" rx="1.5" />
+    <path d="M6 2.5v11" />
+  </svg>
+);
+
 export const IconChevron = ({ className }: P) => (
   <svg {...base(className)}>
     <path d="m6 3.5 4.5 4.5L6 12.5" />

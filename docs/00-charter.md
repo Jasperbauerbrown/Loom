@@ -1850,3 +1850,8 @@ sessions do not re-litigate.
 - **2026-11-06** — Linux deployment (Jetson): `loom.sh` launcher, systemd user unit tied to
   the graphical session (keyring unlocked), and the supervisor treats SIGTERM/SIGHUP as a
   normal stop — a killed supervisor had orphaned its backend on the port.
+- **2026-11-07** — **The nav collapses to an icon rail.** A button in the nav header
+  toggles it between full width and a 48px column of icons (badges become dots, the
+  connection shows as its dot alone, the conversation picker hides). It is a per-browser
+  view preference in `localStorage`, not a setting: a phone and a desktop on the same Loom
+  want different answers. Unset, it starts collapsed below 768px wide.
