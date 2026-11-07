@@ -726,7 +726,20 @@ class Supervisor:
         return reached
 
     # -- main loop -----------------------------------------------------------------
+    def stop_on_signals(self) -> None:
+        """A service manager's stop (systemd, launchd, `kill`) arrives as SIGTERM, a closed
+        terminal as SIGHUP. Python's default for both is to die on the spot, skipping
+        `run`'s `finally`, and the backend — in its own session — outlives us holding the
+        port. Each becomes the ordinary stop instead. Windows never delivers these."""
+        def stop(signum: int, frame: Any) -> None:
+            self.stopping = True
+
+        for name in ("SIGTERM", "SIGHUP"):
+            if hasattr(signal, name) and threading.current_thread() is threading.main_thread():
+                signal.signal(getattr(signal, name), stop)
+
     def run(self) -> int:
+        self.stop_on_signals()
         server = self.start_control_server()
         attempt = 0
         try:

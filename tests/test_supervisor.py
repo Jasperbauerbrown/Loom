@@ -243,3 +243,22 @@ def test_status_shape(tmp_path):
         "backoff_s", "healthy", "last_error", "port",
     }
     assert status["pid"] is None and status["port"] == 8500
+
+
+def test_sigterm_and_sighup_become_an_ordinary_stop(tmp_path):
+    """A service manager's SIGTERM must run the shutdown path (which stops the backend),
+    not kill the supervisor outright and orphan the backend on the port."""
+    import signal
+
+    supervisor = Supervisor(tmp_path, 8500)
+    names = [n for n in ("SIGTERM", "SIGHUP") if hasattr(signal, n)]
+    saved = {n: signal.getsignal(getattr(signal, n)) for n in names}
+    try:
+        supervisor.stop_on_signals()
+        for n in names:
+            supervisor.stopping = False
+            signal.getsignal(getattr(signal, n))(getattr(signal, n), None)
+            assert supervisor.stopping is True
+    finally:
+        for n, handler in saved.items():
+            signal.signal(getattr(signal, n), handler)

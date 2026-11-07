@@ -83,6 +83,11 @@ loom/
   with `taskkill /T /F /PID` (decided 2026-09-20: a Job Object needs ctypes plumbing in
   the one file whose point is to be small and obviously correct). POSIX: `start_new_session`
   plus process-group signals.
+- SIGTERM and SIGHUP (a service manager's stop, a closed terminal) set `stopping`, so
+  the supervisor stops the backend before exiting instead of dying and leaving it — in its
+  own session — holding the port (2026-11-06). On Linux, `loom.sh` is the launcher and a
+  systemd *user* unit bound to `graphical-session.target` keeps it running: started with
+  the desktop session so the login keyring holding the secrets is unlocked.
 - `promote`/`rollback` in the supervisor are §15.2 steps 5–10 whole: snapshot, build the
   release worktree, probe it, switch `current`/`previous`, restart, watch
   `/api/system/health` for `promotion_watchdog_seconds`, and restore pointers (and the

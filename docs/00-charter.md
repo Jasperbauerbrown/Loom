@@ -1847,3 +1847,6 @@ sessions do not re-litigate.
   across three sessions, re-sending byte-identical calls it believed included `roots`. Every
   `conversation_create` refusal now lists the argument keys received, so a model's belief
   about what it sent meets the record.
+- **2026-11-06** — Linux deployment (Jetson): `loom.sh` launcher, systemd user unit tied to
+  the graphical session (keyring unlocked), and the supervisor treats SIGTERM/SIGHUP as a
+  normal stop — a killed supervisor had orphaned its backend on the port.
