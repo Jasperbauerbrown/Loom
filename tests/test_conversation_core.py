@@ -80,7 +80,7 @@ async def test_desk_turn_persists_and_streams(app, fake):
     assert "now:" in ctx_msg and "# Now board" in ctx_msg
     assert req.messages[-3]["content"] == ctx_msg  # volatile context sits nearest the query
     assert req.messages[-2] == {"role": "user", "content": "hi"}
-    assert req.messages[-1]["content"] == _steps_tail(req) and "[tool calls this turn: 0]" in _steps_tail(req)
+    assert req.messages[-1]["content"] == _steps_tail(req) and "[tool calls this turn: 0 · steps remaining: 25]" in _steps_tail(req)
     assert req.tools and any(t["function"]["name"] == "fs_read" for t in req.tools)
     # calibration wrote a factor
     assert 0.5 <= app.conversation(desk)["token_factor"] <= 4.0
@@ -115,7 +115,7 @@ async def test_tool_call_round_trip(app, fake, tmp_path):
     msgs = fake.calls[1].messages
     assert msgs[-3]["role"] == "assistant" and msgs[-3]["tool_calls"][0]["function"]["name"] == "fs_read"
     assert msgs[-2]["role"] == "tool"
-    assert "[tool calls this turn: 1]" in msgs[-1]["content"]
+    assert "[tool calls this turn: 1 · steps remaining: 24]" in msgs[-1]["content"]
 
 
 # -- approvals: pause, decide, resume -----------------------------------------------------
@@ -587,7 +587,7 @@ async def test_harness_block_is_one_snapshot_per_turn_and_the_budget_is_the_only
     assert second[-1]["content"].endswith("[steps remaining: 12]\n</context>")
     assert "[steps remaining:" not in first[-2]["content"]
 
-    # the desk has no budget; its tail counts this turn's tool calls, batched calls each
+    # the desk's tail counts this turn's tool calls, batched calls each
     # counting, from zero on the first step (2026-10-13)
     desk_ctx = context.assemble(app, app.conversation(app.desk_id()), [], None)
     assert desk_ctx.messages(app)[-1]["content"].endswith("[tool calls this turn: 0]\n</context>")

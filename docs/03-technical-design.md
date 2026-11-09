@@ -190,7 +190,7 @@ conversations(id TEXT PK /*ULID*/, kind TEXT /*desk|thread*/, parent_id TEXT,
               title TEXT, goal TEXT, pinned_notes TEXT /*json list of vault paths, slot [5]*/,
               roots TEXT /*json list*/, depth INT, role TEXT /*model role*/,
               preset TEXT /*optional override of the role's preset*/,
-              status TEXT /*idle|running|waiting_approval|waiting_input|done|failed|archived*/,
+              status TEXT /*idle|running|waiting_approval|waiting|waiting_input|done|failed|archived*/,
               step_budget INT, summary TEXT, summary_cutoff INT /*events.id*/,
               token_factor REAL, maint_watermark INT /*events.id*/,
               created_at, updated_at, finished_at, archived_at,
@@ -660,6 +660,7 @@ created at bootstrap and cannot be archived. States:
 idle ──► running ──► idle
             │ approval needed ──► waiting_approval ──(decision)──► running
             │ thread asked user ─► waiting_input ────(inbox)─────► running
+            │ thread awaits own work ► waiting ──(its report)───► running
             │ finish tool ───────► done ──(inactivity N days)────► archived
             └ fatal ─────────────► failed ──(new message)────────► running
 ```
@@ -679,6 +680,18 @@ that ends early (approval pause, crash) leaves the row undelivered, and the next
 claims it again without re-rendering it (the claim query reports the persisted event
 id). So a message is never lost and never duplicated.
 
+Arrivals at a turn's edges (2026-11-09). A turn whose model call ends in plain text
+claims once more before ending: rows that arrived during that reply are answered in the
+same turn (a thread used to tell its parent it had stopped, then wake a moment later).
+Rows that still miss the turn — posted during its post-turn work, or past its budget —
+re-wake it once the lock is released, after a clean, cancelled *or failed* turn: a
+failed turn marks what it claimed delivered, so the next one claims only newer rows and
+cannot spin. Only a crashed turn (an exception escaped it) leaves its claimed rows
+undelivered and waits for the next message or a restart. Once a turn's cancel signal is
+set it claims nothing more: a stop discards everything queued before it, so a row seen
+after the signal was sent after the stop and belongs to the next turn — claimed into
+the cancelled one, it was marked delivered with no reply.
+
 ### 6.3 `run_turn(conversation_id)` — the only agent loop
 ```
 0  lock conversation (per-id asyncio lock; if held → return)
@@ -694,21 +707,25 @@ id). So a message is never lost and never duplicated.
      b  call model(role, ctx, tools, priority) streaming; emit deltas
      c  outcome handling                                                     (§5.5)
      d  persist thinking event (full), then assistant or tool_call event
-     e  if no tool calls → break
+     e  if no tool calls → claim inbox (not once cancelled, not past the budget);
+        rows → append as user messages and continue, else break
      f  dispatch tool calls                                                  (§9.3)
           read-only calls run concurrently (gather, results in call order);
           others sequentially; an `ask` → persist approval, status=waiting_approval,
           emit approval.requested, unlock, RETURN (resume re-enters at step 1 of the
           turn outline, at step N+1 of the budget)
      g  persist tool_result events; append to ctx (bounded, spilled)
-     h  claim inbox mid-turn → append as user messages
+     h  claim inbox mid-turn → append as user messages (nothing once cancelled)
      i  brakes: in-flight estimate ≥ limit → force compact + rebuild ctx;
         steps ≥ step_budget → one final call with tools disabled, then break
-5  post-turn (clean turns only):
-     calibrate token_factor from usage                                       (§6.6)
-     maybe_compact                                                           (§6.5)
+5  post-turn:
+     calibrate token_factor from usage (clean turns)                         (§6.6)
      threads: status safety net — if no status_update this turn, run one
               utility/worker call producing the status fields from the turn's events
+     maybe_compact (not after a cancel)                                      (§6.5)
+       both model calls race the cancel signal like every other await; a stop that
+       lands here cancels the turn (2026-11-09: it used to be a silent no-op)
+     cancelled → stop this turn's work (§6.4)
      mark inbox delivered; status = idle (or done if finish was called)
      threads: emit thread_event to parent inbox + item if state changed      (§6.7)
 6  unlock
@@ -756,8 +773,13 @@ judge at all (§9.5, 2026-10-12).
 
 ### 6.4 Budgets and brakes
 - `step_budget`: desk 25, threads 60 (settings). Threads see
-  `[steps remaining: N]`; the last step has tools disabled. The desk sees no budget but
-  `[tool calls this turn: N]` (§7 slot [11]) — informational usage, not a routing threshold or brake.
+  `[steps remaining: N]`; the desk sees `[tool calls this turn: N · steps remaining: M]`
+  (§7 slot [11]) — the call count is informational usage, not a routing threshold. The
+  last step has tools disabled and says so: its step line is
+  `prompts/context/steps-last.md` ("last step of this turn: no tools on this reply …").
+  Unexplained, models wrote tool-call markup as text (`<tool_call>shell…`), a stray
+  `"\nW"`, or echoed `[steps remaining: 1]` as their whole reply, which a desk then read
+  as a thread stopping with a step to spare (2026-11-09).
 - `forced_compactions_per_turn` 2; `model_error_retries` 1.
 - Tool execution timeout per tool (default 120s shell, 60s http, 300s MCP); a timed-out
   call returns an error result.
@@ -787,12 +809,17 @@ judge at all (§9.5, 2026-10-12).
   gets `prompts/context/tool-too-many-calls.md` (the count and the cap; batch into fewer,
   broader calls) and the turn goes on (2026-10-22, after a 473-call `fs_list` burst). At turn end a cancelled turn writes
   one `system` event — `cancelled by user; stopped: model call, shell, background
-  process "x", sub-thread "y"`, `meta.stopped` = `{calls, processes, threads}` — and only
+  process "x", sub-thread "y"` (or `stopped by <actor>: <reason>; stopped: …` when
+  another conversation stopped it: the signal carries who set it, `CancelFlags.add(id,
+  by)`), `meta.stopped` = `{calls, processes, threads}`, `meta.notice` — and only
   then (persist before act) stops the background processes this turn started (ids ≥ the
   turn's ULID floor, stopped as the conversation, so no exit message re-wakes it) and
   sets the cancel signal of each sub-thread it spawned whose turn is still scheduled or
   running; each sub-thread does the same for its own. A cancelled thread ends `idle`
-  without reporting to its parent.
+  without reporting to its parent. A `system` event with `meta.notice` is replayed to the
+  model as a harness-fenced user message (after any open step's tool messages), so the
+  next turn knows it was stopped, by whom and why; other system events stay unreplayed
+  (2026-11-09). `prompts/context/tool-cancelled.md` no longer says who stopped it.
 - Stopping (2026-10-14; module renamed `stop.py` → `stopping.py` 2026-10-23, so its name cannot collide with the `async def stop(app)` shutdown hook the package namespace exposes): `conversation/stopping.py` `stop(app, id, actor, reason, cascade)`
   is the one codepath under the cancel endpoint and the `conversation_stop` tool. A
   running turn gets its signal. A `waiting_approval` conversation has no turn, so its
@@ -801,12 +828,24 @@ judge at all (§9.5, 2026-10-12).
   the model. Undelivered inbox rows are discarded (a queued "please finish" must not
   restart it; a later message reopens it as usual). With `cascade` every descendant
   thread not already over is stopped the same way — this covers sub-threads spawned
-  before an approval pause, which the runner's turn-scoped sweep (ULID floor) misses. An
-  actor other than the user first writes a `system` event `stopped by <actor>: <reason>`
-  (`meta.actor`, `reason`, `was`). The end state is `idle`, as for a cancel; nothing is
-  reported to the parent and worktrees are kept. The UI cancel cascades for threads, not
-  for the desk, and its button still shows only while running (a paused conversation is
-  answered with the approval card).
+  before an approval pause, which the runner's turn-scoped sweep (ULID floor) misses. A
+  *thread* also loses every background process still running, from any turn (stopped
+  quietly, `Processes.stop(notify=False)`: a stop message posted to the thread would
+  reopen it); the desk keeps its own, which only its cancelled turn's sweep reaches
+  (2026-11-09: a process left behind posted its exit into the stopped thread and
+  restarted it). A thread that is idle but has a running process counts as having
+  something to stop. `stop` is `async` for this. The first act is a `system` event
+  `stopped by <actor>: <reason> (<n> undelivered message(s) discarded; background
+  process(es) stopped: "x")` (`meta.actor`, `reason`, `was`, `notice`), written for any
+  actor other than the person, and for the person whenever the stop discards messages or
+  ends processes — a person's queued message used to vanish without a record. Its
+  `notice` is set only when no turn will observe the signal (that turn's own `cancelled`
+  event is then the notice). The end state is `idle`, as for a cancel (a `waiting`
+  thread too); the parent gets no inbox message, but when the person stopped a thread a
+  `thread_event` item `Thread "x" stopped by the person` goes on the now board, so the
+  desk does not go on believing it works. Worktrees are kept. The UI cancel cascades for
+  threads, not for the desk, and its button still shows only while running (a paused
+  conversation is answered with the approval card).
 
 ### 6.5 Compaction ladder (decided, from Hydra/Manus)
 ```
@@ -920,12 +959,18 @@ note, and a thread without one was a "task". Every thread is now that.
 - **User in a thread**: the same surface calls as the desk; user messages set priority 0
   for that turn.
 - **Turn end without finish** (decided 2026-09-20): a thread turn that ends with plain
-  text (a question, a report, or the wrap-up after the step budget) sets status
-  `waiting_input` and forwards that text to the parent as a thread event. The parent
-  decides by judgment whether to answer, redirect, or involve the person. The header
-  says `[stopped without finishing]`, not `[needs input]` (2026-09-22): the harness
-  cannot tell a question from a report, and three of four finished threads in the game
-  test ended with a report instead of `finish`; the UI labels the status the same way.
+  text (a question, a report, or the wrap-up after the step budget) forwards that text
+  to the parent as a thread event. The parent decides by judgment whether to answer,
+  redirect, or involve the person. The header says what the harness *can* tell
+  (2026-11-09): `[out of steps for this turn]` when the step budget ran out (status
+  `waiting_input`); `[waiting on process "x", sub-thread "y"]` when the thread still has
+  its own work in flight — a running background process or a sub-thread that is
+  running, waiting on an approval or itself waiting — whose report will wake it (status
+  `waiting`, which the UI shows as calm active work, not as needing the person); else
+  `[stopped without finishing]` (status `waiting_input`, shown "stopped"), not
+  `[needs input]` (2026-09-22): the harness cannot tell a question from a report. The
+  text is delivered in every case, so a question asked while waiting is not lost. A
+  thread waits on a process inside a step with `process(action="wait")` (§9.6).
 - **Sub-threads**: a thread may spawn threads down to `max_thread_depth` for independent
   parts of a larger effort, each with its own goal, status and pins. Nothing is shared
   by construction, so nothing needs refusing.
@@ -965,7 +1010,7 @@ note, and a thread without one was a "task". Every thread is now that.
 | [5]+[6] | Desk: the **now board** (pending approvals, unseen items, running threads with one-line status, then one line per running background process). Thread: the goal + its status fields. Both: the **pinned notes** (`# Pinned notes`, each capped at `pinned_note_chars`). Then a **Filesystem** block: the conversation's effective roots (global + its own, the first being what relative paths resolve against), the protected paths and the write-protected paths (2026-10-12), one line each; then a `scratch:` line naming this conversation's own artifacts folder (`artifacts.conversation_dir`, prose in `prompts/context/scratch.md`) as the place for downloads, scratch files and intermediate outputs instead of `/tmp` — already inside the roots, per conversation, inspectable by the user (2026-09-25); then a `loom:` line naming this backend — the address it serves, its pid, its home — so the model can tell its own process from anything else it finds (2026-09-22). Then `now: 2026-09-20 14:02 (America/…)`. One fenced `<context from="harness">` block, **built once per turn and reused verbatim for every step** (2026-09-22) | user, after the history and before this turn's messages | per turn, not per step |
 | [9] | Resolved entities for this input (§8.2–8.3), wrapped `<knowledge may_be_irrelevant="true">…</knowledge>`; ephemeral, never persisted | user | volatile |
 | [10] | Claimed inbox messages as user-role messages (with their images), then the turn's own assistant / tool messages and image followers | user / assistant / tool | volatile |
-| [11] | The per-step line in its own fenced block, **after** the turn's messages — the one thing that changes per step, isolated so the turn stays cached. Thread: `[steps remaining: N]`. Desk: `[tool calls this turn: N]`, every step from the first (0), counted from the turn's assistant messages so batched calls each count and a mid-turn compaction's rebuild keeps the number (2026-10-13) | user, last | per step |
+| [11] | The per-step line in its own fenced block, **after** the turn's messages — the one thing that changes per step, isolated so the turn stays cached. Thread: `[steps remaining: N]`. Desk: `[tool calls this turn: N · steps remaining: M]`, every step from the first (0), counted from the turn's assistant messages so batched calls each count and a mid-turn compaction's rebuild keeps the number (2026-10-13). The last step (tools off) replaces either with `prompts/context/steps-last.md` (2026-11-09) | user, last | per step |
 
 Images on the wire: inside Loom `content` is always a string and images ride an
 in-memory `images` key of data URLs. `models.client.messages_for` renders them per
@@ -1215,7 +1260,7 @@ name still runs under its normal policy.
 | `fs_write` | create/overwrite (guarded); refuses a file this conversation has not read or that changed on disk since (the ledger below); keeps the file's line endings and BOM (2026-09-24) | no | allow (within roots) |
 | `fs_edit` | exact `old`→`new` replace, must be unique; or `edits=[{old,new,replace_all}]` applied in order, all-or-nothing, with one diff; same ledger check and ending/BOM preservation; on a `.ipynb`, `old`/`new` match cell sources and the JSON around them is preserved (2026-09-24) | no | allow (within roots) |
 | `fs_patch` | one unified diff across files: `patch`, `cwd`, `strip` (default: drop a leading `a/`/`b/`), `dry_run`; `/dev/null` creates or deletes, differing paths rename; a hunk is matched by its exact context-plus-deletions block (the `@@` line is a hint tried first, never fuzz), every path inside the diff is guarded (§9.3) and ledger-checked, and nothing is written unless every file applies (2026-09-24) | no | allow (within roots) |
-| `shell` | one command line, `cwd` in roots, env passthrough minus secrets, plus `TMPDIR` set to the conversation's artifacts folder (created on demand — before the cwd check, so a first call with `cwd` = that folder runs; the dispatcher's step-2 precheck makes it and fails a missing cwd before anyone is asked, 2026-10-12) so `mktemp` and `tempfile` land where the harness block's `scratch:` line points — `TEMP`/`TMP` are left alone, since Git Bash mounts `/tmp` at `TEMP` and the guard reads `/tmp` through one per-process mount table (§9.3, 2026-09-25); an explicit `env` still wins; timeout, output cap; `background=true` (+ `title`) starts a supervised long-running process instead and returns its id, pid and log path at once (§9.6); Windows: cmd.exe or Git Bash per setting (restart-required), whose quirks are appended to this tool's description from `prompts/context/shell-<flavour>.md` at registration rather than injected into the harness block every turn (2026-09-22); Git Bash is located from the Git install (registry `GitForWindows\InstallPath`, the standard folders, then the `git` on PATH), never from a bare `bash.exe` on PATH, which on Windows is the WSL launcher in System32 (2026-09-22); everything a foreground call starts ends with the call (kill-on-close Job Object on Windows, process group elsewhere — on POSIX the group is killed on a normal exit too, not only on a timeout: 2026-09-24), and the result says so — survivors are enumerated *before* the kill (the job's pid list on Windows, `ps -g`/`/proc` on POSIX; best effort, silent when the platform refuses) and the trailer names them on its own line after `[exit N]`: `[ended 1 process the command left running: game.exe pid 5732]`, at most 8 names then `, and N more`, also `meta["ended"]` (2026-09-24); `timeout_s` is the call's own, clamped by `conversation.tool_timeout_max_s`, and a timed-out call returns the output captured before the kill (§9.3) | no | classify (pre-filter first) |
+| `shell` | one command line, `cwd` in roots, env passthrough minus secrets and minus the virtual environment Loom itself runs in (`VIRTUAL_ENV`, `VIRTUAL_ENV_PROMPT`, and that venv's `Scripts`/`bin` on PATH: inherited from `uv run`, every command's `python` was Loom's runtime and `python -m uv` failed, 2026-11-09), plus `PYTHONUNBUFFERED=1` unless set, plus `TMPDIR` set to the conversation's artifacts folder (created on demand — before the cwd check, so a first call with `cwd` = that folder runs; the dispatcher's step-2 precheck makes it and fails a missing cwd before anyone is asked, 2026-10-12) so `mktemp` and `tempfile` land where the harness block's `scratch:` line points — `TEMP`/`TMP` are left alone, since Git Bash mounts `/tmp` at `TEMP` and the guard reads `/tmp` through one per-process mount table (§9.3, 2026-09-25); an explicit `env` still wins; timeout, output cap; `background=true` (+ `title`) starts a supervised long-running process instead and returns its id, pid and log path at once (§9.6); Windows: cmd.exe or Git Bash per setting (restart-required), whose quirks are appended to this tool's description from `prompts/context/shell-<flavour>.md` at registration rather than injected into the harness block every turn (2026-09-22); Git Bash is located from the Git install (registry `GitForWindows\InstallPath`, the standard folders, then the `git` on PATH), never from a bare `bash.exe` on PATH, which on Windows is the WSL launcher in System32 (2026-09-22); everything a foreground call starts ends with the call (kill-on-close Job Object on Windows, process group elsewhere — on POSIX the group is killed on a normal exit too, not only on a timeout: 2026-09-24), and the result says so — survivors are enumerated *before* the kill (the job's pid list on Windows, `ps -g`/`/proc` on POSIX; best effort, silent when the platform refuses) and the trailer names them on its own line after `[exit N]`: `[ended 1 process the command left running: game.exe pid 5732]`, at most 8 names then `, and N more`, also `meta["ended"]` (2026-09-24); `timeout_s` is the call's own, clamped by `conversation.tool_timeout_max_s`, and a timed-out call returns the output captured before the kill (§9.3) | no | classify (pre-filter first) |
 | `process` | `list` / `logs` / `stop` for background processes (§9.6); `logs` is the tail by default, `tail=true` asks for it explicitly, `since=<offset>` (or the older `offset`) reads forward from there, and the footer always names the offsets and the next call, so following a growing log needs no bookkeeping (2026-09-24); `paged`, never spilled | list, logs yes | allow |
 | `http` | GET/POST/… with headers/body; secret templating; an image response is returned as the image; `format` (raw / text / **markdown**, default markdown) decides what an HTML body becomes — an in-house `html.parser` converter (`tools/native/html_text.py`, no dependency) for markdown, a tag strip for text, untouched for raw; a body that is not HTML passes through whatever the format (2026-09-24) | no (GET treated read-only) | classify |
 | `web_search` | `query`, `k` (default `tools.web_search_results`, max 20) → a numbered list of title / url / snippet, from the provider in `tools.web_search_provider`: SearXNG (`tools.web_search_url`, no key), Brave, Exa or Tavily (key from the secret named in `tools.web_search_secret`). Unset provider, missing URL, missing secret, provider HTTP failure and a non-JSON body are five defined errors; the unset one (`prompts/context/web-search-unconfigured.md`) tells the model where the person configures it (2026-09-24) | yes | allow (no row: read-only) |
@@ -1548,7 +1593,10 @@ with `shell(command, cwd?, env?, background=true, title?)`. The command is judge
 like a foreground one (pre-filter, then classifier); `timeout_s` and `stdin` do not
 apply. The tool writes the `processes` row first (persist before act, status
 `starting`), spawns the child through the same shell flavour with stdout and stderr
-appended to `artifacts/<conv>/proc_<id>.log`, stdin closed and its own process group,
+appended to `artifacts/<conv>/proc_<id>.log`, stdin closed and its own process group
+(every shell spawn, foreground or background, gets `PYTHONUNBUFFERED=1` unless the call
+sets it: Python block-buffers to a file or pipe, so a log read "(no output yet)" and a
+killed foreground call lost what it had printed, 2026-11-09),
 then marks the row `running` with the pid and returns id, pid and log path at once. A
 spawn that fails leaves a `failed` row carrying the error.
 
@@ -1556,14 +1604,32 @@ spawn that fails leaves a `failed` row carrying the error.
 per process waits for it, marks the row `exited` with the exit code and posts an inbox
 message to the owning conversation — source `process:<id>`, rendered
 `[process "<title>" exited]`, carrying the last 600 chars of output — so the thread
-learns of the exit at its next step boundary like any other event. `stop` (the tool,
-the REST call or the UI) kills the process tree with the same helper the foreground
-timeout uses and marks the row `stopped`; when someone other than the owning
-conversation stopped it, the owner is told the same way.
+learns of the exit at its next step boundary like any other event. The row ends when
+its *containment* is empty, not when the shell does (2026-11-09): a command that
+backgrounds or daemonizes (`cmd &`, `start …`) used to leave its children running while
+the row said `exited` and `stop` refused them. While anything the shell started is alive
+in its Job Object (Windows) or process group (POSIX), the row stays `running`, its `pid`
+points at the lowest survivor, and the watcher polls; it then ends `exited` with the
+shell's exit code and the message says the shell exited first. `stop` (the tool,
+the REST call or the UI) terminates the job / kills the recorded group (falling back to
+the pid tree after a restart) and marks the row `stopped`; when someone other than the
+owning conversation stopped it, the owner is told the same way, unless the caller passes
+`notify=False` (the thread-stop path, §6.4). Every such message — exit, stop, `lost` —
+goes to the owner's inbox only while the owner is live; for a `done`, `failed` or
+`archived` owner it becomes a now-board `notification` item with an `open_conversation`
+action instead, so a finished thread is not reopened by its leftover process.
 
 The model reads and manages processes through one tool, `process(action, id?, tail?,
-since?, offset?, limit?)`: `list` (every row, newest first, with status, pid, owner and
-log size), `logs` (paged like `artifact_recall`; `paged`, never spilled) and `stop`.
+since?, offset?, limit?, until?, timeout_s?)`: `list` (every row, newest first, with
+status, pid, owner and log size), `logs` (paged like `artifact_recall`; `paged`, never
+spilled), `wait` and `stop`. `wait` (2026-11-09) blocks within the step until `until` (a
+multiline regex over the log from `since`, default 0, so a line printed before the wait
+still counts) matches — answering with the char offset, the line and the next `since` —
+or the process is no longer running (status, exit code, duration, tail), or its
+deadline passes ("still running after N s", tail). The deadline is the dispatcher's
+`timeout_for` value, so `timeout_s` is honoured up to `tool_timeout_max_s`; it polls the
+row and the log, so it works for a re-attached process too; a cancel ends it like any
+call. `list`, `logs` and `wait` are read-only.
 Default policy `allow`: Loom started it. The
 desk's now board carries one line per running process after the thread lines; every
 conversation's panel lists the processes it started; the board's Processes group has
@@ -1579,17 +1645,16 @@ fits in one page and an empty one, and always names the offsets and the exact ne
 follows, tail=true for the end]` — so following a growing log is read, then hand the
 footer's number back as `since`. A `since` past the end is not an error: it returns an
 empty page whose footer names the log's real end, which is the "nothing new yet" answer
-a poller needs. (Watch-for-line — blocking until a pattern appears — is a separate,
-undecided question and is not built.)
+a poller needs. Blocking until a pattern appears is `wait` (above).
 
 Why a log file and not a pipe: a child whose stdout is a pipe into the backend dies
 with the backend (EPIPE on its next write), and the whole point of a background process
 is that it stays up. So children deliberately outlive a backend restart, and shutdown
 leaves them alone. On start every `running` row is reconciled: pid alive → re-attached
 with a 5-second poll (a process that is not our child cannot be waited on) and later
-marked `exited` with an unknown exit code; pid dead → `lost`; `starting` (crashed
-between the row and the spawn) → `failed`. Nothing is restarted and nothing is posted
-for a reconciled row; the board simply stops listing it.
+marked `exited` with an unknown exit code; pid dead → `lost`, and the owner is told
+like an exit (a thread waiting on it must wake, 2026-11-09); `starting` (crashed
+between the row and the spawn) → `failed`. Nothing is restarted.
 
 Containment (2026-09-22): on Windows every spawn goes into a Job Object through
 `ctypes`, no `pywin32`. The foreground shell's job is kill-on-close, so everything a

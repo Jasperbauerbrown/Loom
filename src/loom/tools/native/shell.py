@@ -27,6 +27,7 @@ import asyncio
 import logging
 import os
 import shutil
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -237,6 +238,27 @@ def scratch_dir(ctx: ToolContext) -> str | None:
     return normalise(str(folder))
 
 
+def child_env() -> dict[str, str]:
+    """The environment a command starts from: the backend's own, minus the virtual
+    environment Loom itself runs in. `uv run` puts that venv's `Scripts`/`bin` first on
+    PATH and sets `VIRTUAL_ENV`; inherited, every command's `python` was Loom's runtime —
+    `python -m uv` failed with "No module named uv" and scripts ran against Loom's
+    packages instead of the machine's Python (2026-11-09). A command gets the machine's
+    environment, as the person's own shell would."""
+    env = dict(os.environ)
+    venvs = {env.pop("VIRTUAL_ENV", "") or "", sys.prefix if sys.prefix != sys.base_prefix else ""}
+    env.pop("VIRTUAL_ENV_PROMPT", None)
+    drop = {
+        os.path.normcase(os.path.normpath(os.path.join(v, "Scripts" if os.name == "nt" else "bin")))
+        for v in venvs if v
+    }
+    if drop:
+        for key in [k for k in env if k.upper() == "PATH"]:
+            parts = [p for p in env[key].split(os.pathsep) if p and os.path.normcase(os.path.normpath(p)) not in drop]
+            env[key] = os.pathsep.join(parts)
+    return env
+
+
 def shell_cwd(ctx: ToolContext, args: dict[str, Any]) -> str:
     """The directory the command runs in: `cwd` resolved against the first allowed
     root, or that root itself (`classify.command_cwd` makes the same choice)."""
@@ -268,13 +290,14 @@ async def shell_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         return ToolResult.error(problem)
     cwd = shell_cwd(ctx, args)
 
-    env = dict(os.environ)
+    env = child_env()
     scratch = scratch_dir(ctx)
     if scratch:
         env["TMPDIR"] = scratch
     extra = args.get("env")
     if isinstance(extra, dict):
         env.update({str(k): str(v) for k, v in extra.items()})
+    env.setdefault("PYTHONUNBUFFERED", "1")  # Python block-buffers into a pipe or file: a killed call would lose its output
 
     if args.get("background"):
         # A program that must keep running (03 §9.6): a row, a log file, a watcher; the

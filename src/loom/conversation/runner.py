@@ -62,6 +62,8 @@ class TurnState:
     finished: dict[str, Any] | None = None
     cancelled: bool = False
     failed: str | None = None
+    crashed: bool = False  # an exception escaped the turn; its claimed rows stay undelivered
+    budget: int = 0
     status_written: bool = False
     paused: bool = False  # ended waiting for an approval
     # The smallest ULID this turn can mint: processes and sub-threads with an id at or
@@ -108,16 +110,19 @@ async def run_turn(app, conversation_id: str) -> None:  # type: ignore[no-untype
             log.exception("turn crashed for %s", conversation_id)
             _system(app, state.cid, f"turn crashed: {exc!r}")
             state.failed = repr(exc)
+            state.crashed = True
             _finish_status(app, state)
         finally:
             app.cancel_flags.discard(conversation_id)
-    # Rows posted during this turn's last model call had no step boundary left to be
-    # claimed at (the mid-turn claim runs after tool dispatch only). A clean turn re-wakes
-    # for them; a paused or failed one leaves them for the approval / next message /
-    # restart, so a persistent failure cannot spin (2026-09-21). A pause whose approvals
-    # were all answered while the step still ran lost that answer's wake (the turn held
-    # the lock), so it resumes itself (2026-10-13).
-    if state is not None and state.failed is None and (
+    # Rows posted after the turn's last claim (during its post-turn work, or past its
+    # budget) were not seen by it: the turn re-wakes for them. A failed turn too — it
+    # marked what it claimed delivered, so the next one claims only newer rows and cannot
+    # spin (2026-11-09; a message posted while a turn failed sat queued until the next).
+    # A crashed one leaves its claimed rows undelivered, so it waits for the next message
+    # or a restart (2026-09-21). A pause whose approvals were all answered while the step
+    # still ran lost that answer's wake (the turn held the lock), so it resumes itself
+    # (2026-10-13).
+    if state is not None and not state.crashed and (
         inbox.pending_count(app, conversation_id) if not state.paused
         else not approvals.pending(app, conversation_id)
     ):
@@ -163,7 +168,7 @@ async def _turn(app, state: TurnState) -> None:  # type: ignore[no-untyped-def]
         c.exposed = ctx.exposed if ctx else set()
         return c
 
-    budget = int(conv.get("step_budget") or app.settings.get(
+    budget = state.budget = int(conv.get("step_budget") or app.settings.get(
         "conversation.step_budget_desk" if conv["kind"] == "desk" else "conversation.step_budget_thread"
     ))
     max_forced = int(app.settings.get("conversation.forced_compactions_per_turn"))
@@ -177,7 +182,7 @@ async def _turn(app, state: TurnState) -> None:  # type: ignore[no-untyped-def]
         if remaining <= 0:
             break
         tools_enabled = remaining > 1
-        steps_line = remaining if conv["kind"] == "thread" else None
+        steps_line = remaining
 
         # brakes: in-flight estimate ≥ limit → compact now (bounded per turn). The estimate
         # is approximate; when nothing can be compacted the call proceeds and the model's
@@ -226,6 +231,11 @@ async def _turn(app, state: TurnState) -> None:  # type: ignore[no-untyped-def]
             app.bus.emit("message.end", {"event_id": ev, "event": row}, cid)
             app.bus.emit("event.appended", row, cid)
             ctx.turn.append({"role": "assistant", "content": result.content})
+            # A message that arrived during this reply is answered in this turn, not
+            # after it ends: ending first told a thread's parent it had stopped and
+            # re-woke it a moment later (2026-11-09).
+            if not state.cancelled and budget - state.steps > 0 and _claim_more(app, state, ctx):
+                continue
             break
 
         # tool calls: persist first (persist before act), then dispatch
@@ -261,24 +271,46 @@ async def _turn(app, state: TurnState) -> None:  # type: ignore[no-untyped-def]
             break
 
         # mid-turn inbox
-        new_rows = inbox.claim(app, cid, after_id=state.last_claimed_id)
-        if new_rows:
-            _persist_claimed(app, state, new_rows, ctx)
+        _claim_more(app, state, ctx)
 
-    # 5 post-turn
-    if state.cancelled:
-        await _stop_turn_work(app, state)
+    # 5 post-turn. Its model calls (status safety net, compaction) race the cancel
+    # signal like every other await: a stop pressed while they ran was a silent no-op.
     _post_turn(app, state)
     if conv["kind"] == "thread" and not state.status_written and not state.cancelled and state.steps > 0:
-        await _status_safety_net(app, state)
-    try:
-        await compaction.maybe_compact(app, conv, lambda: assemble(app, conv, [], None), priority=max(state.priority, PRIORITY_BACKGROUND))
-    except CompactionError as exc:
-        _system(app, cid, f"compaction failed between turns: {exc}")
-    except Exception:
-        log.exception("post-turn compaction failed for %s", cid)
+        try:
+            await cancel.race(app.cancel_flags, cid, _status_safety_net(app, state), "status update")
+        except cancel.Cancelled:
+            state.cancelled = True
+    if not state.cancelled:
+        try:
+            await cancel.race(
+                app.cancel_flags, cid,
+                compaction.maybe_compact(app, conv, lambda: assemble(app, conv, [], None), priority=max(state.priority, PRIORITY_BACKGROUND)),
+                "compaction",
+            )
+        except cancel.Cancelled:
+            state.cancelled = True
+        except CompactionError as exc:
+            _system(app, cid, f"compaction failed between turns: {exc}")
+        except Exception:
+            log.exception("post-turn compaction failed for %s", cid)
+    if state.cancelled:
+        await _stop_turn_work(app, state)
     inbox.mark_delivered(app, state.claimed_ids)
     _finish_status(app, state)
+
+
+def _claim_more(app, state: TurnState, ctx: Context) -> bool:  # type: ignore[no-untyped-def]
+    """Claim rows posted since the turn's last claim into this turn. Never once the
+    turn's cancel signal is set: everything queued before a stop was discarded by it, so
+    a row seen now was sent after it and belongs to the next turn — claimed here it was
+    marked delivered with no reply (2026-11-09)."""
+    if state.cid in app.cancel_flags:
+        return False
+    rows = inbox.claim(app, state.cid, after_id=state.last_claimed_id)
+    if rows:
+        _persist_claimed(app, state, rows, ctx)
+    return bool(rows)
 
 
 # -- model call with outcome policy (03 §5.5) ------------------------------------------
@@ -686,12 +718,15 @@ async def _stop_turn_work(app, state: TurnState) -> None:  # type: ignore[no-unt
     parts = [f"{name} ×{calls.count(name)}" if calls.count(name) > 1 else name for name in dict.fromkeys(calls)]
     parts += [f'background process "{p["title"]}"' for p in procs]
     parts += [f'sub-thread "{t["title"]}"' for t in threads]
-    text = "cancelled by user" + (f"; stopped: {', '.join(parts)}" if parts else "")
-    meta = {"cancelled": True, "stopped": {"calls": calls, "processes": procs, "threads": threads}}
+    by = app.cancel_flags.by(cid)
+    text = (f"stopped by {by}" if by else "cancelled by user") + (f"; stopped: {', '.join(parts)}" if parts else "")
+    # `notice`: replayed to the model as harness context, so a reopened conversation
+    # knows it was stopped, by whom and why (2026-11-09).
+    meta = {"cancelled": True, "notice": True, "stopped": {"calls": calls, "processes": procs, "threads": threads}}
     ev = events.append(app, cid, "system", text, meta)
     app.bus.emit("event.appended", events.get(app, ev), cid)
     for t in threads:
-        app.cancel_flags.add(t["id"])
+        app.cancel_flags.add(t["id"], by or "")
     for p in procs:
         try:
             await app.processes.stop(p["id"], actor=f"conversation:{cid}")
@@ -758,12 +793,43 @@ def _finish_status(app, state: TurnState) -> None:  # type: ignore[no-untyped-de
     elif state.cancelled:
         events.set_status(app, state.cid, "idle")
     else:
-        events.set_status(app, state.cid, "waiting_input")
+        # A turn that ended in plain text. The parent is told which of three it was: the
+        # step budget ran out; the thread is waiting on its own work in flight (a
+        # background process or a live sub-thread, whose report wakes it — status
+        # `waiting`, nobody needs to act); or it stopped (2026-11-09: a desk read "[steps
+        # remaining: 1]" as a thread stopping with a step to spare, and a thread waiting
+        # on a transfer was reported as stopped).
         text = (state.last_result.content if state.last_result else "") or "(no message)"
-        _notify_parent(app, state, "waiting", text)
+        awaited = _awaited(app, state.cid)
+        if state.budget and state.steps >= state.budget:
+            events.set_status(app, state.cid, "waiting_input")
+            _notify_parent(app, state, "out_of_steps", text)
+        elif awaited:
+            events.set_status(app, state.cid, "waiting")
+            _notify_parent(app, state, "waiting_on", text, label="waiting on " + ", ".join(awaited))
+        else:
+            events.set_status(app, state.cid, "waiting_input")
+            _notify_parent(app, state, "waiting", text)
 
 
-def _notify_parent(app, state: TurnState, event: str, text: str, delivery: str | None = None) -> None:  # type: ignore[no-untyped-def]
+def _awaited(app, conversation_id: str) -> list[str]:  # type: ignore[no-untyped-def]
+    """What a thread's own work still in flight is: its running background processes and
+    its sub-threads that are not over or stopped. Each reports to the thread when it ends."""
+    out: list[str] = []
+    if app.processes is not None:
+        for r in app.db.execute(
+            "SELECT title FROM processes WHERE conversation_id=? AND status='running' ORDER BY id", (conversation_id,)
+        ).fetchall():
+            out.append(f'process "{r["title"]}"')
+    for r in app.db.execute(
+        "SELECT id, title, status FROM conversations WHERE parent_id=? AND kind='thread' ORDER BY id", (conversation_id,)
+    ).fetchall():
+        if r["status"] in ("running", "waiting_approval", "waiting") or _turn_alive(app, r["id"]):
+            out.append(f'sub-thread "{r["title"]}"')
+    return out
+
+
+def _notify_parent(app, state: TurnState, event: str, text: str, delivery: str | None = None, label: str | None = None) -> None:  # type: ignore[no-untyped-def]
     """`text` is the short form (the finish summary): it is the now-board item, truncated.
     `delivery`, when the caller has one, is the summary plus the finish evidence block —
     the body the parent conversation actually reads, so the walkthrough reaches the desk
@@ -774,7 +840,10 @@ def _notify_parent(app, state: TurnState, event: str, text: str, delivery: str |
     # "waiting" is any turn that ended in plain text; the harness cannot tell a question
     # from a report, so the header says what happened, not what the thread wants
     # (three of four finished threads ended with a report instead of finish, 2026-09-22).
-    label = {"done": "finished", "failed": "failed", "waiting": "stopped without finishing", "blocked": "blocked"}.get(event, event)
+    label = label or {
+        "done": "finished", "failed": "failed", "waiting": "stopped without finishing", "blocked": "blocked",
+        "out_of_steps": "out of steps for this turn",
+    }.get(event, event)
     body = text.strip()
     if parent:
         from . import post

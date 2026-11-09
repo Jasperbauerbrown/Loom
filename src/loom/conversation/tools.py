@@ -310,7 +310,7 @@ async def _stop(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         return ToolResult.error(f"conversation {target} not found")
     if not stopping.is_descendant(app, ctx.conversation_id, target):
         return ToolResult.error(f"conversation {target} is not one of your threads; you can only stop threads you spawned, or their sub-threads")
-    stopped = stopping.stop(app, target, actor=f"conversation {ctx.conversation_id}", reason=args.get("reason") or "")
+    stopped = await stopping.stop(app, target, actor=f"conversation {ctx.conversation_id}", reason=args.get("reason") or "")
     if not stopped:
         return ToolResult(f"nothing to stop: {target} is {other['status']} with no work in flight")
     names = ", ".join(f"{s['id']} (\"{s['title']}\", was {s['was']})" for s in stopped)

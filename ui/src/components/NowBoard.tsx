@@ -139,7 +139,7 @@ export function NowBoard() {
   const threads = useStore(
     (s) =>
       Object.values(s.conversations).filter(
-        (c) => c.kind === "thread" && ["running", "waiting_approval", "waiting_input"].includes(c.status),
+        (c) => c.kind === "thread" && ["running", "waiting", "waiting_approval", "waiting_input"].includes(c.status),
       ),
     (a, b) => a.length === b.length && a.every((x, i) => x === b[i]),
   );

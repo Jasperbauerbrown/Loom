@@ -11,7 +11,7 @@
 import type { Conversation, ConversationStatus, ConvEvent } from "./types";
 import { cascade, fromFrac, isFracRect, placeNew, tile, toFrac, type Rect, type Size } from "./overviewLayout";
 
-const ACTIVE_STATUSES = new Set(["running", "waiting_approval", "waiting_input"]);
+const ACTIVE_STATUSES = new Set(["running", "waiting", "waiting_approval", "waiting_input"]);
 const FINISHED_STATUSES = new Set(["done", "failed"]);
 
 function byUpdatedDesc(a: Conversation, b: Conversation): number {

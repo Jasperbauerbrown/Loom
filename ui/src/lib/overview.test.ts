@@ -238,5 +238,6 @@ describe("attention", () => {
     expect(attention("running", 1)).toBe("amber");
     expect(attention("running", 0)).toBe("sky");
     expect(attention("idle", 0)).toBe(null);
+    expect(attention("waiting", 0)).toBe(null);
   });
 });

@@ -294,7 +294,7 @@ async def cancel(conversation_id: str, app=Depends(get_app)) -> dict[str, Any]:
     # Imported from the module, not the package: the package attribute `stop` is the
     # no-op shutdown hook (`conversation/__init__.py`), which shadowed this call and
     # made every Cancel click answer 500 (since 374bac3, fixed 2026-10-23).
-    stopped = stop_conversation(app, conversation_id, actor="user", cascade=row["kind"] != "desk")
+    stopped = await stop_conversation(app, conversation_id, actor="user", cascade=row["kind"] != "desk")
     return {"cancelling": bool(stopped), "status": row["status"], "stopped": [s["id"] for s in stopped]}
 
 

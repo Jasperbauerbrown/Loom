@@ -4,6 +4,8 @@ import { compactNumber, compactionLabel, duration, normaliseNotePath, statusLabe
 describe("statusLabel", () => {
   it("shows a thread that ended its turn without finishing as stopped, with a gloss", () => {
     expect(statusLabel("waiting_input")).toBe("stopped");
+    expect(statusLabel("waiting")).toBe("waiting");
+    expect(statusTitle("waiting")).toMatch(/resumes when that reports/);
     expect(statusTitle("waiting_input")).toMatch(/without finishing/);
   });
 

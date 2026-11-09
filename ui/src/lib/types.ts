@@ -7,6 +7,7 @@ export type ConversationStatus =
   | "running"
   | "waiting_approval"
   | "waiting_input"
+  | "waiting"
   | "done"
   | "failed"
   | "archived";

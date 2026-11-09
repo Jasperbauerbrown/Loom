@@ -155,7 +155,7 @@ function ConversationPicker() {
   const route = useRoute();
   const desk = conversations.find((c) => c.kind === "desk");
   const running = conversations
-    .filter((c) => c.kind === "thread" && ["running", "waiting_approval", "waiting_input"].includes(c.status))
+    .filter((c) => c.kind === "thread" && ["running", "waiting", "waiting_approval", "waiting_input"].includes(c.status))
     .slice(0, 20);
   const current = route.name === "conversation" ? route.param : desk ? desk.id : "";
   return (

@@ -31,7 +31,6 @@ Each item names its source. "Audit" means `reference/tool-parity-audit.md` §3.
 - Checkpoints and undo for files under the roots (#10).
 - LSP diagnostics after edits (#11).
 - MCP resources, prompts and OAuth (#12).
-- `process` watch-for-line (#13).
 
 ## Undecided (TD audit, not yet agreed)
 - Hold a system-required power request while a turn runs or an approval is pending, so

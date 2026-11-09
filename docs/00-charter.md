@@ -1855,3 +1855,23 @@ sessions do not re-litigate.
   connection shows as its dot alone, the conversation picker hides). It is a per-browser
   view preference in `localStorage`, not a setting: a phone and a desktop on the same Loom
   want different answers. Unset, it starts collapsed below 768px wide.
+- **2026-11-09** — **Turn edges, stops and waiting, from a code audit of a week of
+  operation.** (1) A message that arrives during a turn's last reply is answered in that
+  turn; a failed turn re-wakes for rows it never claimed; a cancelled turn claims nothing
+  after the signal. (2) A stop reaches the post-turn model calls (status safety net,
+  compaction), records every discard whoever stopped it, and is replayed to the stopped
+  conversation's model as a `notice`; the signal names who set it. (3) Stopping a thread
+  ends all of its background processes, quietly; a process exit or loss for a
+  done/failed/archived owner goes to the now board instead of reopening it; the person
+  stopping a thread puts an item on the board. (4) A thread that ends its turn with its
+  own work in flight is `waiting` and its parent is told what it waits on; running out of
+  steps is reported as such; the last step's line says tools are off, and the desk sees
+  its remaining steps. (5) `process(action="wait", until=…)` blocks within a step on a
+  background process's exit or a log pattern (backlog #13 "watch-for-line", now built),
+  so neither polling nor ending the turn is the only way to wait. (6) A background
+  command whose shell exits while its children live keeps its row running until the
+  containment is empty; shells get `PYTHONUNBUFFERED=1`. Each is the general mechanism
+  for its class; none adds a setting.
+  (7) A shell command no longer inherits the virtual environment Loom runs in: `uv run`
+  had made every command's `python` Loom's own `.venv`, so `python -m uv` (the documented
+  form) failed inside Loom and scripts ran on Loom's packages.

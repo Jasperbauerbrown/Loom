@@ -74,6 +74,7 @@ export function statusLabel(status: string): string {
 /** Tooltip for a status badge; only the statuses whose word needs a gloss have one. */
 export function statusTitle(status: string): string | undefined {
   if (status === "waiting_input") return "ended its turn without finishing; send a message to continue";
+  if (status === "waiting") return "waiting on its own background process or sub-thread; resumes when that reports";
   if (status === "waiting_approval") return "paused on an approval request";
   return undefined;
 }

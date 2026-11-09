@@ -12,6 +12,7 @@ export function windowTitle(c: Conversation | undefined, id: string): string {
 
 const DOT: Record<string, string> = {
   running: "bg-sky-500",
+  waiting: "bg-sky-300 dark:bg-sky-700",
   waiting_approval: "bg-amber-500",
   waiting_input: "bg-amber-500",
   done: "bg-emerald-500",

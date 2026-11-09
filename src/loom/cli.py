@@ -25,7 +25,7 @@ import httpx
 
 DEFAULT_PORT = 8500
 POLL_SECONDS = 0.5
-TERMINAL = {"idle": 0, "done": 0, "failed": 1, "waiting_input": 2, "waiting_approval": 2, "archived": 0}
+TERMINAL = {"idle": 0, "waiting": 0, "done": 0, "failed": 1, "waiting_input": 2, "waiting_approval": 2, "archived": 0}
 
 
 # ---------------------------------------------------------------------------------

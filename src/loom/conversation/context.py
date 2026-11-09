@@ -215,7 +215,7 @@ def now_board(app) -> str:  # type: ignore[no-untyped-def]
     cap = int(app.settings.get("conversation.now_board_max_threads"))
     threads = app.db.execute(
         "SELECT id, kind, title, goal, status FROM conversations WHERE kind='thread' "
-        "AND status IN ('running','waiting_approval','waiting_input') ORDER BY updated_at DESC LIMIT ?",
+        "AND status IN ('running','waiting_approval','waiting','waiting_input') ORDER BY updated_at DESC LIMIT ?",
         (cap,),
     ).fetchall()
     for t in threads:
@@ -354,9 +354,14 @@ def steps_message(conv: dict[str, Any], steps_remaining: int | None, tool_calls:
     leaves the whole prompt before it cacheable (2026-09-22). A thread sees its budget;
     the desk sees how many tool calls this turn has made, every step including the
     first, so the desk/thread split has a number to stand on (2026-10-13). Calls made
-    together in one step each count."""
+    together in one step each count. The desk sees its remaining steps too, and the last
+    step — the one the runner sends without tools — says so: unexplained, models wrote
+    tool-call markup or echoed the step line as their reply (2026-11-09)."""
+    if steps_remaining is not None and steps_remaining <= 1:
+        return {"role": "user", "content": f"{CONTEXT_OPEN}\n{prompts.load('context/steps-last').strip()}\n{CONTEXT_CLOSE}"}
     if conv.get("kind") == "desk":
-        return {"role": "user", "content": f"{CONTEXT_OPEN}\n[tool calls this turn: {tool_calls}]\n{CONTEXT_CLOSE}"}
+        left = f" · steps remaining: {steps_remaining}" if steps_remaining is not None else ""
+        return {"role": "user", "content": f"{CONTEXT_OPEN}\n[tool calls this turn: {tool_calls}{left}]\n{CONTEXT_CLOSE}"}
     if steps_remaining is None:
         return None
     return {"role": "user", "content": f"{CONTEXT_OPEN}\n[steps remaining: {steps_remaining}]\n{CONTEXT_CLOSE}"}
@@ -443,7 +448,13 @@ def messages_from_events(  # type: ignore[no-untyped-def]
                 }
             )
             open_calls = {c["id"] for c in calls}
-        # thinking / system / status / compaction: never replayed
+        elif kind == "system" and e["meta"].get("notice"):
+            # A system event marked `notice` (a stop: who, why, what it ended) is the
+            # model's to know; it rides as harness context, after any open step's tool
+            # messages so the call/result pairing stays intact.
+            note = {"role": "user", "content": f"{CONTEXT_OPEN}\n{e['content']}\n{CONTEXT_CLOSE}", "_event_id": e["id"]}
+            (followers if open_calls else msgs).append(note)
+        # thinking / other system / status / compaction: never replayed
     flush()
     return msgs
 

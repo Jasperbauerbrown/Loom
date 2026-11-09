@@ -46,7 +46,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from . import db
+from . import db, items
 from .ids import ulid
 
 log = logging.getLogger(__name__)
@@ -381,6 +381,7 @@ class Processes:
         self.app = app
         self._procs: dict[str, asyncio.subprocess.Process] = {}
         self._jobs: dict[str, int] = {}  # Windows Job Object handles for this run's children
+        self._pgids: dict[str, int] = {}  # POSIX process groups (the shell's pid; it is a session leader)
 
     # -- rows ------------------------------------------------------------------
     def _decorate(self, row: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -442,6 +443,9 @@ class Processes:
         try:
             folder.mkdir(parents=True, exist_ok=True)
             argv = resolve_shell(self.app) + [command]
+            if env is None:
+                env = dict(os.environ)
+            env.setdefault("PYTHONUNBUFFERED", "1")  # else a Python child's log stays empty until it exits
             kwargs: dict[str, Any] = {}
             if os.name == "nt":
                 kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
@@ -451,7 +455,7 @@ class Processes:
                 proc = await asyncio.create_subprocess_exec(
                     *argv,
                     cwd=cwd,
-                    env=env if env is not None else dict(os.environ),
+                    env=env,
                     stdin=asyncio.subprocess.DEVNULL,
                     stdout=fh,
                     stderr=asyncio.subprocess.STDOUT,
@@ -460,6 +464,8 @@ class Processes:
         except (OSError, ValueError) as exc:
             return self._end(process_id, "failed", error=f"cannot start {command[:80]}: {exc}") or {}
         self._procs[process_id] = proc
+        if os.name != "nt":
+            self._pgids[process_id] = proc.pid
         # Not kill-on-close: the child must outlive a restart. The job is for `stop`, so
         # it reaches descendants whose parent has already gone.
         job = create_job(kill_on_close=False)
@@ -474,9 +480,10 @@ class Processes:
         self.app.spawn(f"process:{process_id}", self._watch(process_id, proc))
         return row
 
-    async def stop(self, process_id: str, actor: str = "user") -> dict[str, Any] | None:
+    async def stop(self, process_id: str, actor: str = "user", notify: bool = True) -> dict[str, Any] | None:
         """Kill the tree and mark the row `stopped`. A row that is not running comes back
-        unchanged. The owner hears about it unless it did the stopping."""
+        unchanged. The owner hears about it unless it did the stopping or `notify` is
+        False (stopping a whole thread must not reopen it through its own process)."""
         row = self.get(process_id)
         if row is None or row["status"] != "running":
             return row
@@ -486,18 +493,20 @@ class Processes:
         proc = self._procs.pop(process_id, None)
         pid = row.get("pid") if row else None
         job = self._jobs.pop(process_id, None)
+        pgid = self._pgids.pop(process_id, None)
         if job is not None:
             # The job reaches every descendant, reparented or not; the tree kill after
             # it is belt and braces for the moment between spawn and assignment.
             await asyncio.to_thread(terminate_job, job)
         await asyncio.to_thread(kill_tree, pid)
+        await asyncio.to_thread(kill_group, pgid)  # the group outlives a dead shell: killpg by number
         close(job)
         if proc is not None:
             try:
                 await asyncio.wait_for(proc.wait(), timeout=10)
             except Exception:
                 pass
-        if row and actor != f"conversation:{row['conversation_id']}":
+        if row and notify and actor != f"conversation:{row['conversation_id']}":
             self._post(row, "stopped", "stopped by the user")
         return self.get(process_id)
 
@@ -530,16 +539,41 @@ class Processes:
         return text[-TAIL_CHARS:] if text else "(no output)"
 
     # -- watchers -----------------------------------------------------------------
+    def _contained(self, process_id: str, shell_pid: int) -> list[int]:
+        """Pids still alive in the command's containment, apart from the shell itself: the
+        Job Object on Windows, the process group elsewhere."""
+        if os.name == "nt":
+            pids = job_pids(self._jobs.get(process_id))
+        else:
+            pgid = self._pgids.get(process_id)
+            pids = [pid for pid, _ in group_pids(pgid)] if pgid else []
+        return sorted(p for p in pids if p and p != shell_pid and pid_alive(p))
+
     async def _watch(self, process_id: str, proc: asyncio.subprocess.Process) -> None:
         code = await proc.wait()
         self._procs.pop(process_id, None)
+        # The shell is gone; whatever it started (`cmd &`, `start …`, a daemonizing program)
+        # is still this process's. Keep the row running, pointed at a survivor, until the
+        # containment is empty.
+        survived = False
+        alive = await asyncio.to_thread(self._contained, process_id, proc.pid)
+        while alive:
+            survived = True
+            row = self.get(process_id)
+            if row is None or row["status"] != "running":
+                break
+            if row.get("pid") != alive[0]:
+                self._set(process_id, pid=alive[0])
+            await asyncio.sleep(self.poll_interval)
+            alive = await asyncio.to_thread(self._contained, process_id, proc.pid)
         close(self._jobs.pop(process_id, None))
+        self._pgids.pop(process_id, None)
         row = self.get(process_id)
         if row is None or row["status"] != "running":
             return  # stopped meanwhile; the stopper already said so
         row = self._end(process_id, "exited", exit_code=code)
         if row is not None:
-            self._post(row, "exited", self._exit_text(row))
+            self._post(row, "exited", self._exit_text(row, survived))
 
     async def _poll(self, process_id: str, pid: int) -> None:
         """Watcher for a process that outlived a backend restart: not our child any more,
@@ -555,22 +589,38 @@ class Processes:
                     self._post(row, "exited", self._exit_text(row))
             return
 
-    def _exit_text(self, row: dict[str, Any]) -> str:
+    def _exit_text(self, row: dict[str, Any], children: bool = False) -> str:
         code = row.get("exit_code")
         code_text = "unknown" if code is None else str(code)
+        if children:
+            return (
+                f"the shell exited first with code {code_text}; the processes it started ran until all had ended, "
+                f"after {duration(row)}. Last output:\n{self._tail(row)}"
+            )
         return f"exited with code {code_text} after {duration(row)}. Last output:\n{self._tail(row)}"
 
     def _post(self, row: dict[str, Any], event: str, content: str) -> None:
+        """Tell the owner. A finished conversation is not woken: its message would reopen
+        it and start a turn, so the now board gets an item instead."""
         from .conversation import post  # lazy: conversation imports the tool packages
 
+        owner = row["conversation_id"]
         try:
+            conv = self.app.conversation(owner) or {}
+            if conv.get("status") in ("done", "failed", "archived"):
+                items.post(
+                    self.app, "notification", f'Process "{row.get("title") or row["id"]}" {event}', content,
+                    conversation_id=owner, source=f"process:{row['id']}",
+                    action={"kind": "open_conversation", "conversation_id": owner},
+                )
+                return
             post(
-                self.app, row["conversation_id"], content,
+                self.app, owner, content,
                 source=f"process:{row['id']}",
                 meta={"title": row.get("title") or "", "event": event, "exit_code": row.get("exit_code")},
             )
         except Exception as exc:  # a vanished conversation must not take the watcher down
-            log.warning("process %s: could not notify %s: %s", row["id"], row["conversation_id"], exc)
+            log.warning("process %s: could not notify %s: %s", row["id"], owner, exc)
 
     # -- lifecycle --------------------------------------------------------------------
     async def reconcile(self) -> None:
@@ -582,7 +632,9 @@ class Processes:
             if pid_alive(pid):
                 self.app.spawn(f"process:{row['id']}", self._poll(row["id"], int(pid)))
             else:
-                self._end(row["id"], "lost")
+                lost = self._end(row["id"], "lost")
+                if lost is not None:
+                    self._post(lost, "lost", f"is gone: the backend restarted and the process was no longer running. Last output:\n{self._tail(lost)}")
 
     async def shutdown(self) -> None:
         """Cancel the watchers; the children keep running (they own their log handles)."""

@@ -35,6 +35,7 @@ class CancelFlags:
     def __init__(self) -> None:
         self._events: dict[str, asyncio.Event] = {}
         self._stopped: dict[str, list[str]] = {}
+        self._by: dict[str, str] = {}
 
     def event(self, conversation_id: str) -> asyncio.Event:
         ev = self._events.get(conversation_id)
@@ -42,12 +43,20 @@ class CancelFlags:
             ev = self._events[conversation_id] = asyncio.Event()
         return ev
 
-    def add(self, conversation_id: str) -> None:
+    def add(self, conversation_id: str, by: str = "") -> None:
+        """`by` says who stopped it and why ("conversation X: duplicate"); empty is the
+        person. The first signaller wins: a cascade cannot relabel the person's stop."""
+        if by and conversation_id not in self:
+            self._by[conversation_id] = by
         self.event(conversation_id).set()
+
+    def by(self, conversation_id: str) -> str:
+        return self._by.get(conversation_id, "")
 
     def discard(self, conversation_id: str) -> None:
         self._events.pop(conversation_id, None)
         self._stopped.pop(conversation_id, None)
+        self._by.pop(conversation_id, None)
 
     def __contains__(self, conversation_id: object) -> bool:
         ev = self._events.get(conversation_id) if isinstance(conversation_id, str) else None

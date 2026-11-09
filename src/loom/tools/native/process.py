@@ -1,18 +1,27 @@
-"""The `process` tool (03 §9.6): list, read the log of, or stop a background process
-started with `shell(background=true)`. `list` and `logs` are read-only; `logs` pages
-its own output like `artifact_recall`, so it is never spilled.
+"""The `process` tool (03 §9.6): list, read the log of, wait on, or stop a background
+process started with `shell(background=true)`. `list`, `logs` and `wait` are read-only;
+`logs` pages its own output like `artifact_recall`, so it is never spilled.
+
+`wait` blocks inside one step: it polls the row and the log file (so it works for a
+process re-attached after a restart), and answers at the deadline the dispatcher computes
+for the call, which sits a grace margin below the dispatcher's own cut-off.
 """
 
 from __future__ import annotations
 
+import asyncio
+import re
+from pathlib import Path
 from typing import Any
 
 from ... import prompts
 from ...processes import duration
 from ..registry import Tool, ToolContext, ToolResult
 
-ACTIONS = ("list", "logs", "stop")
+ACTIONS = ("list", "logs", "wait", "stop")
 LIST_MAX = 50
+WAIT_POLL_S = 0.5
+QUOTE_CHARS = 300  # of the matching line quoted back
 
 
 def _list(ctx: ToolContext) -> ToolResult:
@@ -80,6 +89,77 @@ def _logs(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     return ToolResult(text + footer, meta={"id": process_id, "offset": start, "end": end, "total": total})
 
 
+def _read(row: dict[str, Any]) -> str:
+    try:
+        return Path(row["log_path"]).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+async def _wait(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+    from .. import dispatch  # lazy: dispatch imports the tool registry
+
+    app = ctx.app
+    process_id = str(args.get("id") or "").strip()
+    if not process_id:
+        return ToolResult.error("id is required for wait")
+    if app.processes.get(process_id) is None:
+        return ToolResult.error(f"no process {process_id}")
+    pattern = args.get("until")
+    rx = None
+    if pattern:
+        try:
+            rx = re.compile(str(pattern), re.MULTILINE)
+        except re.error as exc:
+            return ToolResult.error(f"until is not a valid regular expression: {exc}")
+    try:
+        since = int(args.get("since") or 0)
+    except (TypeError, ValueError):
+        return ToolResult.error("since must be a non-negative integer")
+    if since < 0:
+        return ToolResult.error("since must be a non-negative integer")
+    timeout = dispatch.timeout_for(app, app.tools.get("process"), args)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    nomatch = "; no match for until" if rx is not None else ""
+    while True:
+        row = app.processes.get(process_id)
+        if row is None:
+            return ToolResult.error(f"no process {process_id}")
+        text = _read(row)
+        total = len(text)
+        footer = f'[log is {total} chars; process(action="logs", id="{process_id}", since={total}) for what is written next]'
+        if rx is not None:
+            m = rx.search(text[since:])
+            if m:
+                at = since + m.start()
+                line_start = text.rfind("\n", 0, at) + 1
+                line_end = text.find("\n", at)
+                line_end = total if line_end < 0 else line_end
+                nxt = min(total, line_end + 1)
+                return ToolResult(
+                    f"matched at char {at}: {text[line_start:line_end][:QUOTE_CHARS]}\n"
+                    f'[process {process_id} is {row["status"]}; process(action="logs", id="{process_id}", since={nxt}) for what follows]',
+                    meta={"id": process_id, "matched": True, "offset": at, "end": nxt, "total": total},
+                )
+        if row["status"] != "running":
+            code = row.get("exit_code")
+            code_text = "" if code is None else f" with code {code}"
+            return ToolResult(
+                f'process {process_id} ("{row["title"]}") is no longer running: {row["status"]}{code_text} after {duration(row)}{nomatch}. '
+                f"Last output:\n{app.processes._tail(row)}\n{footer}",
+                meta={"id": process_id, "status": row["status"], "total": total},
+            )
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return ToolResult(
+                f'process {process_id} ("{row["title"]}") is still running after {timeout:g}s{nomatch}. '
+                f"Last output:\n{app.processes._tail(row)}\n{footer}",
+                meta={"id": process_id, "status": "running", "timed_out": True, "total": total},
+            )
+        await asyncio.sleep(min(WAIT_POLL_S, remaining))  # a user cancel lands here as CancelledError
+
+
 async def _stop(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     process_id = str(args.get("id") or "").strip()
     if not process_id:
@@ -101,6 +181,8 @@ async def process_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         return _list(ctx)
     if action == "logs":
         return _logs(ctx, args)
+    if action == "wait":
+        return await _wait(ctx, args)
     if action == "stop":
         return await _stop(ctx, args)
     return ToolResult.error("action must be one of " + ", ".join(ACTIONS))
@@ -114,17 +196,19 @@ def tools() -> list[Tool]:
             parameters={
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": list(ACTIONS), "description": "list, logs or stop."},
+                    "action": {"type": "string", "enum": list(ACTIONS), "description": "list, logs, wait or stop."},
                     "id": {"type": "string", "description": "Process id from shell(background=true) or list."},
                     "tail": {"type": "boolean", "description": "logs: read the last page from the current end of the log, however much it has grown. Wins over since/offset; also the default when none of tail/since/offset are given."},
-                    "since": {"type": "integer", "description": "logs: character offset to read from, forward — hand it back the offset the previous read's footer named."},
+                    "since": {"type": "integer", "description": "logs: character offset to read from, forward — hand it back the offset the previous read's footer named. wait: where matching starts (default 0)."},
                     "offset": {"type": "integer", "description": "logs: same meaning as since, kept for back-compat. offset/since is ignored if tail is set."},
+                    "until": {"type": "string", "description": "wait: regular expression matched against the log text (a line printed before the wait started still matches)."},
+                    "timeout_s": {"type": "number", "description": "wait: seconds to wait before answering that it is still running; honoured up to the configured ceiling."},
                     "limit": {"type": "integer", "description": "logs: characters to return; default and maximum are the tool output cap."},
                 },
                 "required": ["action"],
             },
             handler=process_handler,
-            read_only_for=lambda args: (args or {}).get("action") in ("list", "logs"),
+            read_only_for=lambda args: (args or {}).get("action") in ("list", "logs", "wait"),
             paged=True,
         )
     ]

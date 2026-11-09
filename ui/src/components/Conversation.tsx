@@ -481,7 +481,7 @@ function EventView({
 
 export function StatusLine({ status }: { status: string }) {
   const tone =
-    status === "running"
+    status === "running" || status === "waiting"
       ? "sky"
       : status === "waiting_approval" || status === "waiting_input"
         ? "amber"

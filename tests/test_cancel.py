@@ -209,7 +209,7 @@ async def test_cancel_interrupts_a_running_tool_and_records_it(app, fake):
     assert len(results) == 2  # the running call and the one that never started
     for r in results:
         assert r["meta"]["cancelled"] is True and r["meta"]["ok"] is False
-        assert "cancelled by the user" in r["content"]
+        assert "cancelled: the turn was stopped" in r["content"]
     assert len([c for c in fake.calls if c.purpose == "turn"]) == 1  # no step after the cancel
     assert _system_cancel(app, desk)["content"] == "cancelled by user; stopped: slow"
     assert _system_cancel(app, desk)["meta"]["stopped"]["calls"] == ["slow"]
@@ -232,7 +232,7 @@ async def test_cancel_kills_a_foreground_shell_and_keeps_its_output(app, fake, t
     res = _events(app, desk, ["tool_result"])[-1]
     assert res["meta"]["cancelled"] is True
     assert "[cancelled; process tree killed]" in res["content"]
-    assert "cancelled by the user" in res["content"]
+    assert "cancelled: the turn was stopped" in res["content"]
     line = next(ln for ln in res["content"].splitlines() if ln.startswith("child "))
     pid = int(line.split()[1])
     await _until(lambda: not processes.pid_alive(pid), timeout=10)

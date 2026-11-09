@@ -202,7 +202,9 @@ async def test_reconcile_sorts_out_what_a_restart_left(app, project, fake):
         failed = app.processes.get("starting1")
         assert failed["status"] == "failed" and "restarted during spawn" in failed["error"] and failed["ended_at"]
         lost = app.processes.get("dead1")
-        assert lost["status"] == "lost" and lost["ended_at"] and _inbox(app, "dead1") == []
+        assert lost["status"] == "lost" and lost["ended_at"] 
+        gone = _inbox(app, "dead1")  # a thread waiting on it must hear that it is gone
+        assert len(gone) == 1 and "backend restarted" in gone[0]["content"] and db.loads(gone[0]["meta"], {})["event"] == "lost"
         assert app.processes.get("live1")["status"] == "running"
         assert "process:live1" in app.tasks
         child.kill()
@@ -307,3 +309,107 @@ async def test_stopping_a_background_process_kills_its_descendants(app, ctx, pro
     finally:
         processes.kill_tree(gpid)
         processes.kill_tree(row["pid"])
+
+
+# -- wait, survivors, env, routing, notify ---------------------------------------------------
+
+async def _proc(app, ctx, project, code: str, title: str = "p"):  # type: ignore[no-untyped-def]
+    row = await app.processes.start(ctx.conversation_id, _cmd(code), str(project), title=title)
+    assert row["status"] == "running", row
+    return row
+
+
+async def _wait(app, ctx, **args):  # type: ignore[no-untyped-def]
+    return await dispatch.execute(app, ctx, app.tools.get("process"), {"action": "wait", **args})
+
+
+async def test_wait_matches_a_line_and_names_the_next_since(app, ctx, project, fake):
+    fake.reply("ok")
+    row = await _proc(app, ctx, project, "import time; print('booting', flush=True); print('listening on 8080', flush=True); time.sleep(60)")
+    await wait_for(lambda: "listening" in Path(row["log_path"]).read_text(encoding="utf-8"))
+    tool = app.tools.get("process")
+    assert tool.is_read_only({"action": "wait"})
+    res = await _wait(app, ctx, id=row["id"], until=r"listening on \d+")  # printed before the wait began
+    assert res.ok and "matched at char 8: listening on 8080" in res.content
+    assert f'process(action="logs", id="{row["id"]}", since=' in res.content and res.meta["matched"]
+    bad = await _wait(app, ctx, id=row["id"], until="(")
+    assert not bad.ok and "regular expression" in bad.content
+    # since past the match: no match, and the deadline answers still running
+    app.processes.poll_interval = 0.1
+    late = await _wait(app, ctx, id=row["id"], until="listening", since=res.meta["end"], timeout_s=1)
+    assert late.ok and "still running after 1s; no match for until" in late.content and "listening on 8080" in late.content
+
+
+async def test_wait_returns_when_the_process_ends(app, ctx, project, fake):
+    fake.reply("ok")
+    row = await _proc(app, ctx, project, "print('done now', flush=True)")
+    res = await _wait(app, ctx, id=row["id"], timeout_s=20)
+    assert res.ok and "no longer running: exited with code 0" in res.content and "done now" in res.content
+    assert "no process" in (await _wait(app, ctx, id="nope")).content
+
+
+async def test_wait_is_cancellable(app, ctx, project, fake):
+    fake.reply("ok")
+    row = await _proc(app, ctx, project, "import time; time.sleep(60)")
+    task = asyncio.ensure_future(_wait(app, ctx, id=row["id"], timeout_s=30))
+    await asyncio.sleep(0.3)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_background_python_logs_are_unbuffered(app, ctx, project, fake):
+    fake.reply("ok")
+    row = await _proc(app, ctx, project, "import time; print('early'); time.sleep(60)")  # no flush=True
+    await wait_for(lambda: "early" in Path(row["log_path"]).read_text(encoding="utf-8"))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="detaches with a POSIX `&`")
+async def test_survivors_keep_the_row_running_and_stop_reaches_them(app, ctx, project, fake):
+    fake.reply("ok")
+    app.processes.poll_interval = 0.1
+    row = await app.processes.start(ctx.conversation_id, f'"{PY}" -c "import time; time.sleep(60)" & echo shell done', str(project), title="bg")
+    await wait_for(lambda: "shell done" in Path(row["log_path"]).read_text(encoding="utf-8"))
+    await asyncio.sleep(0.5)
+    now = app.processes.get(row["id"])
+    assert now["status"] == "running" and now["pid"] != row["pid"] and processes.pid_alive(now["pid"])
+    survivor = now["pid"]
+    stopped = await app.processes.stop(row["id"], actor="user")
+    assert stopped["status"] == "stopped"
+    await wait_for(lambda: not processes.pid_alive(survivor))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="detaches with a POSIX `&`")
+async def test_survivors_ending_posts_the_shell_exit_first(app, ctx, project, fake):
+    fake.reply("ok")
+    app.processes.poll_interval = 0.1
+    row = await app.processes.start(ctx.conversation_id, f'"{PY}" -c "import time; time.sleep(1)" & exit 3', str(project), title="bg")
+    await wait_for(lambda: app.processes.get(row["id"])["status"] == "exited")
+    assert app.processes.get(row["id"])["exit_code"] == 3
+    assert "shell exited first with code 3" in _inbox(app, row["id"])[0]["content"]
+
+
+def _end_conversation(app, status: str) -> str:
+    from loom.conversation import create_thread
+
+    thread = create_thread(app, goal="finished work", parent_id=app.desk_id())
+    app.db.execute("UPDATE conversations SET status=? WHERE id=?", (status, thread["id"]))
+    return thread["id"]
+
+
+@pytest.mark.parametrize("status", ["done", "failed", "archived"])
+async def test_exit_of_a_finished_owner_goes_to_the_now_board(app, project, fake, status):
+    owner = _end_conversation(app, status)
+    row = await app.processes.start(owner, _cmd("print('x')"), str(project), title="late")
+    await wait_for(lambda: app.processes.get(row["id"])["status"] == "exited")
+    assert _inbox(app, row["id"]) == []
+    item = app.db.execute("SELECT * FROM items WHERE source=?", (f"process:{row['id']}",)).fetchone()
+    assert item["kind"] == "notification" and item["title"] == 'Process "late" exited' and item["conversation_id"] == owner
+    assert db.loads(item["action"], {}) == {"kind": "open_conversation", "conversation_id": owner}
+
+
+async def test_stop_notify_false_posts_nothing(app, ctx, project, fake):
+    fake.reply("ok")
+    row = await _proc(app, ctx, project, "import time; time.sleep(60)")
+    await app.processes.stop(row["id"], actor="user", notify=False)
+    assert app.processes.get(row["id"])["status"] == "stopped" and _inbox(app, row["id"]) == []

@@ -16,6 +16,7 @@ type Filter = "all" | "running" | "waiting" | "done" | "failed" | "archived";
 function statusTone(status: ConversationStatus): "neutral" | "green" | "amber" | "red" | "sky" {
   switch (status) {
     case "running":
+    case "waiting":
       return "sky";
     case "waiting_approval":
     case "waiting_input":
@@ -31,7 +32,7 @@ function statusTone(status: ConversationStatus): "neutral" | "green" | "amber" |
 
 function matchesFilter(status: ConversationStatus, filter: Filter): boolean {
   if (filter === "all") return true;
-  if (filter === "running") return status === "running";
+  if (filter === "running") return status === "running" || status === "waiting";
   if (filter === "waiting") return status === "waiting_approval" || status === "waiting_input";
   if (filter === "done") return status === "done";
   if (filter === "failed") return status === "failed";

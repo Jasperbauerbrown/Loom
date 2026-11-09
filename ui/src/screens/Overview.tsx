@@ -274,7 +274,7 @@ export function Overview() {
   }, [actions, activate, tileWith]);
 
   const activeCount = conversations.filter(
-    (c) => c.kind === "thread" && (c.status === "running" || c.status === "waiting_approval" || c.status === "waiting_input"),
+    (c) => c.kind === "thread" && (c.status === "running" || c.status === "waiting" || c.status === "waiting_approval" || c.status === "waiting_input"),
   ).length;
   const waitingCount = conversations.filter(
     (c) => shown.includes(c.id) && (c.status === "waiting_approval" || c.status === "waiting_input"),

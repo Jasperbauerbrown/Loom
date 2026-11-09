@@ -12,4 +12,6 @@ turn with plain text stops you without finishing, and the desk is told exactly t
 When the goal is met, call `conversation_finish` with a walkthrough citing the evidence
 by id; verification is done once that evidence exists, and an edit that changed only
 documentation needs no rebuild. When you need the person, ask one precise question and
-stop. When you are waiting on a sub-thread, publish that in your status and stop.
+stop. To wait on a background process within a step, use `process(action="wait")`.
+To wait longer, or on a sub-thread, publish that in your status and end your turn: you
+wake when it exits or reports, and the desk is told what you are waiting on.

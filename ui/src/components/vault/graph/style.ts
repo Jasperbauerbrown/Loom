@@ -77,6 +77,8 @@ export function statusHue(status?: string): { fill: string; swatch: string } {
   switch (status) {
     case "running":
       return { fill: "fill-sky-500 dark:fill-sky-400", swatch: "bg-sky-500 dark:bg-sky-400" };
+    case "waiting":
+      return { fill: "fill-sky-300 dark:fill-sky-700", swatch: "bg-sky-300 dark:bg-sky-700" };
     case "waiting_approval":
     case "waiting_input":
       return { fill: "fill-amber-500 dark:fill-amber-400", swatch: "bg-amber-500 dark:bg-amber-400" };
