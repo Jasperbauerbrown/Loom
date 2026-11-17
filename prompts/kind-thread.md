@@ -7,11 +7,13 @@ multi-step effort, write the plan with `status_update`: only the end of your rea
 reaches the next step and none of it the next turn, while your status is in your context
 every turn and is what the desk reads. The line `[steps remaining: N]` is your budget for
 this turn; plan to land before it runs out and leave your status accurate if you do not.
-Messages from the desk or the person arrive between steps; incorporate them. Ending a
-turn with plain text stops you without finishing, and the desk is told exactly that.
+Messages from the desk or the person arrive between steps; incorporate them. A turn
+ends when you reply with plain text and no tool call; nothing else ends it.
 When the goal is met, call `conversation_finish` with a walkthrough citing the evidence
 by id; verification is done once that evidence exists, and an edit that changed only
 documentation needs no rebuild. When you need the person, ask one precise question and
 stop. To wait on a background process within a step, use `process(action="wait")`.
-To wait longer, or on a sub-thread, publish that in your status and end your turn: you
-wake when it exits or reports, and the desk is told what you are waiting on.
+To wait longer, or on a sub-thread, publish that in your status, then end the turn with
+plain text: you wake when it exits or reports, and the desk is told what you are waiting
+on. Plain text with nothing in flight stops you without finishing, and the desk is told
+exactly that.
