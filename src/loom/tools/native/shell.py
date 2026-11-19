@@ -210,7 +210,13 @@ def ended_trailer(ended: list[dict[str, Any]]) -> str:
     if len(ended) > len(shown):
         names += f", and {len(ended) - len(shown)} more"
     noun = "process" if len(ended) == 1 else "processes"
-    return f"[ended {len(ended)} {noun} the command left running: {names}]"
+    return f"[ended {len(ended)} {noun} the command left running: {names}; {KEEP_RUNNING_HINT}]"
+
+
+# The remedy, said where the failure is seen. The prose already said it and on
+# 2026-11-08 a desk still ran `npm start` in the foreground ten times in a row, each
+# killed at 120 s with the bot it had started (2026-11-18).
+KEEP_RUNNING_HINT = "to keep a program running after the call, start it with background=true"
 
 
 def _kill_tree(proc: asyncio.subprocess.Process, job: int | None = None) -> None:
@@ -273,6 +279,17 @@ def precheck(ctx: ToolContext, args: dict[str, Any]) -> str | None:
     cwd=<scratch> must not fail because nothing had written there yet (2026-10-12).
     The dispatcher runs this before anyone is asked; the handler runs it again, since
     a folder can vanish while an approval waits."""
+    if str(args.get("title") or "").strip() and not args.get("background"):
+        # `title` belongs to a background process only, so a title without `background`
+        # is a call whose two arguments disagree. On 2026-11-08 a desk sent exactly that
+        # ten times — it meant background every time, its thinking said so, and each
+        # call ran in the foreground for 120 s and took the bot down with it. Refused
+        # before anyone is asked and before anything starts (2026-11-18).
+        return (
+            "title is only for a background process, and background is not set. "
+            "To keep this command running after the call, call again with background=true; "
+            "to run it in the foreground, drop title."
+        )
     scratch_dir(ctx)
     cwd = shell_cwd(ctx, args)
     if not Path(cwd).is_dir():

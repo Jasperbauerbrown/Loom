@@ -32,6 +32,10 @@ from ..registry import Tool, ToolContext, ToolResult
 
 CAPTURE_TIMEOUT_S = 25.0
 FORMATS = ("png", "jpeg")
+# Titles named when no window matches. The list is the point of that failure: without
+# it the model guessed titles ("printer-dashboard", "localhost:8390", "Music Bridge")
+# and then captured the whole monitor to look for the window (2026-11-18).
+MAX_TITLES = 40
 
 
 class CaptureError(Exception):
@@ -46,10 +50,11 @@ class CaptureSpec:
     window: str = ""  # substring of a top-level window title (Windows)
     scale: float = 1.0
     fmt: str = "png"
+    matched: str = ""  # the full title of the window a `window` capture found, set by `capture`
 
     def describe(self) -> str:
         if self.window:
-            return f"window '{self.window}'"
+            return f"window '{self.window}': \"{self.matched}\"" if self.matched else f"window '{self.window}'"
         if self.region:
             r = self.region
             return f"region {r['x']},{r['y']} {r['width']}×{r['height']}"
@@ -60,21 +65,55 @@ class CaptureSpec:
 
 _PS_TEMPLATE = r"""
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-Add-Type -Namespace Loom -Name Native -MemberDefinition @'
+Add-Type -Namespace Loom -Name Native -UsingNamespace System.Text, System.Collections.Generic -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
 [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
 [DllImport("user32.dll")] public static extern int PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
+[DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+[DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr h, StringBuilder s, int n);
+[DllImport("user32.dll")] public static extern int GetWindowTextLengthW(IntPtr h);
+[DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int value, int size);
+public delegate bool EnumProc(IntPtr h, IntPtr l);
+[DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);
 [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+public static List<IntPtr> Visible() {
+  var found = new List<IntPtr>();
+  EnumWindows(delegate(IntPtr h, IntPtr l) {
+    if (!IsWindowVisible(h) || GetWindowTextLengthW(h) == 0) return true;
+    int cloaked;
+    if (DwmGetWindowAttribute(h, 14, out cloaked, 4) == 0 && cloaked != 0) return true;
+    found.Add(h);
+    return true;
+  }, IntPtr.Zero);
+  return found;
+}
+public static string Title(IntPtr h) {
+  var sb = new StringBuilder(GetWindowTextLengthW(h) + 1);
+  GetWindowTextW(h, sb, sb.Capacity);
+  return sb.ToString();
+}
 '@
 try {
 [void][Loom.Native]::SetProcessDPIAware()
 $monitor = __MONITOR__; $scale = __SCALE__; $fmt = '__FMT__'; $out = '__OUT__'
 $rx = __RX__; $ry = __RY__; $rw = __RW__; $rh = __RH__; $win = '__WIN__'
 if ($win -ne '') {
-  $p = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -like ('*' + $win + '*') } | Select-Object -First 1
-  if ($null -eq $p) { throw ('no window whose title contains "' + $win + '"') }
-  $hwnd = $p.MainWindowHandle
+  $hwnd = [IntPtr]::Zero; $matched = ''; $titles = @()
+  foreach ($h in [Loom.Native]::Visible()) {
+    $t = [Loom.Native]::Title($h)
+    $titles += $t
+    if ($hwnd -eq [IntPtr]::Zero -and $t.IndexOf($win, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $hwnd = $h; $matched = $t }
+  }
+  if ($hwnd -eq [IntPtr]::Zero) {
+    $shown = @($titles | Select-Object -Unique | Select-Object -First __MAX_TITLES__ | ForEach-Object { if ($_.Length -gt 80) { '"' + $_.Substring(0, 80) + '..."' } else { '"' + $_ + '"' } })
+    if ($shown.Count -eq 0) { $list = '(none)' } else { $list = $shown -join ', ' }
+    throw ('no open window''s title contains "' + $win + '"; open windows: ' + $list)
+  }
+  if ([Loom.Native]::IsIconic($hwnd)) { throw ('window "' + $matched + '" is minimised, so it has nothing to capture until it is restored') }
+  Write-Output ('WINDOW:' + $matched)
   $r = New-Object Loom.Native+RECT
   [void][Loom.Native]::GetWindowRect($hwnd, [ref]$r)
   $bounds = New-Object System.Drawing.Rectangle($r.Left, $r.Top, ($r.Right - $r.Left), ($r.Bottom - $r.Top))
@@ -183,6 +222,7 @@ def _windows_script(spec: CaptureSpec) -> str:
         .replace("__RW__", str(int(r.get("width", 0))))
         .replace("__RH__", str(int(r.get("height", 0))))
         .replace("__WIN__", _ps_literal(spec.window))
+        .replace("__MAX_TITLES__", str(MAX_TITLES))
     )
 
 
@@ -208,7 +248,7 @@ async def _run(argv: list[str]) -> tuple[int, str]:
 def _first_line(text: str) -> str:
     for line in text.splitlines():
         if line.strip():
-            return line.strip()[:300]
+            return line.strip()[:4000]
     return ""
 
 
@@ -216,7 +256,11 @@ async def _capture_windows(spec: CaptureSpec) -> None:
     encoded = base64.b64encode(_windows_script(spec).encode("utf-16-le")).decode("ascii")
     code, out = await _run(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded])
     if code != 0:
-        raise CaptureError(f"screen capture failed: {_first_line(out) or f'powershell exit {code}'}")
+        said = "\n".join(line for line in out.splitlines() if not line.startswith("WINDOW:"))
+        raise CaptureError(f"screen capture failed: {_first_line(said) or f'powershell exit {code}'}")
+    for line in out.splitlines():
+        if line.startswith("WINDOW:"):
+            spec.matched = line[len("WINDOW:"):].strip()
 
 
 async def _capture_macos(spec: CaptureSpec) -> None:

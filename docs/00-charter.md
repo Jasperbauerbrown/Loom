@@ -1875,3 +1875,21 @@ sessions do not re-litigate.
   (7) A shell command no longer inherits the virtual environment Loom runs in: `uv run`
   had made every command's `python` Loom's own `.venv`, so `python -m uv` (the documented
   form) failed inside Loom and scripts ran on Loom's packages.
+- **2026-11-18** — **Screenshot and shell, from the live transcripts.** (1) `screenshot`
+  with `window=` enumerates every visible, uncloaked top-level window (`EnumWindows`, not
+  one `MainWindowTitle` per process) and matches the text case-insensitively as plain
+  text (`-like` treated `[`, `]`, `*` as wildcards). A miss names the open windows'
+  titles (at most 40, 80 chars each), a hit names the full title it captured, and a
+  minimised match is refused instead of returning a blank image. Five times a model
+  guessed a title, missed, and captured the whole monitor to go looking; the miss now
+  answers "is it open, and what is it called" in the same call, and the prose says to
+  ask by window first and that a browser window carries only its active tab's title.
+  (2) `shell` refuses `title` without `background=true` at precheck, before approval or
+  spawn: on 2026-11-08 a desk sent `npm start` with a title and no background ten times
+  in a row, intending background each time (its thinking said so), and each run was
+  killed at 120 s with the bot. (3) The `[ended …]` trailer carries the remedy (`start
+  it with background=true`), and the prose names the detaching tricks that do not escape
+  the kill-on-close job (`&`, `nohup`, `setsid`, `start`, `Start-Process`, `disown`) and
+  says that opening a program or page for the person is a background process too; a
+  foreground `start <url>` had killed the browser it opened, and `Start-Process -WindowStyle
+  Hidden` the bot.

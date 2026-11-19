@@ -57,23 +57,23 @@ def test_nothing_left_running_has_no_trailer():
 
 def test_one_process_is_named_in_the_singular():
     assert shell_tool.ended_trailer([{"pid": 5732, "name": "tower-defense-graphical.exe"}]) == (
-        "[ended 1 process the command left running: tower-defense-graphical.exe pid 5732]"
+        "[ended 1 process the command left running: tower-defense-graphical.exe pid 5732; to keep a program running after the call, start it with background=true]"
     )
 
 
 def test_several_processes_are_listed_in_order():
     ended = [{"pid": 1234, "name": "node.exe"}, {"pid": 5732, "name": "game.exe"}]
     assert shell_tool.ended_trailer(ended) == (
-        "[ended 2 processes the command left running: node.exe pid 1234, game.exe pid 5732]"
+        "[ended 2 processes the command left running: node.exe pid 1234, game.exe pid 5732; to keep a program running after the call, start it with background=true]"
     )
 
 
 def test_a_name_that_cannot_be_read_prints_as_the_pid_alone():
     assert shell_tool.ended_trailer([{"pid": 5732, "name": ""}]) == (
-        "[ended 1 process the command left running: pid 5732]"
+        "[ended 1 process the command left running: pid 5732; to keep a program running after the call, start it with background=true]"
     )
     assert shell_tool.ended_trailer([{"pid": 5732}]) == (
-        "[ended 1 process the command left running: pid 5732]"
+        "[ended 1 process the command left running: pid 5732; to keep a program running after the call, start it with background=true]"
     )
 
 
@@ -81,7 +81,7 @@ def test_a_long_list_is_capped():
     ended = [{"pid": 1000 + i, "name": f"p{i}.exe"} for i in range(11)]
     line = shell_tool.ended_trailer(ended)
     assert line.startswith("[ended 11 processes the command left running: p0.exe pid 1000, ")
-    assert line.endswith("p7.exe pid 1007, and 3 more]")
+    assert line.endswith("p7.exe pid 1007, and 3 more; to keep a program running after the call, start it with background=true]")
     assert "p8.exe" not in line
 
 
@@ -195,3 +195,23 @@ async def test_a_timed_out_call_returns_what_the_command_said_first(app, ctx, pr
         # Git Bash re-execs itself and a venv python is a trampoline, so the tree under
         # a timed-out call is legitimately more than one process. All of it is killed.
         assert any(e["name"].lower().endswith("python.exe") for e in result.meta["ended"])
+
+
+# ---------------------------------------------------------------------------------
+# a title without background (2026-11-18): refused before anything runs
+# ---------------------------------------------------------------------------------
+async def test_a_title_without_background_is_refused_before_it_runs(app, ctx, project):
+    marker = project / "ran.txt"
+    result = await dispatch.execute(
+        app, ctx, app.tools.get("shell"),
+        {"command": f"echo x > \"{str(marker).replace(chr(92), '/')}\"", "cwd": str(project), "title": "Music Bridge bot"},
+    )
+    assert not result.ok
+    assert "background=true" in result.content and "drop title" in result.content
+    assert not marker.exists()
+
+
+def test_the_precheck_lets_a_titled_background_call_and_an_untitled_foreground_call_through(app, ctx, project):
+    assert shell_tool.precheck(ctx, {"command": "npm start", "cwd": str(project), "title": "bot", "background": True}) is None
+    assert shell_tool.precheck(ctx, {"command": "echo hi", "cwd": str(project)}) is None
+    assert shell_tool.precheck(ctx, {"command": "echo hi", "cwd": str(project), "title": "  "}) is None

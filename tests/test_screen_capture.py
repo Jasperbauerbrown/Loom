@@ -149,3 +149,59 @@ async def test_screenshot_rejects_negative_monitor(app, ctx):
     result = await run(app, ctx, {"monitor": -1})
     assert not result.ok
     assert "monitor" in result.content
+
+
+# ---------------------------------------------------------------------------------
+# finding the window (2026-11-18): every visible window, plain-text match, the titles
+# named on a miss, the found title named on a hit
+# ---------------------------------------------------------------------------------
+def test_window_lookup_enumerates_every_visible_window_and_matches_as_plain_text():
+    script = screen_tool._windows_script(CaptureSpec(out_path="x.png", window="[Draft] notes"))
+    assert "EnumWindows" in script and "Visible()" in script
+    assert "OrdinalIgnoreCase" in script
+    assert "-like" not in script  # wildcards: a title with [ ] or * never matched itself
+    assert "MainWindowTitle" not in script  # one window per process missed a second browser window
+    assert f"Select-Object -First {screen_tool.MAX_TITLES}" in script
+    assert "__" not in script.replace("__init__", "")  # every placeholder filled
+
+
+def test_a_minimised_match_is_refused_rather_than_captured_blank():
+    script = screen_tool._windows_script(CaptureSpec(out_path="x.png", window="game"))
+    assert "IsIconic($hwnd)" in script and "minimised" in script
+
+
+async def test_a_miss_names_the_open_windows(monkeypatch):
+    async def fake_run(argv):
+        return 1, 'no open window\'s title contains "Music Bridge"; open windows: "Loom - Opera", "Explorer"'
+
+    monkeypatch.setattr(screen_tool, "_run", fake_run)
+    monkeypatch.setattr(screen_tool.os, "name", "nt")
+    with pytest.raises(CaptureError) as excinfo:
+        await screen_tool.capture(CaptureSpec(out_path="unused.png", window="Music Bridge"))
+    assert '"Loom - Opera", "Explorer"' in str(excinfo.value)
+
+
+async def test_a_failure_after_the_match_reports_the_failure_not_the_match(monkeypatch):
+    async def fake_run(argv):
+        return 1, "WINDOW:Loom - Opera\nempty capture area"
+
+    monkeypatch.setattr(screen_tool, "_run", fake_run)
+    monkeypatch.setattr(screen_tool.os, "name", "nt")
+    with pytest.raises(CaptureError) as excinfo:
+        await screen_tool.capture(CaptureSpec(out_path="unused.png", window="Loom"))
+    assert str(excinfo.value) == "screen capture failed: empty capture area"
+
+
+async def test_a_hit_names_the_full_title_it_captured(monkeypatch, tmp_path):
+    out = tmp_path / "shot.png"
+
+    async def fake_run(argv):
+        out.write_bytes(b"\x89PNG\r\n\x1a\n")
+        return 0, "WINDOW:Music Bridge - Opera"
+
+    monkeypatch.setattr(screen_tool, "_run", fake_run)
+    monkeypatch.setattr(screen_tool.os, "name", "nt")
+    spec = CaptureSpec(out_path=str(out), window="music bridge")
+    assert await screen_tool.capture(spec) == b"\x89PNG\r\n\x1a\n"
+    assert spec.describe() == "window 'music bridge': \"Music Bridge - Opera\""
+    assert CaptureSpec(out_path="x", window="w").describe() == "window 'w'"
