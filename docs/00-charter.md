@@ -1893,3 +1893,16 @@ sessions do not re-litigate.
   says that opening a program or page for the person is a background process too; a
   foreground `start <url>` had killed the browser it opened, and `Start-Process -WindowStyle
   Hidden` the bot.
+
+- **2026-11-22** — **Batch independent tool calls, to cut input-token cost.** A cost
+  audit found the foreground loop is the whole bill: ~520M prompt tokens over four days,
+  ~78k per step, and 86% of steps made exactly one tool call. The harness already runs a
+  step's read-only calls in parallel (`_dispatch_calls`, gather) and dedups identical
+  ones, but no prompt asked the model to batch. A new Operating rule in `system.md` tells
+  it to put independent reads/searches/probes in one step (a step per call re-sends the
+  whole context for nothing); `fs_read` and `fs_search` descriptions carry the mechanism
+  (parallel execution) so the soul rule stays two lines and the rules section stays at its
+  60-line budget. Background work (maintenance, classify, embeddings, summaries) was ruled
+  out as a cost lever: ~20% of calls but only 2–4% of input tokens, all on small-context
+  cheap models. Paired with lowering `conversation.reasoning_replay_max_chars` (16384 was
+  4× the 4000 default; replayed reasoning accumulates per tool-call step within a turn).

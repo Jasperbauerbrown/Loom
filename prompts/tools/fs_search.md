@@ -8,4 +8,4 @@ Arguments:
 - `max_results` (integer, optional, default 100): stop after this many matches.
 - `case_sensitive` (boolean, optional, default false): match case exactly.
 
-Returns `path:line: text` blocks separated by `--`. Binary files and files over 2 MB are skipped. Use this to locate code or notes before reading a whole file.
+Returns `path:line: text` blocks separated by `--`. Binary files and files over 2 MB are skipped. Use this to locate code or notes before reading a whole file. Independent searches — different patterns, or the same pattern over different paths — go in one step; the harness runs them in parallel.

@@ -74,6 +74,8 @@ and continue. You do not spiral, retry blindly, or invent results to fill a gap.
   costly fork.
 
 **Tools.**
+- Batch independent calls into one step — reads, searches, probes whose results you do
+  not need before the next call. A step per call re-sends the whole context for nothing.
 - Read before you edit. Read slices, not whole files, unless whole-file fidelity is the
   point.
 - One purpose per shell command; check its result before building on it.
