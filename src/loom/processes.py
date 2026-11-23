@@ -8,7 +8,12 @@ them; the watcher marks the row when the child ends and posts one message to the
 conversation so the thread learns about it at its next step.
 
 The child never inherits a pipe: a pipe would break it the moment the backend restarts,
-and a program the person asked to keep up must survive a Loom restart. So `stop(app)`
+and a program the person asked to keep up must survive a Loom restart. The one exception
+is an INTERACTIVE session (`start(..., interactive=True)`), spawned with a stdin pipe held
+in memory so `send` can feed it input across tool calls (a `python -i` REPL, `adb shell`,
+a telnet bridge, gdb); it does NOT survive a backend restart — after one its handle is
+gone and `send` fails, and the row reconciles like any other. Interactivity lives only in
+that in-memory handle, not in a DB column. So `stop(app)`
 cancels the watchers and leaves children running, and `start(app)` reconciles: a
 `running` row whose pid is still alive gets a polling watcher (it is no longer our
 child, so it cannot be awaited); one whose pid is gone becomes `lost`; a `starting` row
@@ -423,9 +428,13 @@ class Processes:
         return row
 
     # -- start / stop --------------------------------------------------------------
-    async def start(self, conversation_id: str, command: str, cwd: str, env: dict[str, str] | None = None, title: str = "") -> dict[str, Any]:
+    async def start(self, conversation_id: str, command: str, cwd: str, env: dict[str, str] | None = None, title: str = "", interactive: bool = False) -> dict[str, Any]:
         """Insert the row, then spawn. Returns the row, `running` with a pid or `failed`
-        with `error`. The caller has already resolved and guarded `cwd`."""
+        with `error`. The caller has already resolved and guarded `cwd`.
+
+        `interactive`: spawn with a stdin pipe (held in `self._procs`) instead of
+        `DEVNULL`, so `send` can write to it across tool calls. The handle lives only in
+        memory, so the session does not survive a backend restart (module docstring)."""
         from .tools.native.shell import resolve_shell  # lazy: shell imports kill_tree from here
 
         command = (command or "").strip()
@@ -456,7 +465,7 @@ class Processes:
                     *argv,
                     cwd=cwd,
                     env=env,
-                    stdin=asyncio.subprocess.DEVNULL,
+                    stdin=asyncio.subprocess.PIPE if interactive else asyncio.subprocess.DEVNULL,
                     stdout=fh,
                     stderr=asyncio.subprocess.STDOUT,
                     **kwargs,
@@ -509,6 +518,34 @@ class Processes:
         if row and notify and actor != f"conversation:{row['conversation_id']}":
             self._post(row, "stopped", "stopped by the user")
         return self.get(process_id)
+
+    async def send(self, process_id: str, data: str, newline: bool = True) -> dict[str, Any]:
+        """Write to an interactive session's stdin. Raises `ValueError` with a message the
+        tool layer hands back when the session cannot take input: not ours this run (e.g.
+        started before a restart, so the handle is gone), not interactive (no stdin pipe),
+        no longer running, or the child has closed its stdin / exited."""
+        proc = self._procs.get(process_id)
+        if proc is None:
+            raise ValueError(
+                f"process {process_id} is not an interactive session this backend can write to "
+                "(it may have been started before a restart, or is not interactive)"
+            )
+        if proc.stdin is None:
+            raise ValueError(
+                f"process {process_id} is not interactive; start it with shell(background=true, interactive=true)"
+            )
+        row = self.get(process_id)
+        if row is None:
+            raise ValueError(f"no process {process_id}")
+        if row["status"] != "running":
+            raise ValueError(f"process {process_id} is not running: {row['status']}")
+        payload = (data + ("\n" if newline else "")).encode("utf-8")
+        try:
+            proc.stdin.write(payload)
+            await proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            raise ValueError(f"process {process_id} is not accepting input (it may have exited)")
+        return {"ok": True, "process_id": process_id, "bytes": len(payload)}
 
     # -- logs -----------------------------------------------------------------------
     def read_log(self, process_id: str, offset: int | None = None, limit: int | None = None) -> dict[str, Any] | None:

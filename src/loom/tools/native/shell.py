@@ -279,6 +279,13 @@ def precheck(ctx: ToolContext, args: dict[str, Any]) -> str | None:
     cwd=<scratch> must not fail because nothing had written there yet (2026-10-12).
     The dispatcher runs this before anyone is asked; the handler runs it again, since
     a folder can vanish while an approval waits."""
+    if args.get("interactive") and not args.get("background"):
+        # Interactivity is a background-only property: a foreground call has no handle to
+        # keep, so `interactive` without `background` is two arguments that disagree.
+        return (
+            "interactive is only for a background process, and background is not set. "
+            "To hold the session open for process(action=\"send\"), call again with background=true."
+        )
     if str(args.get("title") or "").strip() and not args.get("background"):
         # `title` belongs to a background process only, so a title without `background`
         # is a call whose two arguments disagree. On 2026-11-08 a desk sent exactly that
@@ -319,17 +326,22 @@ async def shell_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     if args.get("background"):
         # A program that must keep running (03 §9.6): a row, a log file, a watcher; the
         # call returns at once and the conversation hears about the exit later.
-        row = await app.processes.start(ctx.conversation_id, command, cwd, env=env, title=str(args.get("title") or ""))
+        interactive = bool(args.get("interactive"))
+        row = await app.processes.start(ctx.conversation_id, command, cwd, env=env, title=str(args.get("title") or ""), interactive=interactive)
         if row.get("status") != "running":
             return ToolResult.error(row.get("error") or "could not start the process", process_id=row.get("id"))
         pid_ = row["id"]
+        send_hint = (
+            f' Feed it input with process(action="send", id="{pid_}", input="…").'
+            if interactive else ""
+        )
         return ToolResult(
             content=(
                 f'started process {pid_} "{row["title"]}" (pid {row["pid"]}); log: {row["log_path"]}\n'
-                f'Read its output with process(action="logs", id="{pid_}"), end it with process(action="stop", id="{pid_}"). '
+                f'Read its output with process(action="logs", id="{pid_}"), end it with process(action="stop", id="{pid_}").{send_hint} '
                 "You will get a message in this conversation when it exits."
             ),
-            meta={"process_id": pid_, "pid": row["pid"], "cwd": cwd},
+            meta={"process_id": pid_, "pid": row["pid"], "cwd": cwd, "interactive": interactive},
         )
 
     timeout = effective_timeout(app, args)
@@ -451,6 +463,7 @@ def tools(app: Any = None) -> list[Tool]:
                     "stdin": {"type": "string", "description": "Text piped to the process."},
                     "background": {"type": "boolean", "description": "Start it as a background process and return at once; manage it with the process tool."},
                     "title": {"type": "string", "description": "Short label for a background process."},
+                    "interactive": {"type": "boolean", "description": "With background=true: keep stdin open so you can feed the process input with process(action=\"send\"). The session ends on a backend restart, unlike a plain background process."},
                 },
                 "required": ["command"],
             },

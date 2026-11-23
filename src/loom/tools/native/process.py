@@ -18,7 +18,7 @@ from ... import prompts
 from ...processes import duration
 from ..registry import Tool, ToolContext, ToolResult
 
-ACTIONS = ("list", "logs", "wait", "stop")
+ACTIONS = ("list", "logs", "wait", "send", "stop")
 LIST_MAX = 50
 WAIT_POLL_S = 0.5
 QUOTE_CHARS = 300  # of the matching line quoted back
@@ -160,6 +160,26 @@ async def _wait(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         await asyncio.sleep(min(WAIT_POLL_S, remaining))  # a user cancel lands here as CancelledError
 
 
+async def _send(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
+    process_id = str(args.get("id") or "").strip()
+    if not process_id:
+        return ToolResult.error("id is required for send")
+    data = args.get("input")
+    if data is None:
+        return ToolResult.error("input is required for send")
+    newline = args.get("newline")
+    newline = True if newline is None else bool(newline)
+    try:
+        await ctx.app.processes.send(process_id, str(data), newline=newline)
+    except ValueError as exc:
+        return ToolResult.error(str(exc))
+    return ToolResult(
+        f'sent to process {process_id}; read the reply with process(action="logs", id="{process_id}", tail=true) '
+        f'or process(action="wait", id="{process_id}", until="…")',
+        meta={"id": process_id},
+    )
+
+
 async def _stop(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
     process_id = str(args.get("id") or "").strip()
     if not process_id:
@@ -183,6 +203,8 @@ async def process_handler(ctx: ToolContext, args: dict[str, Any]) -> ToolResult:
         return _logs(ctx, args)
     if action == "wait":
         return await _wait(ctx, args)
+    if action == "send":
+        return await _send(ctx, args)
     if action == "stop":
         return await _stop(ctx, args)
     return ToolResult.error("action must be one of " + ", ".join(ACTIONS))
@@ -196,8 +218,10 @@ def tools() -> list[Tool]:
             parameters={
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": list(ACTIONS), "description": "list, logs, wait or stop."},
-                    "id": {"type": "string", "description": "Process id from shell(background=true) or list."},
+                    "action": {"type": "string", "enum": list(ACTIONS), "description": "list, logs, wait, send or stop."},
+                    "id": {"type": "string", "description": "Process id from shell(background=true) or list. Required for logs, wait, send and stop."},
+                    "input": {"type": "string", "description": "send: text written to the process's stdin; a trailing newline is added unless newline=false."},
+                    "newline": {"type": "boolean", "description": "send: set false to omit the trailing newline."},
                     "tail": {"type": "boolean", "description": "logs: read the last page from the current end of the log, however much it has grown. Wins over since/offset; also the default when none of tail/since/offset are given."},
                     "since": {"type": "integer", "description": "logs: character offset to read from, forward — hand it back the offset the previous read's footer named. wait: where matching starts (default 0)."},
                     "offset": {"type": "integer", "description": "logs: same meaning as since, kept for back-compat. offset/since is ignored if tail is set."},

@@ -155,6 +155,42 @@ async def test_a_spawn_failure_is_a_failed_row_not_an_exception(app, ctx, projec
     assert row["status"] == "failed" and row["ended_at"] and "cannot start" in row["error"]
 
 
+# -- interactive sessions (send) ---------------------------------------------------------
+
+async def test_interactive_session_round_trips_stdin(app, ctx, project, fake):
+    fake.reply("ok")
+    shell = app.tools.get("shell")
+    code = "import sys; [sys.stdout.write('GOT:'+l) or sys.stdout.flush() for l in sys.stdin]"
+    res = await dispatch.execute(
+        app, ctx, shell,
+        {"command": _cmd(code), "cwd": str(project), "background": True, "interactive": True, "title": "echo"},
+    )
+    assert res.ok, res.content
+    assert res.meta["interactive"] is True and 'process(action="send"' in res.content
+    process_id = res.meta["process_id"]
+    tool = app.tools.get("process")
+    sent = await dispatch.execute(app, ctx, tool, {"action": "send", "id": process_id, "input": "hello"})
+    assert sent.ok and "sent to process" in sent.content
+    row = app.processes.get(process_id)
+    await wait_for(lambda: "GOT:hello" in Path(row["log_path"]).read_text(encoding="utf-8"))
+
+
+async def test_send_to_a_non_interactive_process_is_refused(app, ctx, project, fake):
+    fake.reply("ok")
+    row = await app.processes.start(ctx.conversation_id, _cmd("import time; time.sleep(60)"), str(project), title="plain")
+    tool = app.tools.get("process")
+    res = await dispatch.execute(app, ctx, tool, {"action": "send", "id": row["id"], "input": "x"})
+    assert not res.ok and "not interactive" in res.content
+
+
+async def test_send_to_an_unknown_id_errors_without_crashing(app, ctx, project):
+    tool = app.tools.get("process")
+    res = await dispatch.execute(app, ctx, tool, {"action": "send", "id": "nope", "input": "x"})
+    assert not res.ok and "interactive session this backend can write to" in res.content
+    assert "id is required" in (await dispatch.execute(app, ctx, tool, {"action": "send", "input": "x"})).content
+    assert "input is required" in (await dispatch.execute(app, ctx, tool, {"action": "send", "id": "nope"})).content
+
+
 # -- REST ---------------------------------------------------------------------------------
 
 async def test_rest_lists_reads_and_stops(client, project, fake):

@@ -70,6 +70,31 @@ async def test_fs_read_caps_the_characters_it_returns(app, ctx, project):
     assert "for more]" in result.content
 
 
+async def test_fs_read_hex_dumps_bytes_and_pages_by_byte_offset(app, ctx, project):
+    (project / "b.dat").write_bytes(b"AB\x00CD" + bytes(range(32)))  # a NUL inside
+    result = await run(app, ctx, "fs_read", {"path": str(project / "b.dat"), "binary": "hex", "limit": 16})
+    assert result.ok
+    assert result.content.startswith("00000000  41 42 00 43 44")  # offset column + hex
+    assert "|AB.CD" in result.content  # ascii gutter; the NUL is '.'
+    assert 'fs_read(path, offset=16, binary="hex") for more]' in result.content  # footer advances by bytes
+    nxt = await run(app, ctx, "fs_read", {"path": str(project / "b.dat"), "binary": "hex", "offset": 16, "limit": 16})
+    assert nxt.content.startswith("00000010 ")  # the byte offset advanced
+    assert nxt.meta["offset"] == 16
+
+
+async def test_fs_read_strings_extracts_printable_runs(app, ctx, project):
+    (project / "s.bin").write_bytes(b"\x00\x01HELLO\x00\x02world\x00")  # NUL makes it binary
+    result = await run(app, ctx, "fs_read", {"path": str(project / "s.bin"), "binary": "strings"})
+    assert result.ok and "0x00000002: HELLO" in result.content and "world" in result.content
+
+
+async def test_fs_read_binary_refusal_names_the_binary_option(app, ctx, project):
+    (project / "x.bin").write_bytes(b"\x00\x01\x02binary")
+    result = await run(app, ctx, "fs_read", {"path": str(project / "x.bin")})
+    assert not result.ok
+    assert 'binary="hex"' in result.content and 'binary="strings"' in result.content
+
+
 # ---------------------------------------------------------------------------------
 # fs_list
 # ---------------------------------------------------------------------------------
@@ -256,6 +281,11 @@ async def test_shell_rejects_an_empty_command_and_a_missing_cwd(app, ctx, projec
     assert "command is empty" in (await run(app, ctx, "shell", {"command": "  "})).content
     result = await run(app, ctx, "shell", {"command": "echo x", "cwd": str(project / "nope")})
     assert "cwd does not exist" in result.content
+
+
+async def test_shell_interactive_requires_background(app, ctx, project):
+    result = await run(app, ctx, "shell", {"command": "echo x", "cwd": str(project), "interactive": True})
+    assert not result.ok and "interactive is only for a background process" in result.content
 
 
 async def test_shell_times_out_and_says_so(app, ctx, project):

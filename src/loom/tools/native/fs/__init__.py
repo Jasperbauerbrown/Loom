@@ -49,6 +49,11 @@ def tools() -> list[Tool]:
                         "description": "PDFs only: keep the page layout (pdftotext -layout).",
                         "default": True,
                     },
+                    "binary": {
+                        "type": "string",
+                        "enum": ["hex", "strings"],
+                        "description": "Read a binary file: 'hex' for a hexdump, 'strings' for printable text runs. Paged like text, but offset/limit are byte offsets and byte counts.",
+                    },
                 },
                 "required": ["path"],
             },

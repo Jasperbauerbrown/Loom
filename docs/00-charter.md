@@ -1906,3 +1906,23 @@ sessions do not re-litigate.
   out as a cost lever: ~20% of calls but only 2–4% of input tokens, all on small-context
   cheap models. Paired with lowering `conversation.reasoning_replay_max_chars` (16384 was
   4× the 4000 default; replayed reasoning accumulates per tool-call step within a turn).
+
+- **2026-11-23** — **Interactive sessions, binary reads, and a cwd nudge, from a
+  tool-usage audit.** The audit found three turn-heavy loops. (1) *Interactive sessions.*
+  Background processes were launch-and-observe only (`stdin=DEVNULL`, deliberately, so a
+  daemon survives a restart), so every interactive exchange re-spawned a fresh process and
+  re-opened its connections or re-parsed its binaries — `adb` alone was 1144 shell calls,
+  sockets and serial ports re-opened hundreds of times. New: `shell(background=true,
+  interactive=true)` spawns with `stdin=PIPE` held in memory, and `process(action="send",
+  id, input, newline?)` feeds it across calls (a REPL, `adb shell`, a telnet/serial
+  bridge, gdb); the reply is read with `logs`/`wait`. It is a distinct class from a plain
+  background process: the pipe lives only in memory, so the session does **not** survive a
+  backend restart (afterwards `send` fails and the row reconciles like any other) — no DB
+  column, no migration. `interactive` without `background` is refused like `title`. (2)
+  *Binary reads.* `fs_read` refused binary files outright, so `strings`, `xxd` and
+  `objdump` were pushed through `shell` and binary analysis re-imported and re-parsed the
+  file every call. New stdlib-only `binary="hex"` (hexdump) and `binary="strings"` (ASCII +
+  UTF-16LE printable runs), paged by byte offset; `hex` works on any file. No new
+  dependency. (3) *The cwd nudge.* 4433 commands were prefixed with `cd …` despite the
+  `cwd` argument, and a bare `cd` does not persist (each call is a fresh process); the
+  `cwd` description now says so mechanically. Prose stays in `prompts/*.md`.
